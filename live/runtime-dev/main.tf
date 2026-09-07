@@ -260,7 +260,7 @@ module "shared_cache" {
   # every other module source in this layer, and the tags are what scripts/pin_drift.py in
   # qnsc-ci compares across repos. A commit hash would satisfy the check and make the pin
   # invisible to that report.
-  source = "git::https://github.com/quynhonsemiconductor/tf-modules.git//modules/cache?ref=cache-v1.0.0"
+  source = "git::https://github.com/quynhonsemiconductor/tf-modules.git//modules/cache?ref=cache-v1.1.0"
 
   name              = "${local.name}-cache"
   subnet_ids        = module.network.data_subnet_ids
