@@ -57,10 +57,10 @@ qnsc-tofu-state/
   platform/bootstrap/terraform.tfstate     ← this repo (state backend, OIDC, KMS, artifacts)
   platform/organization/terraform.tfstate  ← this repo (Organizations, OUs, SCPs, Identity Center)
   platform/security-baseline/terraform.tfstate ← this repo (CloudTrail, Config, GuardDuty)
-  rally/shared/terraform.tfstate           ← rally-infra _shared
-  rally/develop/terraform.tfstate          ← rally-infra develop
-  rally/prod/terraform.tfstate             ← rally-infra prod
-  opshub/shared/terraform.tfstate          ← opshub-infra _shared
-  opshub/develop/terraform.tfstate         ← opshub-infra develop
-  opshub/prod/terraform.tfstate            ← opshub-infra prod
+  rova/shared/terraform.tfstate            ← rova _shared
+  rova/develop/terraform.tfstate           ← rova develop
+  rova/prod/terraform.tfstate              ← rova prod
+  opshub/shared/terraform.tfstate          ← opshub _shared
+  opshub/develop/terraform.tfstate         ← opshub develop
+  opshub/prod/terraform.tfstate            ← opshub prod
 ```
