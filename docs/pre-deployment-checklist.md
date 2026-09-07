@@ -2,7 +2,7 @@
 
 Status: **Required before first apply** · Owner: Platform
 
-Everything in `qnsc-tf-modules`, `rally-infra`, and `opshub-infra` was built and
+Everything in `tf-modules`, `rova`, and `opshub` was built and
 refactored **without a single `tofu plan`** — nothing is deployed yet. This
 checklist is the gate before the first real apply. Work top to bottom; do not
 skip the bootstrap ordering.
@@ -50,7 +50,7 @@ created by the product's own `_shared` stack. Break the cycle once per product:
 
 ## 3. Per-product `_shared` stack
 
-For **each** of `rally-infra`, `opshub-infra`:
+For **each** of `rova`, `opshub`:
 
 - [ ] `cd live/_shared`
 - [ ] `tofu init` (uses S3 backend — bootstrap must be applied first)
@@ -65,7 +65,7 @@ For **each** of `rally-infra`, `opshub-infra`:
 
 - [ ] IAM role **names** match what the CI workflows assume (grep the workflows
       for `role/<product>-github-*`).
-- [ ] The `ecs_passrole_pattern` (`rally-*`, `opshub-*`) covers the ECS task role
+- [ ] The `ecs_passrole_pattern` (`rova-*`, `opshub-*`) covers the ECS task role
       names the `ecs-service` module will create (`<cluster>-<service>-task`).
 
 ---
@@ -81,11 +81,11 @@ For each product, then **verify before prod**:
         `enable_interface_endpoints=false` in dev (no interface VPC endpoints).
   - [ ] **rds** — uses the **RDS-managed master password** (a Secrets Manager
         secret is created automatically); `engine_version` is correct
-        (rally 17, opshub **18**).
+        (rova 17, opshub **18**).
   - [ ] **ecs-service** — task/exec role names; `region` is passed; circuit
         breaker + CPU & memory autoscaling present.
   - [ ] **cache** — `mode = "node"` in dev (single small node, not serverless).
-  - [ ] **waf** — `enabled=false` in rally dev; opshub dev has it on.
+  - [ ] **waf** — `enabled=false` in rova dev; opshub dev has it on.
 - [ ] `tofu apply`
 - [ ] **Fill secret values** (the modules create empty secrets):
       `aws secretsmanager put-secret-value ...` for each `<product>/<env>/*`.
@@ -122,7 +122,7 @@ Only after develop is healthy.
 ## 6. CI/CD verification
 
 - [ ] Confirm `qnsc-gitops` CI is green and the `@v1` tag points at latest.
-- [ ] Confirm `qnsc-tf-modules` CI (fmt/validate/tflint) is green.
+- [ ] Confirm `tf-modules` CI (fmt/validate/tflint) is green.
 - [ ] Set the GitHub **org** variables (shared by every product infra repo):
       `AWS_ACCOUNT_ID`. Add `WEB_ACM_CERT_ARN_DEVELOP` / `WEB_ACM_CERT_ARN_PROD`
       only if a CloudFront-fronted web origin is used (Cloudflare Pages needs none).

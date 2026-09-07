@@ -15,8 +15,8 @@
 ## What belongs in **product** infra repos
 
 Product-specific resources (ECS clusters, RDS, ElastiCache, SQS, ECR repos, IAM deploy roles) live in their own repos:
-- `rally-infra` — Rally product
-- `opshub-infra` — OpsHub product
+- `rova` — Rova product
+- `opshub` — OpsHub product
 
 ## First-time bootstrap (one-time, run manually)
 

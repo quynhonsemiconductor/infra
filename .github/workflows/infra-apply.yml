@@ -9,7 +9,7 @@
 # skipped, so a workflow/module edit never silently re-applies live infra.
 # Each stack runs under a GitHub Environment that doubles as the OIDC trust
 # boundary AND the reviewer gate, mapped to the three tiers the infra-apply
-# role trusts (see qnsc-tf-modules/modules/iam-oidc infra_apply_subjects):
+# role trusts (see tf-modules/modules/iam-oidc infra_apply_subjects):
 #   • shared     → bootstrap, security-baseline, edge, observability (account/platform-wide)
 #   • develop    → runtime-dev, storage-dev
 #   • production → runtime-prod, storage-prod (protect with required reviewers)
@@ -279,7 +279,7 @@ jobs:
 
   # ───────────────────────────────────────────────────────────────────────
   # Shared observability — the one Grafana Cloud stack every product's
-  # already-wired OTel sidecar (qnsc-tf-modules/modules/observability-agent)
+  # already-wired OTel sidecar (tf-modules/modules/observability-agent)
   # pushes to. No VPC, no ALB, no other stack's remote state — this is a
   # standalone Grafana Cloud resource, so it depends on nothing but the
   # Grafana credential. Platform blast radius, same reviewer gate as

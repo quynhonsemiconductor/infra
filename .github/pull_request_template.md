@@ -29,4 +29,4 @@
 - [ ] `tofu validate` passes locally
 - [ ] Plan output reviewed — no unexpected resource deletions
 - [ ] No credentials hardcoded (all values from AWS Secrets Manager / vars)
-- [ ] Impact on rally-infra and opshub-infra assessed
+- [ ] Impact on rova and opshub assessed
