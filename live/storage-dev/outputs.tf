@@ -4,12 +4,12 @@
 # plan-only (no cloudflare_account_id).
 output "rally_attachments_name" {
   value       = one(module.rally_attachments[*].name)
-  description = "rally-develop R2 attachments bucket name (inject as S3_ATTACHMENTS_BUCKET)."
+  description = "rova-develop R2 attachments bucket name (inject as S3_ATTACHMENTS_BUCKET)."
 }
 
 output "rally_attachments_endpoint" {
   value       = one(module.rally_attachments[*].endpoint)
-  description = "rally-develop R2 S3-compatible API endpoint (inject as STORAGE_ENDPOINT)."
+  description = "rova-develop R2 S3-compatible API endpoint (inject as STORAGE_ENDPOINT)."
 }
 
 # Consumed by the opshub product stacks via terraform_remote_state
@@ -27,13 +27,13 @@ output "opshub_attachments_endpoint" {
 
 output "rally_public_assets_name" {
   value       = one(module.rally_public_assets[*].name)
-  description = "rally-develop R2 public-assets bucket name (inject as S3_PUBLIC_ASSETS_BUCKET)."
+  description = "rova-develop R2 public-assets bucket name (inject as S3_PUBLIC_ASSETS_BUCKET)."
 }
 
 output "rally_public_assets_base_url" {
   value       = one(module.rally_public_assets[*].public_base_url)
   description = <<-EOT
-    Public HTTPS origin for rally-develop public assets — inject as
+    Public HTTPS origin for rova-develop public assets — inject as
     CDN_PUBLIC_ASSETS_BASE_URL. Null until `custom_domain` is attached, and the API
     returns 409 on every avatar upload while it is null.
 

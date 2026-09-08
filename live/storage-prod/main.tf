@@ -55,7 +55,7 @@ module "rally_attachments" {
   name       = "rova-prod-attachments" # same name as the S3 bucket it replaces
   location   = "apac"                  # co-locate with the ap-southeast-1 footprint
 
-  # Mirrors the rally-prod S3 CORS exactly (browser presigned PUT upload).
+  # Mirrors the rova-prod S3 CORS exactly (browser presigned PUT upload).
   cors_rules = [{
     allowed_methods = ["PUT"]
     allowed_origins = ["https://rova.qnsc.vn"]
