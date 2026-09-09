@@ -35,8 +35,6 @@ provider "aws" {
   }
 }
 
-data "aws_caller_identity" "current" {}
-
 # =============================================================================
 # Shared edge governance — Cloudflare WAF + rate-limiting for the qnsc.vn zone.
 #
@@ -263,7 +261,7 @@ resource "cloudflare_pages_project" "landing" {
 # TLS and flattens the CNAME at the apex. Without these, qnsc.vn has no DNS and
 # does not resolve — the site is only reachable at *.pages.dev.
 resource "cloudflare_pages_domain" "landing" {
-  for_each     = toset(["${var.certificate_domain}", "www.${var.certificate_domain}"])
+  for_each     = toset([var.certificate_domain, "www.${var.certificate_domain}"])
   account_id   = var.cloudflare_account_id
   project_name = cloudflare_pages_project.landing.name
   domain       = each.value
