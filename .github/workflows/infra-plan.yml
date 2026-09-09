@@ -57,25 +57,61 @@ jobs:
           echo "stacks=[${SEL%,}]" >> "$GITHUB_OUTPUT"
 
   fmt:
+    # The job NAME is the required-check name on main. It must not change, which
+    # is why this uses a COMPOSITE action: a reusable workflow would report as
+    # `fmt / <inner job>` and the required check `tofu fmt check` would never
+    # report again — and a required check that never reports blocks every merge.
     name: tofu fmt check
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: read
-      id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: quynhonsemiconductor/ci/actions/setup-tofu-aws@v1
+      # No AWS, and no `id-token: write` above. This job used to assume
+      # qnsc-github-infra-plan via setup-tofu-aws in order to run a FORMATTER — a
+      # cloud role held by a job that reads no cloud state and calls no cloud API.
+      # The credential was granted because the shared setup action requires one,
+      # not because the work did. iac-lint installs tofu and nothing else.
+      - uses: quynhonsemiconductor/ci/actions/iac-lint@v1
         with:
-          role-arn:     arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/qnsc-github-infra-plan
-          aws-region:   ${{ env.AWS_REGION }}
           tofu-version: ${{ env.TOFU_VERSION }}
+          fmt: 'true'
 
-      - name: tofu fmt -check
-        run: tofu fmt -check -recursive -diff
+  # ───────────────────────────────────────────────────────────────────────
+  # tflint — NOT a required check yet, deliberately.
+  #
+  # This repo has never run tflint; tf-modules is the only one that has. The
+  # findings here are therefore unknown, and making it required in the same
+  # change that introduces it would risk blocking main on rules nobody has read.
+  # It reports under its own name first; promote it in the ruleset once the
+  # output is triaged — the same sequencing the checkov baseline used.
+  #
+  # `validate` stays OFF here on purpose: this repo's stacks have real backends,
+  # so validate needs credentials and already runs beside `tofu plan` in the plan
+  # job below. Only the credential-free gates belong in this job.
+  # ───────────────────────────────────────────────────────────────────────
+  tflint:
+    name: tflint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: quynhonsemiconductor/ci/actions/iac-lint@v1
+        with:
+          tofu-version: ${{ env.TOFU_VERSION }}
+          fmt: 'false'
+          tflint: 'true'
+          dirs: 'live/*/'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
   plan:
     name: Plan ${{ matrix.stack }}

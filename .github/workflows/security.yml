@@ -39,6 +39,9 @@ permissions:
 
 jobs:
   checkov:
+    # The job NAME is the required-check name on main (`checkov (IaC misconfig)`).
+    # It must not change — which is why the scan below is a COMPOSITE action and
+    # not a reusable workflow, whose check would report as `checkov / <inner>`.
     name: checkov (IaC misconfig)
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -50,24 +53,19 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Checkov scan
-        uses: bridgecrewio/checkov-action@f967808197a8d784d3e72919f38c3ff0cda7884e # v12.3122.0
+      # REPORT-ONLY, unchanged by this refactor and deliberately so: swapping the
+      # implementation and the enforcement in one change would make a red check
+      # ambiguous between "the shared action behaves differently" and "this repo
+      # has findings". Flip to soft-fail 'false' with baseline live/.checkov.baseline
+      # once the findings are triaged — the sequencing tf-modules already used.
+      #
+      # Worth stating plainly: this is the LIVE ESTATE and it is report-only, while
+      # the module library that deploys nothing is enforced. That inversion is real
+      # and is its own decision, not this PR's.
+      - uses: quynhonsemiconductor/ci/actions/iac-checkov@v1
         with:
           directory: live/
-          framework: terraform
-          quiet: true
-          output_format: cli,sarif
-          output_file_path: console,checkov.sarif
-          # REPORT-ONLY until a baseline is committed — see header. Flip to false
-          # (with baseline: live/.checkov.baseline) to enforce on NEW findings.
-          soft_fail: true
-
-      - name: Upload SARIF
-        if: always()
-        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
-        with:
-          sarif_file: checkov.sarif
-        continue-on-error: true
+          soft-fail: 'true'
 
   secret-scan:
     name: Secret scan (Gitleaks)
