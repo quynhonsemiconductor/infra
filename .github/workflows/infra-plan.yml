@@ -214,3 +214,43 @@ jobs:
       - name: Fail if plan errored
         if: steps.plan.outputs.exitcode == '1'
         run: exit 1
+
+  # ── The aggregate gate ──────────────────────────────────────────────────────
+  # `Plan required` is THE required check for this workflow. It exists because GitHub counts a
+  # SKIPPED or CANCELLED required check as PASSING, so naming each job in the ruleset
+  # cannot catch a job that never ran — the failure mode behind opshub #110 (a title edit
+  # cancelled the real run; the replacement skipped every heavy job and went green) and
+  # rova #558-#590 (a base-branch filter skipped both CI workflows for stacked PRs, leaving
+  # five PRs on 5/5 green with no tests, build, E2E or security scan).
+  #
+  # `if: always()` is mandatory — without it the gate skips as soon as a dependency fails
+  # and inherits the very bug it closes. A cancelled WORKFLOW cancels the gate rather than
+  # failing it, so a run superseded by `cancel-in-progress` leaves no red check behind.
+  #
+  # `needs` MUST list every job that is expected to run. A job outside `needs` is a job
+  # outside the gate.
+  #
+  # allow-skipped IS set here, and it is the only repo in the org that gets it.
+  # `plan` is a matrix job gated on `needs.detect.outputs.stacks != '[]'`, so it
+  # legitimately does not run when a PR touches no stack — and its check name is
+  # dynamic (`Plan <stack>`), so it can never be a required check on its own.
+  # 
+  # The trade is deliberate. Including `plan` with allow-skipped means a FAILED
+  # plan fails this gate, which is the outcome that matters for infrastructure:
+  # without it a broken plan could merge, because no required check carries its
+  # name. The cost is that a skipped `detect`/`fmt`/`tflint` would also pass —
+  # acceptable only because none of those three is conditional: this workflow has
+  # no paths filter and none of them carries an `if:`. If that ever changes, split
+  # this into a strict gate over the unconditional jobs plus a lenient one over
+  # `plan`, rather than leaving the leniency to cover everything.
+  ci-required:
+    name: Plan required
+    if: always()
+    needs: [detect, fmt, tflint, plan]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: quynhonsemiconductor/ci/actions/assert-jobs-succeeded@v1
+        with:
+          results: ${{ join(needs.*.result, ',') }}
+          allow-skipped: 'true'
