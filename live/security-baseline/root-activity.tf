@@ -35,15 +35,10 @@
 # module: those are per-environment operational alarms owned by a product, this is
 # account-wide security signal owned by the platform.
 #
-# checkov:skip=CKV_AWS_26: no KMS encryption, deliberately. EventBridge publishing to an
-# SNS topic encrypted with the AWS-managed `alias/aws/sns` key fails, because that key's
-# policy does not grant kms:GenerateDataKey to events.amazonaws.com; making it work needs
-# a customer-managed key ($1/mo) whose policy names the EventBridge principal. The payload
-# here is alarm metadata — event name, principal type, account id, region — and carries no
-# credential or customer data. A silently broken alert path is a strictly worse outcome
-# than an unencrypted notification, and a silently broken alert path is the exact failure
-# this file exists to end.
+# Encryption: see the inline checkov:skip on the resource below for why this topic is
+# deliberately unencrypted.
 resource "aws_sns_topic" "security_alerts" {
+  #checkov:skip=CKV_AWS_26:EventBridge cannot publish to a topic encrypted with the AWS-managed alias/aws/sns key — that key's policy does not grant kms:GenerateDataKey to events.amazonaws.com — so making this work needs a customer-managed key ($1/mo) whose policy names the EventBridge principal. The payload here is alarm metadata (event name, principal type, account id, region) and carries no credential or customer data. A silently broken alert path is strictly worse than an unencrypted notification, and a silently broken alert path is the exact failure this file exists to end.
   name = "qnsc-security-alerts"
   tags = { Layer = "platform", Purpose = "security-alerts" }
 }
