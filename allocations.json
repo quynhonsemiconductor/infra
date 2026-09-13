@@ -1,23 +1,87 @@
 {
-  "_comment": "Single source of truth for per-(product,env) VPC /16 allocations. The second octet (10.<net>.0.0/16) must be UNIQUE across every stack so future VPC peering / Transit Gateway / shared-services connectivity never collides. init.sh reads this to reserve the next free octet when scaffolding a new product; CI can assert no stack uses an octet absent from here. Renumbering a live VPC is destructive, so existing entries are frozen.",
+  "_comment": "Single source of truth for per-(product,env) VPC /16 allocations. The second octet (10.<net>.0.0/16) must be UNIQUE across every stack so future VPC peering / Transit Gateway / shared-services connectivity never collides. Renumbering a live VPC is destructive, so existing entries are frozen. NOTE: nothing reads this file programmatically today — infra-template/scripts/init.sh does NOT parse it, despite an earlier claim here that it did. Treat it as a human register until a CI check or init.sh actually consumes it.",
   "cidr_prefix": "10",
   "reserved_bands": {
     "platform": "90-99  (shared platform/runtime stacks: runtime-dev=90, runtime-prod=91)",
-    "products": "10-89  (each product-env takes one octet; product RDS/ECS only — VPC/ALB now shared via runtime)"
+    "products": "10-89  (LEGACY per-product VPCs only — see allocation_policy below; new products take NO octet)"
+  },
+  "allocation_policy": {
+    "current": "A new product or shared-services tenant consumes the shared runtime VPC (runtime-dev / runtime-prod) via terraform_remote_state and creates ONLY its own RDS + cache + ECS + SQS + secrets. It therefore needs NO octet in this file and MUST NOT be added to `allocations`.",
+    "legacy": "The 10-89 band exists for the original per-product VPCs, which are being retired. Do not hand out new octets from it.",
+    "when_an_octet_is_still_needed": "Only if a stack requires network isolation from the shared runtime VPC (separate account, separate region, or a hard tenancy boundary). That is an architecture decision, not a scaffolding step — record the reason in the entry's note."
+  },
+  "sharing_policy": {
+    "_comment": "What a new product or environment SHARES versus OWNS. These are cost decisions with a security dimension, and they scale linearly if got wrong: at five products with two environments each, the naive per-environment shape costs roughly $370/mo against roughly $235/mo with these rules — and the cache rule alone is $60 of that gap.",
+    "network": "ALWAYS shared. One VPC + one fck-nat per environment tier (runtime-dev, runtime-prod), flat regardless of product count. No product takes its own VPC — see allocation_policy.",
+    "ingress": "ALWAYS Cloudflare Tunnel, never an ALB. A cloudflared sidecar per service costs nothing and scales free; the two shared ALBs were deleted at a saving of about $55/mo. See tf-modules/modules/tunnel-agent for what tunnel ingress gives up (notably target-group alarms, replaced by a Route 53 health check).",
+    "cache": "ONE Valkey node per environment TIER, not per environment. Products take a db_index on the shared node (rova=0, qnsc-kb=1, opshub=2); cluster mode is disabled so all 16 databases exist and the server enforces separation, unlike a key prefix. ElastiCache has no stopped state, so a per-product node bills 730 h/month however little the environment runs — which is exactly how opshub-develop paid about $15/mo for a node serving services pinned at min_count = 0. Keep maxmemory-policy = volatile-lru so only TTL-bearing keys are eviction candidates; that is what protects qnsc-kb's Celery broker keys, which have none. Watch DatabaseMemoryUsagePercentage and upsize the shared node before splitting it. A product earns its own node only when the cache is latency- or capacity-critical, and the reason gets recorded here.",
+    "database": "SHARE the instance when the tenant's data is reconstructible; ISOLATE when it is not. Reconstructible covers every develop environment (migrations plus seeds) and internal tooling such as feature flags. Not reconstructible covers rova, opshub (HR, ISMS and QMS records), solodesk and any product holding customer data — those keep their own instance in production. Within a shared instance: one database and one role per tenant, each with a CONNECTION LIMIT. solodesk already runs this pattern internally across its four services. Never mix a product's production data with tooling in one instance: recovery granularity is the sharp edge, because restoring one tenant means restoring the whole instance.",
+    "compute": "NEVER shared. Fargate bills per task-second, so there is nothing to amortise by co-locating, and co-locating two workloads in one task definition means one memory spike takes down the other. Develop services run min_count = 0 with idle and wake schedules from day one.",
+    "production_stacks": "Written but NOT applied until a product launches. qnsc-kb prod costs about $4/mo unapplied against about $127 applied. An unlaunched production environment is the single most expensive thing on the account per unit of value.",
+    "graduation_triggers": "A tenant moves off shared infrastructure when its data stops being reconstructible, when its availability tier rises above 'an hour of downtime is invisible', or when it contends for IOPS, memory or connections. Record the move and the reason in this file."
+  },
+  "cache_db_index_allocations": {
+    "_comment": "AUTHORITATIVE registry of Valkey database indices on the SHARED cache node in each environment tier. Cluster mode is disabled (num_cache_clusters = 1), so all 16 databases exist and SELECT works; the server enforces separation, unlike a key-prefix convention. Two products silently sharing an index is the collision this registry prevents, and NOTHING detects it at plan time. This file is the single source of truth: the three product stack modules previously each carried their own copy of this table, in three different states — rova's said '0 rally' after the rename and omitted opshub, opshub's was complete, qnsc-kb's was absent. Their comments now point here instead.",
+    "develop": {
+      "0": "rova",
+      "1": "qnsc-kb  (Celery broker AND result backend — the eviction-order note below applies)",
+      "2": "opshub",
+      "next_free": 3
+    },
+    "production": {
+      "_comment": "Empty today: every production product keeps its own dedicated node. When production adopts a shared node per sharing_policy.cache, allocate here and mirror the develop discipline.",
+      "next_free": 0
+    },
+    "eviction_order_is_load_bearing": "The shared node runs the default parameter group's maxmemory-policy = volatile-lru, which evicts only keys carrying a TTL. qnsc-kb's Celery broker keys have none, so they are never eviction candidates, while rova's rate-limit counters and denylist entries are evicted first. That ordering is correct and it is a DEFAULT rather than a decision — anyone setting allkeys-lru on this node to improve one product's hit rate would silently start dropping another product's queued background work."
   },
   "allocations": {
-    "runtime-dev":     { "net": 90, "cidr": "10.90.0.0/16", "status": "live",    "note": "shared dev VPC+ALB (replaces removed platform-dev)" },
-    "runtime-prod":    { "net": 91, "cidr": "10.91.0.0/16", "status": "staged",  "note": "shared prod VPC+ALB+cache; applied at launch" },
-    "rally-develop":   { "net": 10, "cidr": "10.10.0.0/16", "status": "retiring", "note": "per-product dev VPC — destroyed after cutover to runtime-dev" },
-    "rally-prod":      { "net": 20, "cidr": "10.20.0.0/16", "status": "retiring", "note": "per-product prod VPC — superseded by runtime-prod" },
-    "opshub-develop":  { "net": 50, "cidr": "10.50.0.0/16", "status": "retiring", "note": "per-product dev VPC — destroyed after cutover to runtime-dev" },
-    "opshub-prod":     { "net": 30, "cidr": "10.30.0.0/16", "status": "retiring", "note": "per-product prod VPC — superseded by runtime-prod" }
+    "runtime-dev": {
+      "net": 90,
+      "cidr": "10.90.0.0/16",
+      "status": "live",
+      "note": "shared dev VPC + fck-nat + shared Valkey. NO ALB: runtime-dev sets enable_alb = false and products ingress via Cloudflare Tunnel sidecars."
+    },
+    "runtime-prod": {
+      "net": 91,
+      "cidr": "10.91.0.0/16",
+      "status": "live",
+      "note": "shared prod VPC + fck-nat. Live as of go-live (see live/runtime-prod/main.tf header). NO ALB: enable_alb = false, products ingress via Cloudflare Tunnel. No shared cache in prod — each product owns its node."
+    },
+    "rova-develop": {
+      "net": 10,
+      "cidr": "10.10.0.0/16",
+      "status": "retiring",
+      "note": "legacy per-product dev VPC, superseded by runtime-dev. Renamed from rally-develop when the product was renamed rally -> rova. CONFIRM DESTROYED before octet 10 is ever reused."
+    },
+    "rova-prod": {
+      "net": 20,
+      "cidr": "10.20.0.0/16",
+      "status": "retiring",
+      "note": "legacy per-product prod VPC, superseded by runtime-prod. Renamed from rally-prod. CONFIRM DESTROYED before octet 20 is ever reused."
+    },
+    "opshub-develop": {
+      "net": 50,
+      "cidr": "10.50.0.0/16",
+      "status": "retiring",
+      "note": "legacy per-product dev VPC, superseded by runtime-dev. opshub develop now runs IN the shared runtime-dev VPC (10.90.0.0/16) — state, RDS and ECS cluster all exist there — so nothing depends on this legacy /16. CONFIRM DESTROYED before octet 50 is ever reused."
+    },
+    "opshub-prod": {
+      "net": 30,
+      "cidr": "10.30.0.0/16",
+      "status": "retiring",
+      "note": "legacy per-product prod VPC, superseded by runtime-prod. opshub prod IS applied (state, RDS and ECS cluster exist) but runs in the shared runtime-prod VPC (10.91.0.0/16) and is idle — one worker service at desired 0, no api service. Nothing depends on this legacy /16. CONFIRM DESTROYED before octet 30 is ever reused."
+    }
   },
-  "next_free_hint": "First unused octet in 10-89 (currently 11). init.sh should pick the lowest free value and append two entries (<product>-develop, <product>-prod) before scaffolding.",
+  "stacks_without_an_allocation": {
+    "_comment": "Stacks that deliberately hold no octet because they consume the shared runtime VPC. Listed for discoverability only — this is not an allocation table.",
+    "qnsc-kb": "develop + prod, consumes runtime-dev / runtime-prod",
+    "shared-services": "prod only, consumes runtime-prod (internal tooling tenants, e.g. feature flags)"
+  },
+  "next_free_hint": "Do NOT allocate. New products and shared-services tenants take no octet (see allocation_policy). If an octet is genuinely required, the lowest never-used value in 10-89 is 11 — but note that 10, 20, 30 and 50 are held by retiring VPCs and must be confirmed destroyed before reuse.",
   "naming_conventions": {
     "state_key": "qnsc-tofu-state/<product>/<env>/terraform.tfstate",
-    "resource_name": "<product>-<env> (e.g. rally-develop)",
-    "service_name": "<product>-<svc> (e.g. rally-api)",
+    "resource_name": "<product>-<env> (e.g. rova-develop)",
+    "service_name": "<product>-<svc> (e.g. rova-api)",
     "oidc_roles": "<product>-github-{deploy-<env>,ecr-push,infra-plan,infra-apply,web-deploy-<env>}",
     "region": "ap-southeast-1"
   }

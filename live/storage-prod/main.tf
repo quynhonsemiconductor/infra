@@ -44,7 +44,11 @@ data "terraform_remote_state" "bootstrap" {
 # Pins the Cloudflare provider v5 (R2 CORS/lifecycle are v5-only). Product stacks
 # stay on v4 and consume the outputs via terraform_remote_state.
 #
-# NOTE: prod launch is gated — this stack is edited but NOT applied until launch.
+# NOTE: APPLIED. `platform/storage-prod/terraform.tfstate` exists (verified 2026-09-12
+# against the state bucket, last modified 2026-09-06). This previously read "prod launch is
+# gated — this stack is edited but NOT applied until launch", which was stale: the R2
+# buckets described below exist. Product prod stacks may therefore read this stack's
+# outputs safely.
 # =============================================================================
 
 module "rally_attachments" {

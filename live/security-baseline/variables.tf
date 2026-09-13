@@ -1,12 +1,55 @@
 variable "alert_emails" {
-  type        = list(string)
-  default     = []
-  description = "Emails for cost-anomaly + budget alerts. Empty = create the budget/monitor without email subscribers."
+  type = list(string)
+  # ARMED 2026-09-12. Was `[]`, which cost.tf reads as "create the budget and the anomaly
+  # monitor but subscribe nobody" — and that is exactly what happened: the budget existed
+  # with zero notifications and `aws_ce_anomaly_subscription` was never created
+  # (count = length(var.alert_emails) > 0).
+  #
+  # The consequence was measured, not theoretical. An untagged db.m8i.4xlarge SQL Server
+  # Enterprise instance (`database-1`) was created by ROOT in the DEFAULT VPC on
+  # 2026-09-09 and ran for three days at ~$110/day with zero connections. Nothing told
+  # anyone. Month-to-date spend reached $402 against a $500 budget with no alert armed,
+  # and the DIMENSIONAL anomaly monitor that would have flagged an RDS line going from
+  # ~$1.50/day to ~$110/day had no subscriber.
+  #
+  # This stack has NO .tfvars and CI passes no TF_VAR (see enable_config below), so the
+  # default IS the deployed setting. Changing it here is the whole configuration step.
+  #
+  # devops@qnsc.vn is an M365 SHARED MAILBOX rather than an alias on a person: recipients
+  # are managed in the admin centre, so adding or removing someone is not a Terraform
+  # change across four repos, and the path survives any individual leaving.
+  default     = ["devops@qnsc.vn"]
+  description = <<-EOT
+    Emails for cost-anomaly + budget alerts. Terraform creates the subscription, but each
+    recipient must still click the confirmation link AWS sends — an unconfirmed address
+    receives nothing, which is indistinguishable from having no alert at all. Verify with:
+
+      aws budgets describe-notifications-for-budget \
+        --account-id <id> --budget-name qnsc-account-monthly
+
+    Empty list = create the budget/monitor with no subscribers (the pre-2026-09-12 state).
+  EOT
 }
 
 variable "monthly_budget_usd" {
-  type        = number
-  default     = 500
+  type    = number
+  default = 700
+
+  # QNSC's OWN infrastructure runs ~$134/month after the 2026-09-13 consolidation
+  # (opshub-develop Valkey retired, opshub-prod RDS stopped, build cache moved off ECR).
+  # $700 leaves headroom for shared-services (Flagsmith) and the prod stacks at launch.
+  #
+  # EXPECT A BREACH AROUND 2026-09-17, and it is not QNSC's spend: `database-1` is an
+  # untagged db.m8i.4xlarge SQL Server Enterprise created by root on 2026-09-09 for
+  # partner TrueIDC. It burns ~$110/day (~$3,300/month) and has never accepted a single
+  # connection. It is deliberately left running (owner's call) and is allowlisted in
+  # scripts/unmanaged_resources.py.
+  #
+  # Cost Explorer reports it against this account even though the payer is 033086823579
+  # (Ascend), so it counts toward this budget. If the alerts become noise rather than
+  # signal, add a cost filter excluding that instance instead of raising the ceiling —
+  # raising it would blind the budget to QNSC's own spend, which is the thing it exists
+  # to watch.
   description = "Account-wide monthly cost budget (USD). Alerts at 80% actual and 100% forecast."
 }
 

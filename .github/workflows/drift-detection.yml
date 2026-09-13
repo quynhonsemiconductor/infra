@@ -1,0 +1,155 @@
+# =============================================================================
+# Drift detection — nightly comparison of every platform stack against reality.
+#
+# WHY. An audit on 2026-09-12 found six comments asserting deployed state that was wrong
+# ("NOT YET APPLIED" for a stack whose state file exists, "Nothing of opshub is deployed"
+# for a deployed product, "opshub uses a per-task Valkey sidecar" for a product with a real
+# ElastiCache node). Comments were the only record of what was deployed, and nothing could
+# verify a sentence. This job replaces narration with a nightly check.
+#
+# TWO DIRECTIONS, deliberately, because they are different failures with different fixes:
+#
+#   1. EXTERNAL DRIFT (`plan -refresh-only`) — reality moved away from state. Someone
+#      changed a resource in the console, or AWS changed it. Fix: adopt, revert, or ignore.
+#
+#   2. UNAPPLIED CONFIG (`plan`) — main moved away from reality. Apply runs on push to main,
+#      so a non-empty plan here means an apply failed, was skipped by a path filter, or was
+#      never triggered. This is the class that hid rova's missing alarm subscriptions: the
+#      correct address sat on main while zero subscriptions existed in AWS.
+#
+# A plain `plan` alone cannot tell these apart — it returns exit 2 for both — which is why
+# the refresh-only pass runs first and is reported separately.
+#
+# WHAT THIS CANNOT SEE: resources that were never in state. `plan` diffs what OpenTofu
+# knows about, so a resource created outside it has no address to compare. That gap is
+# covered by unmanaged-resources.yml, which is a different mechanism for a different class.
+# Neither replaces the other.
+# =============================================================================
+name: Drift detection
+
+on:
+  schedule:
+    # 07:30 Asia/Ho_Chi_Minh. Cron is UTC-only, hence 00:30. Before the working day, so the
+    # first person in reads the result rather than discovering it mid-change. Offset from
+    # unmanaged-resources (01:15) and pin-drift (01:00) to spread runner usage.
+    - cron: '30 0 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  TOFU_VERSION: "1.9.1"
+  AWS_REGION: ap-southeast-1
+
+jobs:
+  drift:
+    name: Drift ${{ matrix.stack }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    permissions:
+      contents: read
+      id-token: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # The same eight stacks infra-apply.yml manages. `organization` is deliberately
+        # absent from both: it is applied out of band, and this account is a MEMBER of
+        # another organisation (payer 033086823579), so parts of that stack cannot apply
+        # here at all. Adding it would produce permanent red that teaches people to ignore
+        # this job.
+        stack:
+          - bootstrap
+          - security-baseline
+          - runtime-dev
+          - runtime-prod
+          - edge
+          - storage-dev
+          - storage-prod
+          - observability
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: module-token
+        continue-on-error: true
+        with:
+          app-id: ${{ vars.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+          repositories: tf-modules
+
+      # Read-only role, same as infra-plan. A detector never needs write credentials.
+      - uses: quynhonsemiconductor/ci/actions/setup-tofu-aws@v1
+        with:
+          role-arn:     arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/qnsc-github-infra-plan
+          aws-region:   ${{ env.AWS_REGION }}
+          tofu-version: ${{ env.TOFU_VERSION }}
+          git-token:    ${{ steps.module-token.outputs.token }}
+
+      - name: tofu init
+        working-directory: live/${{ matrix.stack }}
+        run: tofu init -input=false
+
+      # `-lock=false` because the infra-plan role is read-only and cannot write the DynamoDB
+      # lock table. Neither pass mutates state, so running lock-free is safe; apply still
+      # locks via the admin role. PIPESTATUS[0] captures tofu's exit past the `tee`.
+      - name: Detect external drift (refresh-only)
+        id: refresh
+        working-directory: live/${{ matrix.stack }}
+        run: |
+          set +e
+          tofu plan -refresh-only -input=false -lock=false -no-color -detailed-exitcode 2>&1 | tee refresh.txt
+          echo "exitcode=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Detect unapplied config
+        id: plan
+        working-directory: live/${{ matrix.stack }}
+        run: |
+          set +e
+          tofu plan -input=false -lock=false -no-color -detailed-exitcode 2>&1 | tee plan.txt
+          echo "exitcode=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      # Exit codes: 0 = no changes, 1 = error, 2 = changes present.
+      - name: Report
+        working-directory: live/${{ matrix.stack }}
+        run: |
+          refresh="${{ steps.refresh.outputs.exitcode }}"
+          plan="${{ steps.plan.outputs.exitcode }}"
+          stack="${{ matrix.stack }}"
+
+          {
+            echo "## \`$stack\`"
+            echo ""
+            case "$refresh" in
+              0) echo "- External drift: **none**" ;;
+              2) echo "- External drift: **DETECTED** — reality diverged from state" ;;
+              *) echo "- External drift: :warning: refresh-only errored (exit $refresh)" ;;
+            esac
+            case "$plan" in
+              0) echo "- Unapplied config: **none** — main matches reality" ;;
+              2) echo "- Unapplied config: **DETECTED** — main has changes never applied" ;;
+              *) echo "- Unapplied config: :warning: plan errored (exit $plan)" ;;
+            esac
+            if [ "$refresh" = "2" ] || [ "$plan" = "2" ]; then
+              echo ""
+              echo "<details><summary>plan output</summary>"
+              echo ""
+              echo '```'
+              tail -c 8000 plan.txt 2>/dev/null || true
+              echo '```'
+              echo ""
+              echo "</details>"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Fail so the scheduled run turns red and GitHub notifies. An errored pass (1)
+          # also fails — a detector that cannot run is not a passing detector.
+          if [ "$refresh" != "0" ] || [ "$plan" != "0" ]; then
+            echo "::error::$stack — refresh exit $refresh, plan exit $plan"
+            exit 1
+          fi

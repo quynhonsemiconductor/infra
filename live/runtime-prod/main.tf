@@ -201,6 +201,21 @@ module "network" {
 }
 
 # ── ALB access logs (S3) ──────────────────────────────────────────────────────
+# UNCONDITIONAL, deliberately, even though module.alb below is gated off — and that is NOT
+# the oversight it looks like. Reviewed 2026-09-12:
+#
+#   - The bucket still holds real ALB access logs from 2026/07/16, i.e. the period this
+#     load balancer actually served. Those are audit records; deleting them to save cents
+#     would be the wrong trade, and this account is pursuing SOC 2 detective controls.
+#   - `alb-logs` carries its own lifecycle rule (`expiration { days = var.retention_days }`),
+#     so the bucket empties itself on schedule and then costs essentially nothing. There is
+#     no ongoing leak to fix.
+#   - Gating this on `var.enable_alb` would attempt to DESTROY a non-empty bucket. The
+#     module sets `force_destroy = var.force_destroy` (default false), so the apply would
+#     fail rather than silently delete — safe, but noise.
+#
+# Delete it in the same change that deletes module.alb for good, once the lifecycle has
+# expired the last objects. Until then, leaving it is the correct call.
 module "alb_logs" {
   source = "git::https://github.com/quynhonsemiconductor/tf-modules.git//modules/alb-logs?ref=alb-logs-v1.0.1"
 
@@ -228,9 +243,24 @@ module "alb_logs" {
 # product stack. That order matters — a product attaching a host-header rule fails if
 # the listener does not exist yet. Restore enable_deletion_protection at the same time.
 #
-# NOT deleted from the file: opshub's production stack is still written against this
-# layer's https_listener_arn. Nothing of opshub is deployed, but the next product to
-# adopt production needs either this ALB back or its own tunnel.
+# NOT deleted from the file — but the reason recorded here was WRONG, corrected 2026-09-12
+# against live AWS and the state bucket:
+#
+#   - opshub IS deployed. `opshub/prod/terraform.tfstate` exists, `opshub-prod` RDS is
+#     available, and the `opshub-prod` ECS cluster exists. What is true is that it is IDLE:
+#     one `worker` service at desired 0 / running 0, and no `api` service at all.
+#   - opshub does NOT block deleting this ALB or its output. All three product stacks read
+#     the listener through `try(data.terraform_remote_state.runtime.outputs.https_listener_arn, "")`
+#     — rova stack main.tf, opshub stack main.tf, qnsc-kb stack main.tf — and `try` absorbs a
+#     missing output. The defensive form WAS the migration.
+#   - The one real blocker is `infra-template/live/{develop,prod}/main.tf`, which takes a
+#     BARE reference with no `try`. Deleting the output would break the next product
+#     scaffolded from the template, not anything deployed.
+#
+# Removal order is therefore: fix infra-template to the `try(...)` form, re-verify with
+# `grep -rn "https_listener_arn" --include=*.tf . | grep -v /.terraform/`, then delete
+# module.alb, module.waf, var.enable_alb and the https_listener_arn output together. See
+# infra/docs/product-service-extraction.md for the full sequence.
 module "alb" {
   count = var.enable_alb ? 1 : 0
 
