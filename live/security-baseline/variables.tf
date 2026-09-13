@@ -1,7 +1,34 @@
 variable "alert_emails" {
-  type        = list(string)
-  default     = []
-  description = "Emails for cost-anomaly + budget alerts. Empty = create the budget/monitor without email subscribers."
+  type = list(string)
+  # ARMED 2026-09-12. Was `[]`, which cost.tf reads as "create the budget and the anomaly
+  # monitor but subscribe nobody" — and that is exactly what happened: the budget existed
+  # with zero notifications and `aws_ce_anomaly_subscription` was never created
+  # (count = length(var.alert_emails) > 0).
+  #
+  # The consequence was measured, not theoretical. An untagged db.m8i.4xlarge SQL Server
+  # Enterprise instance (`database-1`) was created by ROOT in the DEFAULT VPC on
+  # 2026-09-09 and ran for three days at ~$110/day with zero connections. Nothing told
+  # anyone. Month-to-date spend reached $402 against a $500 budget with no alert armed,
+  # and the DIMENSIONAL anomaly monitor that would have flagged an RDS line going from
+  # ~$1.50/day to ~$110/day had no subscriber.
+  #
+  # This stack has NO .tfvars and CI passes no TF_VAR (see enable_config below), so the
+  # default IS the deployed setting. Changing it here is the whole configuration step.
+  #
+  # devops@qnsc.vn is an M365 SHARED MAILBOX rather than an alias on a person: recipients
+  # are managed in the admin centre, so adding or removing someone is not a Terraform
+  # change across four repos, and the path survives any individual leaving.
+  default     = ["devops@qnsc.vn"]
+  description = <<-EOT
+    Emails for cost-anomaly + budget alerts. Terraform creates the subscription, but each
+    recipient must still click the confirmation link AWS sends — an unconfirmed address
+    receives nothing, which is indistinguishable from having no alert at all. Verify with:
+
+      aws budgets describe-notifications-for-budget \
+        --account-id <id> --budget-name qnsc-account-monthly
+
+    Empty list = create the budget/monitor with no subscribers (the pre-2026-09-12 state).
+  EOT
 }
 
 variable "monthly_budget_usd" {

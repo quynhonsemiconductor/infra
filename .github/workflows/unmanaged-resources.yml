@@ -1,0 +1,58 @@
+# =============================================================================
+# Unmanaged resources — daily scan for cost-bearing AWS resources absent from OpenTofu.
+#
+# The reasoning, the incident that prompted it (`database-1`, ~$110/day, created by root,
+# never connected to), and why the Resource Groups Tagging API was tried and rejected all
+# live in scripts/unmanaged_resources.py. This file only schedules it.
+#
+# THIS IS THE ONE CONTROL DRIFT DETECTION CANNOT REPLACE. `tofu plan` diffs resources that
+# are IN STATE; a resource created outside OpenTofu has no address to diff against and is
+# invisible to it. Scheduled plans and this scan cover different halves of the same problem.
+#
+# DAILY, not weekly like pin-drift. The unit of loss here is dollars per day rather than a
+# stale version, so a week of latency is a week of billing.
+# =============================================================================
+name: Unmanaged resources
+
+on:
+  schedule:
+    # 08:15 Asia/Ho_Chi_Minh. Cron is UTC-only, hence 01:15. Offset from pin-drift's :00 so
+    # two scheduled jobs are not competing for runners at the same minute.
+    - cron: '15 1 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: ap-southeast-1
+
+jobs:
+  scan:
+    name: Scan for resources absent from OpenTofu
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    permissions:
+      contents: read
+      # Required to federate into AWS. No long-lived keys anywhere.
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # qnsc-github-infra-plan carries ReadOnlyAccess — the correct role for a job that
+      # enumerates and never mutates. Deliberately NOT the infra-apply role: a scanner has
+      # no reason to hold write credentials, and this one runs unattended every day.
+      - uses: quynhonsemiconductor/ci/actions/setup-aws-oidc@v1
+        with:
+          role-arn: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/qnsc-github-infra-plan
+          aws-region: ${{ env.AWS_REGION }}
+
+      # Exits non-zero when anything unmanaged is found, which turns the scheduled run red
+      # and makes GitHub notify. That failure IS the alert — there is nothing to gate in a
+      # cron job, so the exit code is the only channel that needs no extra wiring.
+      - name: Scan
+        run: python3 scripts/unmanaged_resources.py

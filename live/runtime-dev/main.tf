@@ -164,9 +164,14 @@ module "network" {
 # in the consuming product stack and redeploy. Order matters — a product attaching a
 # host-header rule fails if the listener does not exist yet.
 #
-# NOT deleted from the file, because opshub's develop stack is still written against
-# this layer's `https_listener_arn`. Nothing of opshub is deployed today, but the next
-# product to adopt develop needs either this ALB back or its own tunnel.
+# NOT deleted from the file — but the reason recorded here was WRONG, corrected 2026-09-12
+# against live AWS and the state bucket: opshub IS deployed in develop
+# (`opshub/develop/terraform.tfstate` exists, `opshub-develop` RDS exists though stopped,
+# `opshub-develop` ECS cluster exists), and opshub does NOT block deletion — its stack reads
+# the listener via `try(…outputs.https_listener_arn, "")`, as do rova's and qnsc-kb's, so a
+# missing output is absorbed. The only bare reference lives in `infra-template`, which would
+# break the next scaffolded product rather than anything deployed. See
+# infra/docs/product-service-extraction.md for the removal order.
 module "alb" {
   count = var.enable_alb ? 1 : 0
 
