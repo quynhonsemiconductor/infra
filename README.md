@@ -88,6 +88,33 @@ Apply order matters in two places: `live/edge` creates the wildcard ACM cert tha
 runtime stacks read, so it applies first; and `live/bootstrap` owns the state backend
 itself, so it is the one stack bootstrapped manually (see above).
 
+## Scheduled controls
+
+Three jobs run unattended, each covering a failure class the other two cannot see. They
+were added together on 2026-09-13 after an audit found problems in all three classes at
+once, none of which any existing check reported.
+
+| Workflow | Script | The question it answers |
+|---|---|---|
+| `drift-detection` | — (`tofu plan`) | State says X, does AWS still say X? |
+| `unmanaged-resources` | `scripts/unmanaged_resources.py` | Does AWS hold cost-bearing things state has never known about? |
+| `alerting-health` | `scripts/alerting_health.py` | Is the configuration intact but unable to deliver? |
+
+The third is the one that hides longest, because it produces no diff. Every alarm topic in
+this account once had zero subscriptions, the budget had no notifications, and six RDS
+alarms sat in `INSUFFICIENT_DATA` for months against a dimension that never publishes.
+`tofu plan` was clean throughout — correctly, since nothing had drifted. The configuration
+said exactly what it was written to say, and what it said was "notify `[]`".
+
+Each script exits non-zero on a finding, so a failed scheduled run *is* the notification —
+a cron job has no PR to annotate, and GitHub already emails on failure. Both carry an
+`ALLOWLIST` requiring a reason per entry, so suppressions cannot accumulate silently.
+
+Note that `alerting-health` cannot fix what it finds: confirming an SNS email subscription
+requires clicking the emailed link and has no API. Pending confirmations are therefore
+reported as findings rather than repaired, and AWS deletes them after roughly 72 hours —
+which is why that job runs daily rather than weekly.
+
 ## VPC allocation
 
 `allocations.json` is the human register of `10.<net>.0.0/16` assignments. New products and

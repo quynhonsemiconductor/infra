@@ -1,0 +1,80 @@
+# =============================================================================
+# Alerting health — daily check that configured alarms can actually reach a person.
+#
+# The reasoning and the six silent failures that prompted it live in
+# scripts/alerting_health.py. This file only schedules it and supplies the Grafana token.
+#
+# WHY THIS IS NOT COVERED BY ANYTHING ELSE WE RUN. Three controls now watch three different
+# failure classes and none of them overlap:
+#
+#   drift-detection       state says X, AWS says Y            (configuration drifted)
+#   unmanaged-resources   AWS has things state never knew of  (resource outside OpenTofu)
+#   alerting-health       configuration is intact and inert   (control cannot deliver)
+#
+# The third is the one that hid the longest. On 2026-09-13 every alarm topic in the account
+# had zero subscriptions, the budget had no notifications, the cost-anomaly monitor had no
+# subscriber, and six RDS alarms had been stuck in INSUFFICIENT_DATA for months against a
+# dimension that never publishes. `tofu plan` was clean throughout, correctly: nothing had
+# drifted. The configuration said exactly what it was written to say, and what it said was
+# "notify []".
+#
+# DAILY, and specifically because of the three-day clock. AWS deletes unconfirmed SNS email
+# subscriptions after roughly 72 hours, so an apply that creates a subscription starts a
+# timer nobody sees. A weekly check would routinely report the deletion rather than the
+# window to prevent it.
+# =============================================================================
+name: Alerting health
+
+on:
+  schedule:
+    # 08:30 Asia/Ho_Chi_Minh. Cron is UTC-only, hence 01:30. Offset from unmanaged-resources
+    # at :15 and pin-drift at :00 so the three scheduled jobs do not contend for runners.
+    - cron: '30 1 * * *'
+  workflow_dispatch:
+  # Also on changes to the alerting wiring itself, so a PR that sets an email list wrong is
+  # caught while someone is looking at it rather than the next morning.
+  pull_request:
+    paths:
+      - 'live/security-baseline/**'
+      - 'scripts/alerting_health.py'
+      - '.github/workflows/alerting-health.yml'
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: ap-southeast-1
+
+jobs:
+  check:
+    name: Can every alarm reach a person?
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    permissions:
+      contents: read
+      # Required to federate into AWS. No long-lived keys anywhere.
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # qnsc-github-infra-plan carries ReadOnlyAccess. This job enumerates alarms, topics,
+      # subscriptions, budgets and EventBridge rules and mutates nothing — confirming a
+      # subscription requires the emailed link and cannot be done with an API call, which is
+      # the whole reason pending confirmations are a finding rather than something to fix here.
+      - uses: quynhonsemiconductor/ci/actions/setup-aws-oidc@v1
+        with:
+          role-arn: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/qnsc-github-infra-plan
+          aws-region: ${{ env.AWS_REGION }}
+
+      # The Grafana token is checked because its expiry on ~2026-09-11 went unnoticed for two
+      # days and blocked every rova and opshub plan. The script treats a MISSING token as a
+      # skipped check that fails the run in CI, so deleting this env block does not quietly
+      # reduce coverage — it turns the job red instead.
+      - name: Check
+        env:
+          GRAFANA_ALERTS_TOKEN: ${{ secrets.GRAFANA_ALERTS_TOKEN }}
+        run: python3 scripts/alerting_health.py
