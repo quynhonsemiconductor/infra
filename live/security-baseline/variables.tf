@@ -32,8 +32,24 @@ variable "alert_emails" {
 }
 
 variable "monthly_budget_usd" {
-  type        = number
-  default     = 500
+  type    = number
+  default = 700
+
+  # QNSC's OWN infrastructure runs ~$134/month after the 2026-09-13 consolidation
+  # (opshub-develop Valkey retired, opshub-prod RDS stopped, build cache moved off ECR).
+  # $700 leaves headroom for shared-services (Flagsmith) and the prod stacks at launch.
+  #
+  # EXPECT A BREACH AROUND 2026-09-17, and it is not QNSC's spend: `database-1` is an
+  # untagged db.m8i.4xlarge SQL Server Enterprise created by root on 2026-09-09 for
+  # partner TrueIDC. It burns ~$110/day (~$3,300/month) and has never accepted a single
+  # connection. It is deliberately left running (owner's call) and is allowlisted in
+  # scripts/unmanaged_resources.py.
+  #
+  # Cost Explorer reports it against this account even though the payer is 033086823579
+  # (Ascend), so it counts toward this budget. If the alerts become noise rather than
+  # signal, add a cost filter excluding that instance instead of raising the ceiling —
+  # raising it would blind the budget to QNSC's own spend, which is the thing it exists
+  # to watch.
   description = "Account-wide monthly cost budget (USD). Alerts at 80% actual and 100% forecast."
 }
 
