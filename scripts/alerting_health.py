@@ -84,12 +84,21 @@ class Skipped(Exception):
 def aws(*args: str, region: str | None = None) -> object:
     """Run an AWS CLI command and parse its JSON. The CLI is preinstalled on GitHub
     runners, so this script needs no pip install — matching scripts/unmanaged_resources.py.
+
+    RAISES on failure rather than returning None. It used to return None, and every caller
+    then treated "the call failed" identically to "the call succeeded and found nothing" —
+    so an expired session made this script report `no CloudWatch alarms exist at all` and
+    `no anomaly monitor configured`, three confident findings about an account it had not
+    managed to read. Measured 2026-09-14 with a bogus profile.
+
+    That is precisely the false signal this file exists to catch, one level up: a control
+    that reports a state it did not verify. `Skipped` propagates to main(), which prints
+    SKIPPED and fails the run in CI, where a credential failure is itself a broken control.
     """
     cmd = ["aws", *args, "--region", region or REGION, "--output", "json"]
     result = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if result.returncode != 0:
-        print(f"::warning::`{' '.join(cmd)}` failed: {result.stderr.strip()[:300]}")
-        return None
+        raise Skipped(f"`{' '.join(cmd[:4])}…` failed: {result.stderr.strip()[:200]}")
     return json.loads(result.stdout or "null")
 
 
