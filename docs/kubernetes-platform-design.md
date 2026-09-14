@@ -142,6 +142,30 @@ which eliminates Alloy — and Alloy is one of the main reasons to do this at al
 **Open decision — Auto Mode or Karpenter on EC2.** Auto Mode has AWS manage nodes, add-ons and
 upgrades at a per-pod premium; Karpenter gives control at the cost of owning it. See §14.
 
+## 2b. Cluster upgrades
+
+EKS ships a new Kubernetes minor roughly three times a year, and each leaves standard support
+after about fourteen months, after which AWS charges extended-support rates. **Auto Mode manages
+nodes; the control plane version is still ours to bump.**
+
+This section exists because upgrade work has no deadline until it has a bill, and it is the
+first thing a two-person team defers.
+
+```
+cadence     one minor per quarter, always N-1 or newer, never N-3
+order       dev cluster → observe for one week → prod cluster
+window      prod during the existing Mon 04:30-06:00 UTC maintenance window
+```
+
+Before each upgrade, check API compatibility for the four things that pin Kubernetes versions:
+**ArgoCD, Alloy, External Secrets Operator, Kyverno.** A removed API in a controller is the
+usual way an upgrade fails, and it fails at reconcile time rather than at upgrade time — the
+cluster comes up and workloads stop being managed, which is quieter and worse.
+
+Record the current version and the support end date somewhere a human reads. The
+`alerting_health` check is the natural home: a cluster within ninety days of end-of-support is a
+finding, not a surprise.
+
 ## 3. Networking, and one prerequisite
 
 EKS provides a managed control plane and **nothing network-shaped**. The VPC, subnets, NAT,
@@ -225,10 +249,21 @@ services rather than a template to pick.
 ### Axis 2 — exposure
 
 ```yaml
-expose: public     # tunnel route created, reachable from the internet
-expose: internal   # ClusterIP only, reachable service-to-service
-expose: none       # no Service at all (workers, jobs)
+expose: public      # tunnel route, reachable from the internet (WAF, rate limit in front)
+expose: protected   # tunnel route + Cloudflare Access — reachable anywhere, by our people only
+expose: internal    # ClusterIP only, service-to-service inside the cluster
+expose: none        # no Service at all (workers, jobs)
 ```
+
+`protected` is the state most of this estate needs and the one most easily got wrong. opshub is
+an internal operations tool, the Flagsmith admin UI is internal, and the AI dev kit is for the
+team — none should be on the public internet with only a WAF in front, and none should be
+`internal` either, because people need them from a laptop.
+
+**Cloudflare Access** solves it: the tunnel route is fronted by a zero-trust policy backed by
+Entra, which both rova and opshub already authenticate against. No VPN, no bastion, no public
+exposure. Getting this wrong in the other direction — marking an internal tool `public` because
+it needed to be reachable — is how internal admin UIs end up indexed.
 
 This is what makes microservices expressible: eight `http` services, one `public`, seven
 `internal`. Service-to-service uses cluster DNS —
@@ -452,6 +487,28 @@ environment. The value was wrong — built from the org id rather than the stack
 opshub shipped no metrics or traces for **seven days**. With Alloy there is **one** credential in
 one place.
 
+### Rotation
+
+Two credential failures happened in one week, and neither was noticed by anything:
+
+```
+2026-09-06   Grafana OTLP credential rotated, replacement wrong → 7 days of no telemetry
+2026-09-11   Grafana alerting service-account token stopped being accepted → 2 days,
+             found only because an unrelated `tofu plan` failed on it
+```
+
+Both were hand-written values with no expiry tracking and nothing testing them. So:
+
+```
+inventory     every credential ESO syncs, with owner, source system, and rotation interval
+verification  alerting_health probes each one — a credential that cannot authenticate is a
+              finding the next morning, not a discovery weeks later
+rotation      annually at minimum; immediately on suspicion; recorded when done
+```
+
+The verification matters more than the schedule. A rotation policy nobody follows is a document;
+a daily probe that fails loudly is a control.
+
 ## 9. Observability
 
 ```
@@ -511,6 +568,41 @@ features.
 
 Canary via **Argo Rollouts + Gateway API**, when wanted. Optional per product (`delivery.canary`).
 
+### Image build and provenance
+
+Three properties exist in the current pipeline and must survive the migration, because losing any
+of them is a silent regression:
+
+```
+multi-arch      arm64 for rova and opshub; x86 for qnsc-kb, because clamav/clamav
+                publishes no arm64 tag. Not a preference — a hard constraint.
+build cache     GitHub Actions cache. Moved off the ECR `registry` backend on
+                2026-09-13 after August's ECR bill was ~94% data transfer.
+attestation     rova's deploy runs `Verify image attestation` before rolling. Keep it.
+```
+
+Kubernetes makes the last one **stronger** than it is today: Kyverno can require signed images
+cluster-wide, so an unsigned image cannot run even if a pipeline is bypassed. That is a policy
+boundary rather than a CI step, and it is worth the swap.
+
+Images are immutable and tagged by commit — never `:latest`, enforced by Kyverno (§10).
+
+## 11b. Local development
+
+Developers keep **docker-compose**. No local Kubernetes.
+
+A local cluster (kind, minikube, Tilt, Skaffold) is a meaningful amount of ceremony for a team
+of two or three, and the preview environments above answer "does this work in a real cluster?"
+far better than a laptop ever will — with the real chart, the real policies, and a real database.
+
+This is written down because the alternative is each product answering it differently, and a
+developer moving between rova and qnsc-kb then learns two local setups instead of one.
+
+What must hold for this to stay true: **the container image is the only build artefact.** If a
+service can only run under compose because of a host mount or a hard-coded localhost, it will
+diverge from what ships. The preview environment is the check on that — if it works there, the
+image is honest.
+
 ### Preview environments
 
 ```
@@ -550,6 +642,27 @@ State the promise rather than implying it from snapshot settings:
 
 GitOps adds a property worth writing down: **the cluster is reproducible from git.** Losing one
 becomes "recreate and let ArgoCD sync" — minutes, not a rebuild.
+
+### That claim must be rehearsed, not asserted
+
+"The cluster is reproducible from git" is the same *class* of statement as "alarms are
+configured" — which was true of this account for weeks while every alarm topic had zero
+subscribers. An untested recovery claim is decoration.
+
+So: **delete the dev cluster and rebuild it from git. Time it. Write the number in this
+document.** Repeat annually or after any change to the bootstrap path.
+
+The rehearsal is also the only way to find what is *not* in git:
+
+```
+PersistentVolumeClaims    stateful services — needs Velero or an explicit "no PVCs" rule
+ArgoCD's own bootstrap    the chicken-and-egg: who installs the installer
+Secrets                   values live in Secrets Manager, correctly — but ESO must be
+                          installed and its IRSA role must exist before anything syncs
+cluster-scoped resources  CRDs, Kyverno policies, StorageClasses
+```
+
+Until that rehearsal happens, the RTO figures above are estimates. Mark them as such.
 
 **Expand and contract.** A release may add columns or tables. Dropping or renaming happens in a
 *later* release, after the previous version is fully retired. Never both in one deploy — a
@@ -665,3 +778,22 @@ products.
 Each step runs both platforms, cuts over at the Cloudflare Tunnel hostname, and keeps the ECS
 stack until the new one is verified. **Do not migrate the three live products while building the
 four new ones**; that is the one sequencing mistake that would make this fail.
+
+### The data does not move
+
+Worth stating plainly, because "migrate the platform" sounds more dangerous than this is:
+
+```
+RDS            stays exactly where it is      no dump, no restore, no downtime
+ElastiCache    stays                          same endpoint
+Cloudflare R2  stays                          same buckets, same credentials
+Secrets Manager stays                         ESO reads the same secrets ECS injected
+```
+
+**Only compute moves.** A cutover is: run the pods in the new cluster against the same database,
+verify, then repoint the Cloudflare Tunnel hostname. Roll back by repointing it again — the ECS
+service is still running and still connected to the same data.
+
+Contrast with 2026-09-14, when rova-prod's database genuinely was destroyed and restored to
+change a subnet group name: twelve minutes of downtime and four snapshots for insurance. Nothing
+in this migration requires that. The database is the part that stays still.
