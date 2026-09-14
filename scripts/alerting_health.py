@@ -411,6 +411,59 @@ def check_grafana() -> tuple[list, list]:
         return [("Grafana", f"{url} unreachable: {error}")], []
 
 
+def check_pending_rds_changes() -> tuple[list, list]:
+    """RDS changes that were applied in OpenTofu but never took effect in AWS.
+
+    This is the third instance of one failure in two days, and the reason it kept happening
+    is that nothing looked:
+
+      * rova-prod's parameter group reported `pending-reboot` from 2026-09-07. Six applies
+        each reported SUCCESS. Two reboots failed to clear it. It was only fixed on the
+        14th, by rebuilding the instance, and only found by querying AWS directly.
+      * qnsc-kb-develop was resized to db.t4g.small on 2026-09-14. The apply succeeded, state
+        said db.t4g.small, and the instance stayed on db.t4g.micro with the change parked in
+        PendingModifiedValues until the following Monday's maintenance window.
+
+    Neither is visible in a plan, because nothing has drifted: config and state agree. What
+    disagrees is AWS, and only about WHEN. So `tofu plan` is clean, the apply is green, and
+    the change simply has not happened — indistinguishable from success without asking.
+
+    Reported as warnings rather than failures. A queued change is legitimate for a few hours
+    inside a maintenance window; what is not legitimate is nobody knowing. The instance's
+    window is printed so the reader can judge whether it has been waiting too long.
+    """
+    warns: list[tuple[str, str]] = []
+
+    for inst in (aws("rds", "describe-db-instances") or {}).get("DBInstances", []):
+        ident = inst.get("DBInstanceIdentifier", "?")
+        window = inst.get("PreferredMaintenanceWindow", "?")
+
+        pending = {k: v for k, v in (inst.get("PendingModifiedValues") or {}).items() if v}
+        if pending:
+            fields = ", ".join(f"{k}={v}" for k, v in sorted(pending.items()))
+            warns.append(
+                (
+                    f"`{ident}`",
+                    f"queued but NOT applied: {fields} — waiting for `{window}`. "
+                    "An apply reported success; AWS has not made the change.",
+                )
+            )
+
+        for group in inst.get("DBParameterGroups", []):
+            status = group.get("ParameterApplyStatus")
+            if status and status != "in-sync":
+                warns.append(
+                    (
+                        f"`{ident}`",
+                        f"parameter group `{group.get('DBParameterGroupName')}` is "
+                        f"`{status}`, not in-sync — its settings are not active. This state "
+                        "survived a week and two reboots on rova-prod.",
+                    )
+                )
+
+    return [], _dedupe(warns)
+
+
 CHECKS = [
     ("Alarm delivery chain", check_alarm_delivery),
     ("EventBridge delivery chain", check_eventbridge_delivery),
@@ -418,6 +471,7 @@ CHECKS = [
     ("Cost anomaly subscriptions", check_cost_anomaly),
     ("Grafana token", check_grafana),
     ("Alarms stuck in INSUFFICIENT_DATA", check_stale_alarms),
+    ("RDS changes applied but not in effect", check_pending_rds_changes),
 ]
 
 
