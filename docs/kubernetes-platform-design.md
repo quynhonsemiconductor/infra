@@ -187,24 +187,56 @@ enough — and exhaustion presents as pods stuck in `ContainerCreating` with no 
 * Enable **prefix delegation** on the VPC CNI.
 * `runtime-prod` (`10.91.0.0/16`) needs the same treatment.
 
-### No ingress controller, and that is a strength
+### No load balancer, but yes to Gateway API
 
-Cloudflare Tunnel dials **outward**, so there is no inbound path to secure:
+An earlier draft of this document said "no ingress needed" and put routing in cloudflared's
+config. That was wrong, and wrong in a way worth recording: seven products' routes in one
+ConfigMap makes ingress a **shared mutable file**, which is the opposite of the per-namespace
+ownership everything else here depends on — and it puts half the routing in Cloudflare rather
+than in the repository ArgoCD reconciles.
+
+The correct split is that Cloudflare Tunnel replaces the **load balancer**, not the routing
+layer:
 
 ```
-internet → Cloudflare edge (WAF, rate limit, TLS, Turnstile)
-         → tunnel → cloudflared Deployment → Service → pod
+internet
+  → Cloudflare edge          WAF · rate limit · Turnstile · Access · TLS
+  → tunnel                   outbound only — no public IP, nothing to scan
+  → cloudflared × 3          ONE catch-all rule → Gateway. Configured once, never edited.
+  → Gateway (in-cluster)     Gateway API — ordinary Kubernetes
+  → HTTPRoute per namespace  rova owns rova's route, in git, reconciled by ArgoCD
+  → Service → pod
 ```
 
-Not needed: ALB/NLB (~$16/month each), AWS Load Balancer Controller, Ingress resources,
-cert-manager. There is no public IP and nothing to scan. This is the best decision in the
-current architecture and it carries over unchanged.
+Not needed: ALB/NLB (~$16/month each), AWS Load Balancer Controller, `Ingress` resources,
+cert-manager. Cloudflare terminates TLS, so certificates are not a cluster concern.
 
-`cloudflared` runs with **≥2 replicas per product** — Cloudflare load-balances across
-connectors, and one replica is a single point of failure for that product's ingress.
+**One cloudflared Deployment per cluster, three replicas** — not one per product. Per-product
+tunnels would be 7 × 2 = 14 pods and roughly a gibibyte of RAM proxying, with no benefit once
+Gateway does the routing. Cloudflare load-balances across connectors, so three replicas is HA.
 
-Add **Gateway API** only when adopting canary deploys (§11). Never `Ingress`, which is frozen.
-Never an ALB behind a tunnel — that pays for a load balancer the tunnel bypasses.
+This arrangement resolves three problems in one move: routes become per-product resources in
+git, the tunnel config stops changing, and preview environments get a hostname mechanism (§11)
+instead of needing per-PR tunnel edits.
+
+Use **Gateway API**, never `Ingress` — Ingress is effectively frozen and Gateway is where the
+ecosystem went. And never an ALB behind a tunnel: that pays for a load balancer the tunnel
+bypasses.
+
+### The alternative, honestly
+
+`ALB → Gateway` is the conventional design and needs no explanation to anyone who has run
+Kubernetes. It costs ~$32/month for two ALBs plus LCU charges, and it accepts a public
+internet-facing endpoint.
+
+Tunnel is chosen over it because: this organisation already runs tunnels on ECS so it is not new,
+both shared ALBs are already at `enable_alb = false` by deliberate choice, Cloudflare already
+provides the WAF and rate limiting an ALB would duplicate, and **no inbound surface** is the
+strongest property of the current architecture. With Gateway API in front of the pods, the
+Kubernetes side is entirely conventional regardless.
+
+If familiarity ever outweighs those, `ALB → Gateway` is a good design and the swap touches only
+what is upstream of the Gateway. Nothing about HTTPRoutes, services or products changes.
 
 ## 4. The Helm library chart: service kinds
 
@@ -223,6 +255,12 @@ Migrations are a `job` running as `argocd.argoproj.io/hook: PreSync`, **not** a 
 `pre-upgrade` hook. With ArgoCD owning the lifecycle, Helm hook failure semantics and ArgoCD's
 sync state disagree, producing releases that are "failed" in Helm and "Synced" in ArgoCD.
 PreSync blocks the sync on migration failure, which is the desired behaviour.
+
+Set an explicit timeout — 600s — because the default will kill a slow migration part-way, which
+is the worst possible moment. Recovery is already covered by the expand-and-contract rule (§13):
+a half-applied migration leaves a forward-compatible schema, so re-running the sync is safe.
+Stating that here because "the migration died halfway through" is otherwise a panic rather than a
+retry.
 
 ## 4b. Any architecture, expressed as a composition
 
@@ -479,7 +517,11 @@ Secrets Manager → External Secrets Operator → Kubernetes Secret → pod env
 ```
 
 OpenTofu creates the containers; values are written out of band and never enter state or git.
-ESO reads via IRSA.
+
+**A `SecretStore` per namespace, each with its own service account and IRSA role** — not one
+`ClusterSecretStore`. Cluster-wide is less setup and means a single compromised namespace can read
+every product's secrets. Per-namespace keeps the blast radius equal to the namespace, which is the
+same principle as the NetworkPolicies in §10.
 
 This fixes a measured failure. On 2026-09-06 the Grafana OTLP credential was rotated and the
 `observability-token` field was updated in **four separate secrets**, one per product per
@@ -518,6 +560,16 @@ Alloy DaemonSet (one per cluster) → Grafana Cloud
 This replaces four sidecar modules per service — `otel_agent_api`, `otel_agent_worker`,
 `firelens_agent_api`, `firelens_agent_worker` — because ECS has no node-level agent and every
 task needs its own collectors. One DaemonSet per cluster instead.
+
+**Assume the free tier is exceeded, and allowlist accordingly.** Kubernetes telemetry is
+series-heavy in a way ECS is not: kube-state-metrics, cAdvisor per container and node-exporter per
+node, all with high-cardinality labels. Fifteen services across two clusters will plausibly pass
+Grafana Cloud's 10k-series free tier, and the current 0.19 GB of log storage is not a measurement
+that survives the move.
+
+So Alloy carries a `metric_relabel` allowlist from day one — keep what a dashboard or an alert
+reads, drop the rest — and §15 budgets ~$50/month rather than assuming free. Check the series
+count after the first cluster is running, not after the first invoice.
 
 **Do not self-host LGTM.** Total CloudWatch log storage today is 0.19 GB and Grafana Cloud usage
 is within the free tier. Self-hosting means running Mimir or Thanos, Loki, and Tempo — four
@@ -607,10 +659,18 @@ image is honest.
 
 ```
 ApplicationSet with a PR generator
-  → every PR gets a namespace, a deployed stack, a URL
-  → torn down on merge or close
-  → per-PR database on the shared dev Postgres
+  namespace     one per PR, deleted on merge or close
+  hostname      *.preview.qnsc.vn → the SAME tunnel catch-all → Gateway
+                → an HTTPRoute in the preview namespace. No per-PR tunnel edit.
+  database      one shared "preview" Postgres, a database per PR, dropped on close
+                NOT the dev instance — previews must not pollute dev data
+  limits        5 concurrent · 72h TTL · auto-deleted
 ```
+
+The wildcard hostname is what makes this work at all. Routing per PR is an `HTTPRoute` in the
+preview namespace — an ordinary Kubernetes resource ArgoCD creates and deletes — rather than a
+Cloudflare config change per pull request. This is the second problem Gateway API solves (§3), and
+it arrives for previews rather than for canary.
 
 Nearly free on ArgoCD, genuinely hard on ECS. For a small team reviewing across seven products,
 "click the link on the PR" is worth more than most of the rest of this document.
@@ -738,17 +798,46 @@ August 2026, measured, three products across two environments:
 150.56  TOTAL
 ```
 
-Modelled at seven products:
+### The first model was wrong, and wrong in the interesting direction
 
-| | monthly |
-|---|---|
-| stay on ECS Fargate | ~$294 |
-| EKS + ArgoCD | ~$480 |
-| + Rancher | ~$586 |
+An earlier version of this section scaled three products' bill up to seven and concluded
+Kubernetes cost $190–290/month more. That method was invalid: **Fargate bills per task and does
+not bin-pack**, so its compute line grows linearly with services rather than staying near $80.
 
-**Roughly $190–290/month more**, narrowed by Karpenter scaling nodes down. RDS, ElastiCache,
-ECR, VPC, Secrets and KMS are identical in both — the cluster is pure addition. Some scale-to-zero
-is lost: the `system` pool must stay alive for CoreDNS, ArgoCD and Alloy.
+Recomputed from resource requests instead:
+
+```
+prod ≈ 16 vCPU / 40 GiB      qnsc-kb alone is 8 vCPU / 24 GiB after 2026-09-14
+dev  ≈ 10 vCPU / 24 GiB      qnsc-kb dominates here too — the e5 model needs the memory
+```
+
+| | ECS Fargate | EKS + Auto Mode |
+|---|---|---|
+| prod compute | $603 — 16 × $0.04048 + 40 × $0.004445, ×730h | $200 — Spot-heavy, on-demand fallback for `http` |
+| dev compute | $112 — Fargate Spot | $70 — Spot |
+| control planes | $0 | $146 — two clusters |
+| Auto Mode premium | — | $32 — ~12% of nodes |
+| EBS | — | $10 |
+| unchanged AWS¹ | $192 | $192 |
+| Grafana Cloud | free tier | $50 — see §9 |
+| tax ~8% | $72 | $56 |
+| **total** | **~$980** | **~$756** |
+
+¹ RDS $125 · ElastiCache $32 · ECR $8 · VPC $12 · Secrets $6 · CloudWatch $6 · KMS $3 —
+identical either way.
+
+**Kubernetes comes out roughly $220/month cheaper at seven products.** The reason is structural,
+not a modelling artefact: Fargate charges a per-vCPU premium per task with no packing, while EKS
+pays a $146 floor and then bin-packs fifteen services onto a handful of nodes.
+
+The crossover is around **10–12 always-on services**. At six, which is today, Fargate is
+correctly cheaper — which is why this is the right decision now and would have been the wrong one
+six months ago.
+
+**Where this could be wrong.** These are list prices, and the per-service requests are estimates
+rather than measurements. qnsc-kb is roughly half of both environments, so the real figure depends
+on qnsc-kb's actual requests more than on anything else in the table. Measure before committing
+to node sizes.
 
 Realistically **6–10 weeks** for the platform plus five migrations, alongside building four
 products.
