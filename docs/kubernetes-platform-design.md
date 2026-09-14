@@ -88,15 +88,45 @@ duplicate copy. A monorepo makes that one commit. Roughly 60/40 in favour of the
 ## 2. Accounts and clusters
 
 ```
-AWS account per environment       dev · prod                (request from TrueIDC)
-one EKS cluster per account
-namespace per product             rova · opshub · kb · lms …
-separate cluster for the IC lab   see §10
+ONE account (608983206583) to start
+  ├── EKS cluster "dev"   in runtime-dev VPC   10.90.0.0/16
+  └── EKS cluster "prod"  in runtime-prod VPC  10.91.0.0/16
+namespace per product              rova · opshub · kb · lms …
+separate cluster for the IC lab    see §10
 ```
 
-Separate accounts per environment is the 2026 baseline for blast radius and what an auditor
-expects. QNSC is a member account in TrueIDC's organisation, so this is a request rather than a
-decision — make it early, because retrofitting account boundaries is expensive.
+**Separate clusters for dev and prod is not negotiable. Separate AWS accounts is deferred.**
+
+The clusters matter because namespace-only separation shares a control plane, a CNI, and every
+cluster-scoped resource — a bad admission webhook or a CRD upgrade reaches production. $73/month
+buys real isolation and it is the cheapest isolation available.
+
+Separate accounts would be better, and the reason is concrete rather than theoretical. On
+2026-09-13 these commands ran minutes apart from one credential set:
+
+```
+aws rds delete-db-instance --db-instance-identifier rova-develop
+aws rds delete-db-instance --db-instance-identifier rova-prod
+```
+
+In one account the only thing between a typo and production is the string typed. In separate
+accounts dev tooling *cannot* reach prod — not "should not", cannot. Add credential-compromise
+containment, quota isolation, and the fact that single-account dev+prod is a routine SOC 2
+finding, and accounts are free.
+
+**It is deferred because of a dependency, not a doubt.** QNSC is a member account in TrueIDC's
+organisation `o-cnvpmom3os` (payer `033086823579`), and only the management account can create or
+invite members. That puts someone outside this team on the critical path at step 1.
+
+Worth stating plainly, since it caused confusion: **a second account does not mean leaving the
+organisation.** An organisation has one payer and many members; both QNSC accounts would sit
+inside TrueIDC's org, both under consolidated billing. Two accounts also means two root users,
+which is unremarkable — hardware MFA, no access keys, never used, and already covered by the
+`qnsc-root-api-activity` and `qnsc-root-console-login` rules in `security-baseline`.
+
+**Split when SOC 2 requires it or a near-miss makes it urgent.** Doing it later is a known
+migration; blocking the platform on someone else's ticket queue is a worse trade than the
+isolation is worth today.
 
 Node pools, via Karpenter or EKS Auto Mode:
 
@@ -625,7 +655,7 @@ products.
 
 | # | step | why here |
 |---|---|---|
-| 1 | Accounts · subnet resize · EKS ×2 · ArgoCD · Alloy · ESO · policy baseline | foundation |
+| 1 | Subnet resize · EKS ×2 · ArgoCD · Alloy · ESO · policy baseline | foundation — no external dependency |
 | 2 | **LMS** | greenfield — proves the chart with nothing at risk |
 | 3 | **qnsc-kb** | prod has no state file; only dev migrates |
 | 4 | **opshub** | dev idles to zero, prod never launched |
