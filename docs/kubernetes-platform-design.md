@@ -470,6 +470,63 @@ This is a genuine regression and part of the delta in §15 — named here rather
 is multi-cluster native, so the dev system pool then carries only CoreDNS, Alloy and ESO. Saves
 roughly $10–15/month and removes one component to upgrade twice.
 
+## 5c. Products with only one environment
+
+Not every product has two environments, and the design handles that without a special case —
+worth stating because §5b reads as though everything has both.
+
+```
+rova · opshub · qnsc-kb · solodesk · lms     dev + prod    → 2 Applications each
+Flagsmith · ai-dev-kit                       prod only     → 1 Application each
+                                                           = 12 deployments, not 14
+```
+
+Nothing bends to accommodate this. An ArgoCD Application exists per (product, environment), so a
+prod-only product simply has no dev Application; there is only `prod.yaml` and no `dev.yaml`; and
+`module "product"` is called once rather than twice. Absence is the mechanism.
+
+### But a prod-only shared service becomes a cross-environment dependency
+
+This is the part that needs deciding rather than inheriting. If Flagsmith exists only in prod,
+then **rova's develop environment reads flags from a production service.** So does opshub's, and
+qnsc-kb's.
+
+That has three consequences:
+
+* A Flagsmith outage takes out flag evaluation in *every* environment at once, dev included.
+* A careless Flagsmith upgrade affects production directly, with no earlier environment to catch
+  it.
+* Development traffic reaches a production system, which matters for audit scope.
+
+The first is tolerable — a well-behaved flag SDK caches locally and falls back to defaults, so
+Flagsmith being down should degrade rather than break. Verify that assumption in whichever SDK is
+adopted; it is the difference between a degraded feature and an outage.
+
+The second and third are handled by **treating a single environment as production, not as a
+compromise**. It lives in the prod cluster, at prod replica counts, with a PodDisruptionBudget,
+and it is upgraded with the same care as rova. "It only has one environment" must not become "it
+is the environment where we experiment".
+
+Flag *values* are separated inside Flagsmith itself — one deployment holds its own development,
+staging and production environments with independent values — so rova-dev pointing at the prod
+Flagsmith still reads development flags. That separation is Flagsmith's, not the platform's, and
+it is the reason one deployment is sufficient.
+
+### Where a prod-only product gets rehearsed
+
+There is no dev instance to try a version bump in, which is a genuine gap. Two answers, in order
+of preference:
+
+1. **Preview environments (§11).** A PR bumping `flagsmith/flagsmith` to a new tag spins up a
+   full instance in the dev cluster against the preview Postgres. That is a better rehearsal than
+   a permanent dev instance, because it is built from the same manifest that will reach prod.
+2. **Add a dev Application when it earns one.** For an XS product this costs a values file and a
+   little Spot capacity. The design makes it a one-line change precisely so this is not a
+   migration later.
+
+The rule: **prod-only is a starting position, never a constraint.** Any product gains a second
+environment by adding `dev.yaml` and one Application.
+
 ## 6. The `product-profile` OpenTofu module
 
 Cloud resources need the same capability flags, or the flexibility stops at the cluster edge.
