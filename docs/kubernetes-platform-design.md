@@ -203,6 +203,73 @@ data:
 product repositories. The moment a product hand-writes a Deployment because the preset did not
 fit, there are seven copies again. If a preset does not fit, the preset gains a field.
 
+## 5b. Environment differences
+
+Values are per product **per environment** — `base.yaml` plus `dev.yaml` or `prod.yaml`, rendered
+by ArgoCD against one chart. This is strictly better than today, where the dev/prod difference is
+spread across two separate OpenTofu stacks and drifts silently; here it is two override files
+against one definition.
+
+| | dev | prod |
+|---|---|---|
+| HPA | **off** — fixed 1 replica | on, 2–6 |
+| PodDisruptionBudget | **off** | on |
+| node capacity | Spot only | Spot with on-demand fallback |
+| anti-affinity | none | spread across AZs |
+| resource requests | low | realistic |
+| Multi-AZ database | no | opt-in at size L |
+| log retention | 7 days | 30–90 days |
+
+Turning HPA and PDB **off** in dev matters more than it appears. With no disruption budget,
+Karpenter drains and deletes a node immediately rather than waiting, so consolidation is
+aggressive — and because it bin-packs by *requests*, low dev requests put fifteen services onto
+very few nodes.
+
+### No scheduled shutdown, initially
+
+The current ECS estate scales compute to zero and stops databases outside 08:00–24:00 on
+weekdays — roughly 48% of the week. **That is deliberately not carried over on day one.**
+
+It costs, and the number should be a decision rather than a surprise:
+
+```
+dev databases always-on   5 × ($15 − $7)                  +$40/month
+dev nodes always-on       Karpenter holds 2–3 not 1        +$30–50/month
+                                                          ───────────
+                                                          +$70–90/month
+```
+
+The reason is friction, measured. On 2026-09-13 the scheduled stops meant qnsc-kb's and opshub's
+develop databases were both down mid-afternoon when they were needed, and one boot test had to be
+abandoned because a stopped instance made the result meaningless. A platform that is unavailable
+when someone reaches for it gets worked around, and the workarounds are worse than the bill.
+
+Karpenter consolidation, Spot, HPA-off and low requests already deliver most of the saving with
+none of that friction.
+
+**Add it later, not never.** When the dev bill justifies it, a KEDA cron scaler takes Deployments
+to zero on a schedule and Karpenter removes the empty nodes; the OpenTofu RDS stop/start
+schedules already exist and would simply be re-enabled. Design for it now by keeping dev
+workloads stateless and startup fast, so the switch is a values change rather than a project.
+
+### The cost floor EKS has and Fargate does not
+
+Even fully idle, a dev cluster runs:
+
+```
+EKS control plane              $73/month
+system pool, one small node   ~$14/month   CoreDNS, Alloy, External Secrets
+                              ─────────
+idle floor                    ~$87/month
+```
+
+On ECS the idle dev compute floor is effectively zero, because Fargate bills per running task.
+This is a genuine regression and part of the delta in §15 — named here rather than discovered.
+
+**One mitigation:** run ArgoCD only in the **prod** cluster and let it manage dev remotely. ArgoCD
+is multi-cluster native, so the dev system pool then carries only CoreDNS, Alloy and ESO. Saves
+roughly $10–15/month and removes one component to upgrade twice.
+
 ## 6. The `product-profile` OpenTofu module
 
 Cloud resources need the same capability flags, or the flexibility stops at the cluster edge.
