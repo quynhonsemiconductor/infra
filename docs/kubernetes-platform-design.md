@@ -170,6 +170,103 @@ Migrations are a `job` running as `argocd.argoproj.io/hook: PreSync`, **not** a 
 sync state disagree, producing releases that are "failed" in Helm and "Synced" in ArgoCD.
 PreSync blocks the sync on migration failure, which is the desired behaviour.
 
+## 4b. Any architecture, expressed as a composition
+
+Size presets answer *how big*. They do not answer *what shape*, and the products will not agree
+on shape: rova and opshub are modular monoliths, the AI dev kit is one service, Flagsmith is a
+container nobody here wrote, and the IC lab is per-user compute. A platform that assumes one
+shape gets worked around, and the workarounds become the seven copies this design exists to
+prevent.
+
+So the chart's primitive is a **service**, with four axes, and an architecture is a composition of
+services rather than a template to pick.
+
+### Axis 1 — kind
+
+| kind | renders |
+|---|---|
+| `http` | Deployment, Service, HPA, PDB |
+| `worker` | Deployment, HPA — no Service |
+| `job` | Job as an ArgoCD PreSync hook |
+| `cron` | CronJob |
+| `stateful` | StatefulSet + PersistentVolumeClaim |
+| `session` | ephemeral Pod per user + ResourceQuota |
+
+### Axis 2 — exposure
+
+```yaml
+expose: public     # tunnel route created, reachable from the internet
+expose: internal   # ClusterIP only, reachable service-to-service
+expose: none       # no Service at all (workers, jobs)
+```
+
+This is what makes microservices expressible: eight `http` services, one `public`, seven
+`internal`. Service-to-service uses cluster DNS —
+`http://orders.rova.svc.cluster.local:3000` — with retries and timeouts in the client library.
+**No service mesh** until there is a named reason; fifteen services does not need mTLS mesh.
+
+### Axis 3 — resources, including GPU
+
+```yaml
+resources:
+  cpu: 500m
+  memory: 1Gi
+  gpu: 1            # optional; schedules onto a GPU node pool
+```
+
+Nothing needs a GPU today — qnsc-kb computes e5 embeddings in-process on CPU and the AI dev kit
+calls OpenRouter. The axis exists so that moving embeddings to a dedicated model server, or
+self-hosting inference for the LMS, is a values change and not a platform decision.
+
+### Axis 4 — image
+
+```yaml
+image:
+  repo: 608983206583.dkr.ecr.…/rova-api     # built here
+# or
+  repo: flagsmith/flagsmith                  # built by someone else
+  tag: "2.x"
+```
+
+Third-party containers are ordinary services. Flagsmith needs no repository and no bespoke
+handling — it is a values file with an upstream image.
+
+### The compositions
+
+| architecture | expressed as |
+|---|---|
+| single service | one `http` |
+| modular monolith | `http` + `worker` + `job` |
+| microservices | N `http`, one `public`, rest `internal` |
+| event-driven | one `worker` per consumer + `queue.sqs` in the profile |
+| batch / ETL | `cron` services |
+| model serving | `http` with `resources.gpu` |
+| per-user compute | `session` + a tainted node pool |
+| third-party app | `http` with an upstream image |
+| needs local disk | `stateful` |
+
+Nothing in that table requires a new chart, a new module, or a fork. **Adding an architecture
+means adding a service to a values file.** That is the property being asked for, and it is the
+only reason a single chart survives seven products.
+
+### The same discipline on the OpenTofu side
+
+`product-profile` must not carry a fixed list of capabilities either, or the flexibility stops at
+the cluster boundary. Capabilities are a set, each defaulting to absent:
+
+```hcl
+postgres = { mode = "none" | "shared" | "dedicated", extensions = [...] }
+cache    = { mode = "none" | "shared" | "dedicated" }
+storage  = { r2_buckets = [...] }
+queue    = { sqs = bool }
+search   = { opensearch = bool }        # absent today; added when first needed
+keyvalue = { dynamodb = bool }          # same
+```
+
+A product with no database sets `mode = "none"` and gets no RDS, no secret, no IAM grant, no
+alarms. Adding OpenSearch later means adding one optional block to the module — not a second
+module, and not a copy of the first.
+
 ## 5. Size presets
 
 Products pick a preset and override individual fields. The preset exists so a new product starts
