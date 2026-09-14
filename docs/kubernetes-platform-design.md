@@ -526,13 +526,62 @@ becomes "recreate and let ArgoCD sync" — minutes, not a rebuild.
 rollback after a destructive migration is unrecoverable, and rollback is the main thing GitOps
 promises.
 
-## 14. Open decisions
+## 14. Two decisions, and their reasoning
 
-Two, deliberately left for a human:
+Both were left open in the first draft and are now settled. Recorded with reasoning rather than
+as bare choices, because the reasoning is what a future reader needs in order to disagree
+usefully.
 
-1. **Monorepo or polyrepo.** Roughly 60/40 toward monorepo at this team size. Changes the CI
-   design substantially, so decide before building `ci`.
-2. **EKS Auto Mode or Karpenter on EC2.** Cost versus control.
+### Monorepo for what we own, with two deliberate exceptions
+
+```
+MONOREPO   rova · opshub · ai-dev-kit · app-platform · lms (if TypeScript)
+SEPARATE   solodesk              — mobile toolchain
+SEPARATE   qnsc-kb-backend       — ownership
+SEPARATE   qnsc-kb-frontend      — ownership
+SEPARATE   infra · tf-modules · delivery · ci · docs
+```
+
+The argument is measured, not stylistic. On 2026-09-13 `sanitizeString` was extracted into
+`app-platform`, and rova and opshub could not use it until `platform-http` was **published** —
+so both kept their duplicated copy, which is still there. Four steps, three pull requests, and a
+window in which the three repositories disagreed. In a monorepo that is one commit.
+
+That publish-then-consume tax is the polyrepo cost, and it is paid on every shared change. With
+two or three engineers who all touch everything, there are no team boundaries for repository
+boundaries to align with, so the tax buys nothing.
+
+**Mobile stays out, and this is not arbitrary.** solodesk needs Xcode and Gradle, Fastlane, code
+signing, and macOS CI runners. None of that shares tooling, caching, or a dependency graph with
+the backend products — a monorepo would gain atomicity it has no use for and inherit CI it cannot
+run.
+
+**LMS is conditional.** If it is TypeScript it joins the monorepo. If its stack is something else
+it stays separate for the same reason as mobile. Decide when the stack is chosen, not now.
+
+Requires Nx or Turborepo for affected-only CI. Without task-graph awareness a monorepo tests
+everything on every commit and the productivity gain inverts.
+
+### EKS Auto Mode
+
+AWS manages nodes, AMIs, patching and upgrades, at roughly a **12% premium** on node cost — about
+**$12/month** on ~$100 of nodes.
+
+That is the cheapest thing in this document. Two or three engineers should not be rotating AMIs
+or sequencing node upgrades, and this is exactly the class of work that gets deferred until it
+becomes an incident. Karpenter's advantage is control over instance families, which nothing here
+needs.
+
+**Revisit when the IC lab arrives.** GPU or high-core instance families for EDA workloads may
+need instance types or AMI customisation Auto Mode does not expose. Verify against Auto Mode's
+supported families at that point; if it does not fit, Karpenter on EC2 for the lab cluster only.
+The workloads are unchanged either way — only the provisioner differs.
+
+### Both are reversible
+
+Monorepo → polyrepo is a repository split. Auto Mode → Karpenter is swapping a node provisioner
+and leaves every manifest untouched. Neither is a one-way door, which is why they were worth
+deciding rather than deliberating.
 
 ## 15. Cost, honestly
 
