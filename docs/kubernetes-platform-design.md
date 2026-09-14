@@ -49,24 +49,35 @@ storage, observability, alarms — plus every raw resource (IAM roles, SNS topic
 EventBridge schedules) stay in OpenTofu. Anyone who says k8s replaces Terraform is selling
 something.
 
-## 1. Repositories: 19 → 12
+## 1. Repositories: 19 → 13
 
-Nineteen repositories exist today, with inconsistent structure: `qnsc-kb` is split across
-`qnsc-kb-backend` and `qnsc-kb-frontend` while rova and opshub are monorepos.
+Nineteen repositories exist today.
 
 ```
-PRODUCTS (6)   rova · opshub · kb (merged) · solodesk · lms · ai-dev-kit
+PRODUCTS (7)   rova · opshub · qnsc-kb-backend · qnsc-kb-frontend
+               solodesk · lms · ai-dev-kit
 PLATFORM (4)   infra · tf-modules · delivery · ci
 SHARED (2)     app-platform · docs
 ```
+
+**qnsc-kb stays split across two repositories, deliberately.** rova and opshub are monorepos and
+qnsc-kb is not, which looks like an inconsistency to fix and is not one: the split follows
+ownership. `qnsc-kb-backend` and `qnsc-kb-frontend` belong to a team member, and repository
+boundaries that match who owns what are worth more than uniformity for its own sake. A future
+reader comparing the three products will notice the difference — this paragraph exists so they
+leave it alone.
+
+Nothing in this design depends on it. The platform sees services, not repositories: the kb
+frontend deploys to Cloudflare Pages and the backend's three services come from its own repo,
+which the library chart handles identically whether they share a checkout or not.
 
 `delivery` is new and load-bearing: the Helm library chart plus the ArgoCD app-of-apps. It is
 the single source of deployment truth.
 
 Flagsmith needs no repository — it is off-the-shelf, so it is a values file in `delivery`.
 
-Retire or fold in: `qnsc-kb-frontend`, `solo-desk-mockup`, `Logo_QNSC_v31`, `mcp-tools`,
-`qnsc-landing`, `ceo-suite`, `tactile-ledger-flow`, `vlsi_deep_training`.
+Retire or fold in: `solo-desk-mockup`, `Logo_QNSC_v31`, `mcp-tools`, `qnsc-landing`,
+`ceo-suite`, `tactile-ledger-flow`, `vlsi_deep_training`.
 
 **Open decision — monorepo instead.** For two or three engineers who all touch everything,
 polyrepo boundaries have no team boundaries to align with, and the cost is real: on 2026-09-13,
