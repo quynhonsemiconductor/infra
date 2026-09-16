@@ -141,7 +141,21 @@ resource "aws_eks_cluster" "this" {
   }
 
   kubernetes_network_config {
-    elastic_load_balancing { enabled = false } # §3 — no ALB. Cloudflare Tunnel.
+    # TRUE, though §3 provisions no load balancer — Cloudflare Tunnel replaces it.
+    #
+    # Not a choice. EKS Auto Mode rejects a mixed configuration outright:
+    # "compute_config.enabled, kubernetes_networking_config.elastic_load_balancing
+    # .enabled, and storage_config.block_storage.enabled must all be set to either
+    # true or false". Compute and block storage are both required (§14, §13), so
+    # this follows them.
+    #
+    # It enables the CONTROLLER, not a load balancer. Nothing is provisioned until
+    # something asks for one, and §3 routes through Gateway API behind the tunnel,
+    # so nothing does — no Service of type LoadBalancer, no Ingress, no ALB and no
+    # bill. If a future service does ask, that is the review moment: §3's whole
+    # argument is that the tunnel removes the load balancer, not that the estate
+    # cannot have one.
+    elastic_load_balancing { enabled = true }
   }
 
   storage_config {

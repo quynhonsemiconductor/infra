@@ -64,19 +64,36 @@ resource "aws_iam_role_policy_attachment" "node" {
 # `security-baseline` enforces for the root account, extended to everyone else.
 # ─────────────────────────────────────────────────────────────────────────────
 
-variable "sso_roles" {
-  type = object({
-    platform_admin = string
-    developer      = string
-    read_only      = string
-    break_glass    = string
-  })
-  description = <<-EOT
-    IAM Identity Center permission-set role ARNs. These are created by the
-    `organization` stack; naming them here rather than deriving them is deliberate
-    — Identity Center mangles role names with a random suffix, so this is one of
-    the few things §7c cannot compute.
-  EOT
+# §10b — the human roles. DERIVED from `security-baseline`, not passed.
+#
+# This used to be `variable "sso_roles"`, whose comment said the ARNs "are created
+# by the `organization` stack". They are not: `organization` exports PERMISSION SET
+# arns, which are a different object from the `AWSReservedSSO_*` IAM roles an EKS
+# access entry needs. The three that exist are `security-baseline`'s, and reading
+# them from its state means nothing is typed twice (§7c).
+#
+# Nothing passed the variable either — no tfvars, no TF_VAR — so this stack could
+# not plan at all. It was never planned, so nothing said so.
+data "terraform_remote_state" "security_baseline" {
+  backend = "s3"
+  config = {
+    bucket = "qnsc-tofu-state"
+    key    = "platform/security-baseline/terraform.tfstate"
+    region = "ap-southeast-1"
+  }
+}
+
+locals {
+  # THREE roles, not four. The design named a `read_only` tier; the estate has no
+  # such role, and qnsc-developer already carries ReadOnlyAccess — which is why
+  # the developer entry below is VIEW on production and EDIT on dev. A fourth
+  # field pointing at the same ARN would be a duplicate access entry, since
+  # `aws_eks_access_entry` is keyed on principal_arn.
+  sso_roles = {
+    platform_admin = data.terraform_remote_state.security_baseline.outputs.human_admin_role_arn
+    developer      = data.terraform_remote_state.security_baseline.outputs.human_developer_role_arn
+    break_glass    = data.terraform_remote_state.security_baseline.outputs.prod_breakglass_role_arn
+  }
 }
 
 # ── NOBODY HAS STANDING ADMIN ON PRODUCTION (§10b) ──────────────────────────
@@ -87,13 +104,13 @@ variable "sso_roles" {
 # incident; one that announces itself is a role that gets used honestly."
 resource "aws_eks_access_entry" "break_glass" {
   cluster_name  = aws_eks_cluster.this.name
-  principal_arn = var.sso_roles.break_glass
+  principal_arn = local.sso_roles.break_glass
   type          = "STANDARD"
 }
 
 resource "aws_eks_access_policy_association" "break_glass" {
   cluster_name  = aws_eks_cluster.this.name
-  principal_arn = var.sso_roles.break_glass
+  principal_arn = local.sso_roles.break_glass
   policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
   access_scope { type = "cluster" }
 }
@@ -109,7 +126,7 @@ resource "aws_cloudwatch_event_rule" "break_glass" {
     "detail-type" = ["AWS API Call via CloudTrail"]
     detail = {
       eventName         = ["AssumeRole"]
-      requestParameters = { roleArn = [var.sso_roles.break_glass] }
+      requestParameters = { roleArn = [local.sso_roles.break_glass] }
     }
   })
 
@@ -118,17 +135,16 @@ resource "aws_cloudwatch_event_rule" "break_glass" {
 
 resource "aws_cloudwatch_event_target" "break_glass" {
   rule = aws_cloudwatch_event_rule.break_glass.name
-  arn  = var.alert_topic_arn
+  arn  = data.terraform_remote_state.security_baseline.outputs.security_alerts_topic_arn
 }
 
-variable "alert_topic_arn" {
-  type        = string
-  description = <<-EOT
-    Where the break-glass alert goes. §8 records that EVERY SNS alarm topic in this
-    account once had zero subscriptions, so alarms fired into nothing — check this
-    one has a subscriber before relying on it.
-  EOT
-}
+# Break-glass alerts go to the topic that already carries root API activity: an
+# assumption of the production break-glass role is the same class of event, and a
+# second topic is a second thing to keep subscribed. Nothing is passed in — the
+# ARN comes from security-baseline's state, like the roles above.
+#
+# The topic has NO SUBSCRIBERS as of 2026-09-16, along with every other topic in
+# the account. The rule fires correctly into nothing until that is fixed.
 
 # §10b — a developer gets VIEW on production, and specifically NOT exec.
 #
@@ -141,26 +157,13 @@ variable "alert_topic_arn" {
 # signals building, and the point of having built them.
 resource "aws_eks_access_entry" "developer" {
   cluster_name  = aws_eks_cluster.this.name
-  principal_arn = var.sso_roles.developer
+  principal_arn = local.sso_roles.developer
   type          = "STANDARD"
 }
 
 resource "aws_eks_access_policy_association" "developer" {
   cluster_name  = aws_eks_cluster.this.name
-  principal_arn = var.sso_roles.developer
-  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy"
-  access_scope { type = "cluster" }
-}
-
-resource "aws_eks_access_entry" "read_only" {
-  cluster_name  = aws_eks_cluster.this.name
-  principal_arn = var.sso_roles.read_only
-  type          = "STANDARD"
-}
-
-resource "aws_eks_access_policy_association" "read_only" {
-  cluster_name  = aws_eks_cluster.this.name
-  principal_arn = var.sso_roles.read_only
+  principal_arn = local.sso_roles.developer
   policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy"
   access_scope { type = "cluster" }
 }

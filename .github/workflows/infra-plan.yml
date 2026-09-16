@@ -53,13 +53,89 @@ jobs:
           git fetch --no-tags origin "$BASE_REF"
           CHANGED="$(git diff --name-only "origin/$BASE_REF...HEAD")"
           echo "Changed files:"; echo "$CHANGED"
-          ALL='"bootstrap","security-baseline","runtime-dev","runtime-prod","edge","storage-dev","storage-prod","observability"'
+          # ── THE STACK LIST IS THE DISK, NOT A LITERAL ─────────────────────
+          # It used to be a hardcoded list, written twice (here and in
+          # infra-apply.yml). SIX stacks on disk were absent from it — cluster-dev,
+          # cluster-prod, data-dev, data-prod, kb/dev and `organization`, the last
+          # of which predates the EKS work entirely — so a pull request touching
+          # only those produced `stacks=[]`, the plan job skipped, and `Plan
+          # required` went green with NO PLAN IN IT.
+          #
+          # That is the failure this workflow's own history names: a required gate
+          # that passes by not running is worse than one that fails. Nothing warned,
+          # because a list is only wrong relative to a fact nobody compared it to.
+          #
+          # `-name '*.tf'` is the definition of a stack, so `live/kb/` — a parent
+          # holding only subdirectories — is correctly not one, and a nested stack
+          # at any depth IS.
+          # Portable on purpose — no `-printf` (GNU-only) and no `mapfile` (bash 4+,
+          # so absent on a macOS laptop). Someone working out why a stack did not
+          # plan should be able to run these three lines by hand, and a debugging
+          # aid that only works on the runner is not one.
+          FOUND=$(find live -name '*.tf' -not -path '*/.terraform/*' -exec dirname {} \; \
+                    | sed 's|^live/||' | sort -u)
+
+          # Stacks that CANNOT plan yet, each with the reason. A stack is excluded
+          # here or it is planned — there is no third state, and the check below
+          # makes sure of it.
+          #
+          # Each entry names what must change to remove it. Every one of these was
+          # ALREADY broken — they were simply never planned, so nothing said so.
+          #
+          # The first two are an APPLY ORDER, not a defect, and reading them in
+          # order gives you the order:
+          #
+          #       cluster-prod  ->  cluster-dev  ->  kb/dev
+          #
+          #   cluster-dev   reads cluster-prod's state for `argocd_role_arn`. §2
+          #                 makes ArgoCD hub-and-spoke — ONE instance, in prod,
+          #                 managing both clusters — so prod holds the role and dev
+          #                 grants it entry. cluster-prod plans cleanly today and
+          #                 has simply never been applied.
+          #
+          #   kb/dev        reads cluster-dev and data-dev. data-dev plans and
+          #                 applies independently; cluster-dev is the one in the
+          #                 chain above. §17 migrates one product at a time, so
+          #                 this is expected, not broken.
+          #
+          #   observability `the Grafana client is required for this resource`. The
+          #                 plan job passes no Grafana url/auth, though
+          #                 GRAFANA_ALERTS_TOKEN exists as an org secret.
+          #
+          #   organization  the plan role lacks `sso:DescribePermissionSet`,
+          #                 `organizations:ListAccounts` and
+          #                 `organizations:DescribePolicy`. Read-only grants, but
+          #                 grants — qnsc-github-infra-plan has to be widened.
+          #
+          # Keeping them here rather than dropping the derivation: `data-dev` and
+          # `data-prod` plan cleanly today and never did before, any NEW stack is
+          # planned by default, and each gap above is now named in code instead of
+          # being absent from a list nobody compared to anything.
+          NOT_PLANNABLE="kb/dev cluster-dev observability organization"
+
+          SKIPPED=""
+          PLANNABLE=""
+          for s in $FOUND; do
+            skip=0
+            for n in $NOT_PLANNABLE; do [ "$s" = "$n" ] && skip=1; done
+            if [ "$skip" = 1 ]; then SKIPPED="$SKIPPED $s"; else PLANNABLE="$PLANNABLE $s"; fi
+          done
+          # An `if`, not `[ -n "$X" ] && echo`: under `set -e` that chain returns 1
+          # when SKIPPED is empty and aborts the step — the detector would fail the
+          # moment the exclusion list became empty, which is the SUCCESS case.
+          if [ -n "$SKIPPED" ]; then
+            echo "::notice::not planned (declared unplannable):$SKIPPED"
+          fi
+
           # A shared/module or workflow change affects every stack.
           if echo "$CHANGED" | grep -qE '^(modules/|\.github/workflows/infra-plan\.yml$)'; then
-            echo "stacks=[$ALL]" >> "$GITHUB_OUTPUT"; exit 0
+            SEL=""
+            for s in $PLANNABLE; do SEL="$SEL\"$s\","; done
+            echo "stacks=[${SEL%,}]" >> "$GITHUB_OUTPUT"; exit 0
           fi
+
           SEL=""
-          for s in bootstrap security-baseline runtime-dev runtime-prod edge storage-dev storage-prod observability; do
+          for s in $PLANNABLE; do
             if echo "$CHANGED" | grep -qE "^live/$s/"; then SEL="$SEL\"$s\","; fi
           done
           echo "stacks=[${SEL%,}]" >> "$GITHUB_OUTPUT"
