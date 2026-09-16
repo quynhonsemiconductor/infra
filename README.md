@@ -14,14 +14,35 @@
 | Shared runtime (`live/runtime-dev`, `live/runtime-prod`) | One VPC + fck-nat egress + security groups per environment, shared by every product. Dev also holds one shared Valkey node. Neither runs an ALB today (`enable_alb = false`) — products ingress via Cloudflare Tunnel sidecars |
 | Edge (`live/edge`) | Cloudflare zone governance for `qnsc.vn`: WAF, rate limiting, Turnstile, plus the wildcard ACM cert other stacks read |
 | Observability (`live/observability`) | Grafana Cloud stack every product pushes telemetry to |
+| EKS clusters (`live/cluster-dev`, `live/cluster-prod`) | Auto Mode clusters, IRSA trust and human access entries. ArgoCD is hub-and-spoke — one instance in prod managing both |
+| Shared data tier (`live/data-dev`, `live/data-prod`) | The shared Postgres, the preview Postgres and the one Valkey per environment (§5d) |
+| Product stacks (`live/<product>-<env>`) | Each product's database, roles, secrets, queues and IRSA roles, via one `product-profile` call. `live/kb-dev` is the first (§17 step 2) |
 | Object storage (`live/storage-dev`, `live/storage-prod`) | Cloudflare R2 buckets (per-product attachments, public assets, KB sources, ceo-suite backups). Provisioned here so the R2 admin token stays in one stack instead of every product's CI. Pins Cloudflare provider v5 |
 
-## What belongs in **product** infra repos
+## What belongs in **product** infra repos — being retired
 
-Product-specific resources (ECS clusters, RDS, ElastiCache, SQS, ECR repos, IAM deploy roles) live in their own repos:
+**This is the state today, not the target.** Each product repository still carries
+`infra/live/{_shared,develop,prod}` and `infra/modules/stack`, holding its ECS
+cluster, RDS, ElastiCache, SQS, ECR repositories and IAM deploy roles:
+
 - `rova` — Rova product
 - `opshub` — OpsHub product (internal IT/HR operations)
 - `qnsc-kb-backend` — knowledge base (FastAPI + Celery)
+
+That is 9,580 lines implementing one pattern three times, and it has drifted —
+`cache.shared` existed in two of the three, so opshub-develop ran an ElastiCache
+node at ~$15/month for services pinned at `min_count = 0`. §17b also records the
+twelve minutes of downtime on 2026-09-14 spent learning what `tofu destroy` does
+to a database when one state owns both the database and the ECS services.
+
+§17 moves each product to `live/<product>-<env>` here, one at a time, through a
+single `product-profile` call. A product's `infra/` is deleted only after its new
+stack has applied and run.
+
+**Read [`docs/repository-boundaries.md`](docs/repository-boundaries.md) before
+adding infrastructure anywhere.** It states the rule for each repository boundary,
+what each one enforces it with, and why `product-service` — the other
+consolidation path — is superseded rather than next.
 
 Shared **internal tooling** that is not a product also lives outside this repo, for the same
 reason: it needs an application deploy pipeline (image, migrations, rollout verification),
