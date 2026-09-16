@@ -44,3 +44,7 @@ Thumbs.db
 .idea/
 .vscode/settings.json
 *.swp
+
+# Python bytecode from running scripts/ locally
+__pycache__/
+*.pyc
