@@ -95,6 +95,32 @@ jobs:
           done
           echo "stacks=[${SEL%,}]" >> "$GITHUB_OUTPUT"
 
+          # ── STACKS THIS PIPELINE DOES NOT APPLY ───────────────────────────
+          # Reported, NOT applied, and the distinction is deliberate.
+          #
+          # The list above is hardcoded, and six stacks on disk were missing from
+          # it — cluster-dev, cluster-prod, data-dev, data-prod, kb/dev and
+          # `organization`, which predates the EKS work entirely. infra-plan.yml
+          # now derives its list from the filesystem so a stack cannot be silently
+          # unplanned. This job does NOT do the same, on purpose: adding a stack
+          # here starts APPLYING it on merge to main, and creating an EKS cluster
+          # is a decision with a bill attached, sequenced by the first-deploy
+          # runbook rather than by a workflow edit.
+          #
+          # So the gap is printed on every run instead of closed quietly. Silence
+          # would let "merged" read as "applied", which for these stacks it is not.
+          UNMANAGED=""
+          for d in $(find live -name '*.tf' -not -path '*/.terraform/*' -exec dirname {} \; \
+                       | sed 's|^live/||' | sort -u); do
+            case " bootstrap security-baseline runtime-dev runtime-prod edge storage-dev storage-prod observability " in
+              *" $d "*) ;;
+              *) UNMANAGED="$UNMANAGED $d" ;;
+            esac
+          done
+          if [ -n "$UNMANAGED" ]; then
+            echo "::warning::on disk but never applied by this pipeline:$UNMANAGED"
+          fi
+
   # ───────────────────────────────────────────────────────────────────────
   # shared tier — bootstrap first (everything reads its remote state).
   # ───────────────────────────────────────────────────────────────────────

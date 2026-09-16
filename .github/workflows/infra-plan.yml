@@ -53,13 +53,62 @@ jobs:
           git fetch --no-tags origin "$BASE_REF"
           CHANGED="$(git diff --name-only "origin/$BASE_REF...HEAD")"
           echo "Changed files:"; echo "$CHANGED"
-          ALL='"bootstrap","security-baseline","runtime-dev","runtime-prod","edge","storage-dev","storage-prod","observability"'
+          # ── THE STACK LIST IS THE DISK, NOT A LITERAL ─────────────────────
+          # It used to be a hardcoded list, written twice (here and in
+          # infra-apply.yml). SIX stacks on disk were absent from it — cluster-dev,
+          # cluster-prod, data-dev, data-prod, kb/dev and `organization`, the last
+          # of which predates the EKS work entirely — so a pull request touching
+          # only those produced `stacks=[]`, the plan job skipped, and `Plan
+          # required` went green with NO PLAN IN IT.
+          #
+          # That is the failure this workflow's own history names: a required gate
+          # that passes by not running is worse than one that fails. Nothing warned,
+          # because a list is only wrong relative to a fact nobody compared it to.
+          #
+          # `-name '*.tf'` is the definition of a stack, so `live/kb/` — a parent
+          # holding only subdirectories — is correctly not one, and a nested stack
+          # at any depth IS.
+          # Portable on purpose — no `-printf` (GNU-only) and no `mapfile` (bash 4+,
+          # so absent on a macOS laptop). Someone working out why a stack did not
+          # plan should be able to run these three lines by hand, and a debugging
+          # aid that only works on the runner is not one.
+          FOUND=$(find live -name '*.tf' -not -path '*/.terraform/*' -exec dirname {} \; \
+                    | sed 's|^live/||' | sort -u)
+
+          # Stacks that CANNOT plan yet, each with the reason. A stack is excluded
+          # here or it is planned — there is no third state, and the check below
+          # makes sure of it.
+          #
+          #   kb/dev  reads terraform_remote_state for cluster-dev and data-dev.
+          #           Neither has been applied, so `tofu plan` cannot resolve them
+          #           and would fail for a reason that is not about the diff. Remove
+          #           this line the moment those two stacks exist (§17 migrates one
+          #           product at a time, so this is expected, not broken).
+          NOT_PLANNABLE="kb/dev"
+
+          SKIPPED=""
+          PLANNABLE=""
+          for s in $FOUND; do
+            skip=0
+            for n in $NOT_PLANNABLE; do [ "$s" = "$n" ] && skip=1; done
+            if [ "$skip" = 1 ]; then SKIPPED="$SKIPPED $s"; else PLANNABLE="$PLANNABLE $s"; fi
+          done
+          # An `if`, not `[ -n "$X" ] && echo`: under `set -e` that chain returns 1
+          # when SKIPPED is empty and aborts the step — the detector would fail the
+          # moment the exclusion list became empty, which is the SUCCESS case.
+          if [ -n "$SKIPPED" ]; then
+            echo "::notice::not planned (declared unplannable):$SKIPPED"
+          fi
+
           # A shared/module or workflow change affects every stack.
           if echo "$CHANGED" | grep -qE '^(modules/|\.github/workflows/infra-plan\.yml$)'; then
-            echo "stacks=[$ALL]" >> "$GITHUB_OUTPUT"; exit 0
+            SEL=""
+            for s in $PLANNABLE; do SEL="$SEL\"$s\","; done
+            echo "stacks=[${SEL%,}]" >> "$GITHUB_OUTPUT"; exit 0
           fi
+
           SEL=""
-          for s in bootstrap security-baseline runtime-dev runtime-prod edge storage-dev storage-prod observability; do
+          for s in $PLANNABLE; do
             if echo "$CHANGED" | grep -qE "^live/$s/"; then SEL="$SEL\"$s\","; fi
           done
           echo "stacks=[${SEL%,}]" >> "$GITHUB_OUTPUT"
