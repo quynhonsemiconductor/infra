@@ -88,6 +88,12 @@ data "terraform_remote_state" "data" {
 # A pinned ref is also what makes a module upgrade a reviewable diff (§11), the
 # same argument as the image tag.
 module "product" {
+  # checkov:skip=CKV_TF_1: a version TAG, not a commit hash, and that is the
+  #   estate's convention — every other stack pins the same way
+  #   (network-v1.3.1, cf-r2-v1.1.0, alb-logs-v1.0.1). release-please cuts these
+  #   tags, so the ref is as immutable as a SHA in practice and a module upgrade
+  #   stays a diff someone can read. `?ref=<40 hex chars>` would make the one
+  #   line that says WHICH VERSION unreadable, in the change reviewers look at.
   source = "git::https://github.com/quynhonsemiconductor/tf-modules.git//modules/product-profile?ref=product-profile-v1.0.0"
 
   # ── The three identity values ──────────────────────────────────────────────
