@@ -76,8 +76,19 @@ data "terraform_remote_state" "data" {
   config  = { bucket = "qnsc-tofu-state", key = "platform/data-dev/terraform.tfstate", region = "ap-southeast-1" }
 }
 
+# MODULE SOURCES ARE PINNED GIT REFS, never a relative path out of this repo.
+#
+# The first version of this stack used `../../../tf-modules/modules/rds`, which
+# resolves on a laptop that happens to have the repositories side by side and
+# NOWHERE ELSE. CI checks out one repository, so tflint reported "the module
+# directory does not exist or cannot be read" for every module here — and the
+# local `tofu validate` that was supposed to catch it passed, because the sibling
+# directory was there.
+#
+# A pinned ref is also what makes a module upgrade a reviewable diff (§11), the
+# same argument as the image tag.
 module "product" {
-  source = "../../../../tf-modules/modules/product-profile"
+  source = "git::https://github.com/quynhonsemiconductor/tf-modules.git//modules/product-profile?ref=product-profile-v1.0.0"
 
   # ── The three identity values ──────────────────────────────────────────────
   # These derive EVERY name this stack creates, and the Helm chart derives the

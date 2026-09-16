@@ -76,8 +76,19 @@ locals {
 # The shared Postgres instance
 # ─────────────────────────────────────────────────────────────────────────────
 
+# MODULE SOURCES ARE PINNED GIT REFS, never a relative path out of this repo.
+#
+# The first version of this stack used `../../../tf-modules/modules/rds`, which
+# resolves on a laptop that happens to have the repositories side by side and
+# NOWHERE ELSE. CI checks out one repository, so tflint reported "the module
+# directory does not exist or cannot be read" for every module here — and the
+# local `tofu validate` that was supposed to catch it passed, because the sibling
+# directory was there.
+#
+# A pinned ref is also what makes a module upgrade a reviewable diff (§11), the
+# same argument as the image tag.
 module "postgres" {
-  source = "../../../tf-modules/modules/rds"
+  source = "git::https://github.com/quynhonsemiconductor/tf-modules.git//modules/rds?ref=rds-v2.2.0"
 
   identifier        = "qnsc-shared-dev"
   subnet_ids        = data.terraform_remote_state.network.outputs.data_subnet_ids
@@ -119,7 +130,7 @@ module "postgres" {
 # ─────────────────────────────────────────────────────────────────────────────
 
 module "postgres_preview" {
-  source = "../../../tf-modules/modules/rds"
+  source = "git::https://github.com/quynhonsemiconductor/tf-modules.git//modules/rds?ref=rds-v2.2.0"
 
   identifier        = "qnsc-preview"
   subnet_ids        = data.terraform_remote_state.network.outputs.data_subnet_ids
@@ -158,7 +169,7 @@ module "postgres_preview" {
 # ─────────────────────────────────────────────────────────────────────────────
 
 module "cache" {
-  source = "../../../tf-modules/modules/cache"
+  source = "git::https://github.com/quynhonsemiconductor/tf-modules.git//modules/cache?ref=cache-v1.1.0"
 
   name              = "qnsc-shared-dev"
   mode              = "node"
