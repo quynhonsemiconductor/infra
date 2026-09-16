@@ -113,10 +113,26 @@ jobs:
           #                 alongside; the fix is to split the stack or apply in
           #                 two phases, not to add a credential.
           #
-          #   organization  the plan role lacks `sso:DescribePermissionSet`,
-          #                 `organizations:ListAccounts` and
-          #                 `organizations:DescribePolicy`. Read-only grants, but
-          #                 grants — qnsc-github-infra-plan has to be widened.
+          #   organization  AccessDenied on sso:DescribePermissionSet,
+          #                 organizations:ListAccounts and
+          #                 organizations:DescribePolicy, as qnsc-github-infra-plan.
+          #
+          #                 CAUSE NOT ESTABLISHED, and stated that way on purpose:
+          #                 that role carries AWS-managed ReadOnlyAccess, which
+          #                 already allows organizations:List*/Describe* and
+          #                 sso:Describe*, so "the role is missing the action" does
+          #                 not survive a look at the policy. The SSO message says
+          #                 "the resource does not exist in this Region", and both
+          #                 Organizations and Identity Center are scoped in ways a
+          #                 region-pinned provider can miss — the stack pins
+          #                 ap-southeast-1 while an Identity Center instance lives
+          #                 in one home region, and some Organizations calls answer
+          #                 only in the management account.
+          #
+          #                 Verifying needs credentials this checkout does not
+          #                 have. Naming a cause that turns out to be wrong costs
+          #                 the next person an afternoon — see observability above,
+          #                 where exactly that happened.
           #
           # Keeping them here rather than dropping the derivation: `data-dev` and
           # `data-prod` plan cleanly today and never did before, any NEW stack is
