@@ -259,11 +259,11 @@ estimates. It is also the only way to find what is not in git.
 ## 4.1 Apply the product stack
 
 ```
-DO       cd infra/live/kb/dev && tofu apply
+DO       cd infra/live/kb-dev && tofu apply
          THEN: tofu output -raw role_settings_sql | psql "$ADMIN_URL"
 HAPPENS  a database, two roles, four secret containers, three IRSA roles, an
          SQS queue and its DLQ.
-KNOW IT  ci/scripts/platform_conformance.py --root . passes with kb/dev PAIRED
+KNOW IT  ci/scripts/platform_conformance.py --root . passes with kb-dev PAIRED
 DO NOT   skip the SQL. Until it runs, nothing bounds a noisy neighbour and the
          migrator carries the 30s application timeout rather than 600s.
 ```
