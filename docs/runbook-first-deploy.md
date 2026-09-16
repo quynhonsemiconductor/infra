@@ -206,23 +206,44 @@ IF NOT   a chart install fails with a confusing error, or you install a version
          from memory and releases move.
 ```
 
-## 3.3 Wire the SSO role ARNs
+## 3.3 Confirm security-baseline exports the human roles
+
+**Nothing to wire — this step is a check.** `sso_roles` was a variable and is not
+any more; cluster-{dev,prod} read the ARNs from `security-baseline`'s state.
 
 ```
-DO       find the PROVISIONED Identity Center role ARNs —
-           aws iam list-roles | grep AWSReservedSSO
-         and pass the four into cluster-{dev,prod} as `sso_roles`
-HAPPENS  nothing yet.
-KNOW IT  `tofu plan` on cluster-prod resolves without an unknown variable
-WHY      permission set ARNs are NOT the role ARNs an access entry needs. This is
-         the one thing §7c cannot derive, because Identity Center mangles the
-         name with a random suffix.
+DO       cd infra/live/security-baseline && tofu output | grep role_arn
+KNOW IT  three outputs exist —
+           human_admin_role_arn       -> platform_admin  (cluster-admin)
+           human_developer_role_arn   -> developer       (edit on dev, VIEW on prod)
+           prod_breakglass_role_arn   -> break_glass     (prod only)
+HAPPENS  nothing.
+WHY      THREE, not four. An earlier version of this runbook said to find four
+         Identity Center role ARNs and pass them in, and named `organization` as
+         their source. Both were wrong: `organization` exports PERMISSION SET
+         arns, which are a different object from the `AWSReservedSSO_*` roles an
+         access entry takes, and the estate has no `read_only` role — qnsc-developer
+         carries ReadOnlyAccess, which is why its entry is VIEW on production.
+         A fourth field pointing at the same ARN is not harmless either:
+         `aws_eks_access_entry` is keyed on principal_arn, so it is a duplicate
+         resource error.
+
+         `alert_topic_arn` came from the same place and went the same way —
+         cluster-prod reads security-baseline's `security_alerts_topic_arn`.
 ```
+
+**If those outputs are missing, security-baseline has not been applied.** Apply it
+before cluster-prod, which reads its state for both the roles and the alert topic.
 
 ## 3.4 Apply the stacks, in this order
 
 ```
-1  organization      the permission sets 3.3 reads
+1  security-baseline the three human role ARNs and the alert topic 3.3 checks.
+                     NOT `organization` — an earlier version of this list said
+                     that, and it exports permission sets, not role ARNs.
+                     (`organization` cannot plan today anyway: AccessDenied on
+                     sso:DescribePermissionSet and organizations:ListAccounts.
+                     It is in NOT_PLANNABLE with the diagnosis.)
 2  runtime-prod      already applied; confirm the /20 from 2.4
 3  data-prod         qnsc-shared-prod, the cache
 4  cluster-prod      FIRST of the two — it outputs argocd_role_arn

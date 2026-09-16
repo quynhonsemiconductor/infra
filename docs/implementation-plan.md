@@ -359,8 +359,9 @@ DONE   the chart publishes to ECR as an OCI artefact on tag; the chart repositor
 ### ✅ 1.9 Naming convention and the size check
 
 > **DONE** — the convention is implemented in the chart's `_helpers.tpl` and in
-> `product-profile`'s `locals`; `gitops/scripts/check-size-agreement.py` compares
-> the two declarations and CI runs it.
+> `product-profile`'s `locals`; `ci/scripts/platform_conformance.py`'s `size`
+> contract compares the two declarations and CI runs it. (It replaced
+> `gitops/scripts/check-size-agreement.py`, which this line used to name.)
 
 ```text
 OWNER  AGENT
@@ -619,11 +620,28 @@ optional and the order is the whole of it.
      DO NOT run tofu destroy — one state owns the database and the ECS services
 5.3  delete the ECR repositories of retired products — retention expires by age,
      never by abandonment
-5.4  delete tf-modules: ecs-cluster · ecs-service · product-service · firelens-agent
+5.4  delete tf-modules: ecs-cluster · ecs-service · firelens-agent
      observability-agent · tunnel-agent · oneshot-task · alb · alb-logs
-5.5  delete per-product infra/ directories, infra-template, stack_conformance.py,
-     and the ECS deploy workflows
+     (product-service is ALREADY GONE — it was dead independently of ECS, since
+     no ECS stack referenced it either)
+5.5  delete per-product infra/ directories, infra-template, stack_conformance.py
+     + stack-conformance.yml, and the ECS delivery path in `ci`:
+       backend-deploy.yml · run-db-migration · ecs-run-task
+     (verify-ecs-deploy is ALREADY GONE — superseded by an inline step)
+     ecs-run-task is LOAD-BEARING until then: run-db-migration uses it and
+     backend-deploy uses run-db-migration, so it runs every product's database
+     migrations. It goes with them, not before.
 ```
+
+**Expect checkov to get louder at 5.4, and do not read that as a regression.**
+Deleting `product-service` did exactly this: six suppressions in
+`modules/.checkov.baseline` were keyed on addresses that existed only because that
+module wrapped them (`module.service.aws_lb_target_group.this`,
+`module.firelens_agent.module.config_bucket.…`). Remove a wrapper and the
+suppressions stop matching, so findings that were always there surface at the real
+address. They were re-recorded at the resources themselves, where no future
+wrapper can move them — do the same for whatever 5.4 unmasks, rather than
+regenerating the baseline, which drops entries as well as adding them.
 
 ```text
 DONE  no ECS service exists in either account; no module in 5.4 has a caller;
