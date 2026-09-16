@@ -113,8 +113,9 @@ running it means migrating three products onto a module that §17 then deletes w
 the ECS estate.
 
 `product-profile` (`tf-modules`, v0.1.0) is the same consolidation for EKS, and it
-is the one being adopted. `product-service` stays at 0.x, unconsumed, and is
-deleted with ECS.
+is the one being adopted. **`product-service` has been deleted** — nothing called
+it and nothing was going to, and no ECS stack referenced it either, so it was not
+tied to ECS retirement at all. It was simply dead.
 
 ## Target state
 

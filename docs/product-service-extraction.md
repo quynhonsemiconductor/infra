@@ -16,8 +16,10 @@ Status: **SUPERSEDED — do not execute** · Owner: Platform · Superseded 2026-
 > time. A product's `infra/` is deleted when its new stack has applied and run —
 > not before.
 >
-> `product-service` stays in `tf-modules` at 0.x, unconsumed, and is deleted with
-> the ECS estate. It is NOT the next step, and this file said it was.
+> `product-service` has been DELETED from `tf-modules`. Nothing called it and
+> nothing was going to; no ECS stack referenced it either, so it was never tied to
+> ECS retirement — it was simply dead. It is NOT the next step, and this file said
+> it was.
 >
 > Keep reading for the measurements, which are the reason `product-profile` has
 > the interface it does. See `docs/repository-boundaries.md` for where a product's
