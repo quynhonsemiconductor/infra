@@ -79,12 +79,40 @@ jobs:
           # here or it is planned — there is no third state, and the check below
           # makes sure of it.
           #
-          #   kb/dev  reads terraform_remote_state for cluster-dev and data-dev.
-          #           Neither has been applied, so `tofu plan` cannot resolve them
-          #           and would fail for a reason that is not about the diff. Remove
-          #           this line the moment those two stacks exist (§17 migrates one
-          #           product at a time, so this is expected, not broken).
-          NOT_PLANNABLE="kb/dev"
+          # Each entry names what must change to remove it. Every one of these was
+          # ALREADY broken — they were simply never planned, so nothing said so.
+          #
+          #   kb/dev        reads terraform_remote_state for cluster-dev and
+          #                 data-dev. Neither is applied, so the plan fails for a
+          #                 reason that is not about the diff. §17 migrates one
+          #                 product at a time; this is expected, not broken.
+          #
+          #   cluster-dev   `No value for required variable`. Both declare
+          #   cluster-prod  `sso_roles` (four IAM Identity Center role ARNs) and
+          #                 cluster-prod also declares `alert_topic_arn`; nothing
+          #                 passes either — there is no tfvars file and CI sets no
+          #                 TF_VAR. cluster-dev's `argocd_role_arn` is available
+          #                 from cluster-prod's outputs, but the other two are not
+          #                 derivable: `organization` exports PERMISSION SET arns,
+          #                 which are not the `AWSReservedSSO_*` role arns these
+          #                 need, and it defines qnsc-{admin,power,readonly,billing}
+          #                 — no break-glass set exists for the design's fourth
+          #                 role. Needs a decision, not a lookup.
+          #
+          #   observability `the Grafana client is required for this resource`. The
+          #                 plan job passes no Grafana url/auth, though
+          #                 GRAFANA_ALERTS_TOKEN exists as an org secret.
+          #
+          #   organization  the plan role lacks `sso:DescribePermissionSet`,
+          #                 `organizations:ListAccounts` and
+          #                 `organizations:DescribePolicy`. Read-only grants, but
+          #                 grants — qnsc-github-infra-plan has to be widened.
+          #
+          # Keeping them here rather than dropping the derivation: `data-dev` and
+          # `data-prod` plan cleanly today and never did before, any NEW stack is
+          # planned by default, and each gap above is now named in code instead of
+          # being absent from a list nobody compared to anything.
+          NOT_PLANNABLE="kb/dev cluster-dev cluster-prod observability organization"
 
           SKIPPED=""
           PLANNABLE=""
