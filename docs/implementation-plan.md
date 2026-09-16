@@ -65,6 +65,8 @@ infra/live/data-{dev,prod}       the shared Postgres, preview Postgres and cache
 infra/live/kb-dev                the first product-profile call — §17 step 2
 infra/scripts/measure_ecs_usage.py
 infra/docs/{kubernetes-platform-design,implementation-plan,data-residency-question}.md
+infra/docs/repository-boundaries.md   which repository owns what, and why
+infra/live/README.md                 the stack-naming rule
 ```
 
 ---

@@ -1,6 +1,30 @@
 # Plan: Extract the per-service composition bundle (`product-service`)
 
-Status: **Proposed** · Owner: Platform · Last updated: 2026-09-12
+Status: **SUPERSEDED — do not execute** · Owner: Platform · Superseded 2026-09-16
+
+> ## Why this plan is not being run
+>
+> It would consolidate the ECS composition layer, and §17 of the Kubernetes
+> platform design **retires the ECS estate**. Executing both means migrating three
+> products onto `product-service` — renaming resources in state, writing `moved{}`
+> blocks and proving a zero-diff plan, three times — and then deleting the module
+> when EKS lands.
+>
+> The duplication this plan measured is real and its analysis still holds. It is
+> being solved by the other path: `product-profile` (`tf-modules`, v0.1.0) is the
+> same consolidation for the EKS runtime, and §17 moves products onto it one at a
+> time. A product's `infra/` is deleted when its new stack has applied and run —
+> not before.
+>
+> `product-service` has been DELETED from `tf-modules`. Nothing called it and
+> nothing was going to; no ECS stack referenced it either, so it was never tied to
+> ECS retirement — it was simply dead. It is NOT the next step, and this file said
+> it was.
+>
+> Keep reading for the measurements, which are the reason `product-profile` has
+> the interface it does. See `docs/repository-boundaries.md` for where a product's
+> infrastructure lives now.
+
 
 Sequel to [`shared-modules-migration.md`](./shared-modules-migration.md). That plan moved
 the *leaf* modules into `qnsc-tf-modules` and succeeded — all 25 module directories are now
