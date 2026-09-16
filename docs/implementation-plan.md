@@ -62,7 +62,7 @@ tf-modules/modules/product-profile
 ci/actions/bump-gitops-tag · ci/.github/workflows/k8s-{deploy,promote}.yml
 infra/live/cluster-{dev,prod}    the two EKS clusters
 infra/live/data-{dev,prod}       the shared Postgres, preview Postgres and cache
-infra/live/kb/dev                the first product-profile call — §17 step 2
+infra/live/kb-dev                the first product-profile call — §17 step 2
 infra/scripts/measure_ecs_usage.py
 infra/docs/{kubernetes-platform-design,implementation-plan,data-residency-question}.md
 ```
@@ -464,7 +464,7 @@ same collector, and a DaemonSet cannot offer that.
 
 > **DONE** — `tf-modules/modules/product-profile` (the module),
 > `infra/live/data-{dev,prod}` (the shared instances, which did not exist —
-> each product's own infra owned its database), and `infra/live/kb/dev` (the
+> each product's own infra owned its database), and `infra/live/kb-dev` (the
 > first call). `role_settings_sql` is an OUTPUT applied by hand, see below.
 
 

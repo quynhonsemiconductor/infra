@@ -56,7 +56,7 @@ jobs:
           # ── THE STACK LIST IS THE DISK, NOT A LITERAL ─────────────────────
           # It used to be a hardcoded list, written twice (here and in
           # infra-apply.yml). SIX stacks on disk were absent from it — cluster-dev,
-          # cluster-prod, data-dev, data-prod, kb/dev and `organization`, the last
+          # cluster-prod, data-dev, data-prod, kb-dev and `organization`, the last
           # of which predates the EKS work entirely — so a pull request touching
           # only those produced `stacks=[]`, the plan job skipped, and `Plan
           # required` went green with NO PLAN IN IT.
@@ -65,9 +65,13 @@ jobs:
           # that passes by not running is worse than one that fails. Nothing warned,
           # because a list is only wrong relative to a fact nobody compared it to.
           #
-          # `-name '*.tf'` is the definition of a stack, so `live/kb/` — a parent
-          # holding only subdirectories — is correctly not one, and a nested stack
-          # at any depth IS.
+          # THE RULE: one directory per stack, directly under live/, named
+          # `<name>-<env>`. Never nested. Every tool that enumerates stacks globs a
+          # fixed depth — iac-lint's `dirs`, this find, and platform_conformance's
+          # path join — so a second depth means all three must agree forever. On
+          # 2026-09-16 they did not, and two bugs reached main through the one
+          # nested stack. Platform versus product is carried by the STATE KEY
+          # (platform/… vs products/…), which is where tofu can actually read it.
           # Portable on purpose — no `-printf` (GNU-only) and no `mapfile` (bash 4+,
           # so absent on a macOS laptop). Someone working out why a stack did not
           # plan should be able to run these three lines by hand, and a debugging
@@ -85,7 +89,7 @@ jobs:
           # The first two are an APPLY ORDER, not a defect, and reading them in
           # order gives you the order:
           #
-          #       cluster-prod  ->  cluster-dev  ->  kb/dev
+          #       cluster-prod  ->  cluster-dev  ->  kb-dev
           #
           #   cluster-dev   reads cluster-prod's state for `argocd_role_arn`. §2
           #                 makes ArgoCD hub-and-spoke — ONE instance, in prod,
@@ -93,7 +97,7 @@ jobs:
           #                 grants it entry. cluster-prod plans cleanly today and
           #                 has simply never been applied.
           #
-          #   kb/dev        reads cluster-dev and data-dev. data-dev plans and
+          #   kb-dev        reads cluster-dev and data-dev. data-dev plans and
           #                 applies independently; cluster-dev is the one in the
           #                 chain above. §17 migrates one product at a time, so
           #                 this is expected, not broken.
@@ -138,7 +142,7 @@ jobs:
           # `data-prod` plan cleanly today and never did before, any NEW stack is
           # planned by default, and each gap above is now named in code instead of
           # being absent from a list nobody compared to anything.
-          NOT_PLANNABLE="kb/dev cluster-dev observability organization"
+          NOT_PLANNABLE="kb-dev cluster-dev observability organization"
 
           SKIPPED=""
           PLANNABLE=""
@@ -221,12 +225,16 @@ jobs:
           tofu-version: ${{ env.TOFU_VERSION }}
           fmt: 'false'
           tflint: 'true'
-          # `live/*/ live/*/*/` reaches a NESTED stack — live/kb/dev, which no CI
-          # job had ever seen. The second pattern necessarily also matches
-          # live/kb/, a parent holding only subdirectories; iac-lint skips a
-          # directory with no *.tf as of ci 1.19.0, which is what makes this
-          # expressible at all.
-          dirs: 'live/*/ live/*/*/'
+          # ONE LEVEL, and it stays that way. Every stack sits directly under
+          # live/ as `<name>-<env>`, so this glob finds all of them.
+          #
+          # It briefly read `live/*/ live/*/*/`, to reach `live/kb/dev` — the one
+          # nested stack in the estate. That nesting is what `live/*/` could not
+          # see, and what let a module path pointing OUT of the repository, and
+          # then a ref to a tag that did not exist, both reach main through that
+          # stack unreviewed. kb is `live/kb-dev` now and the second pattern is
+          # unnecessary.
+          dirs: 'live/*/'
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
   plan:

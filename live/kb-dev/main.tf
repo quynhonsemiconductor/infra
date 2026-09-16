@@ -24,7 +24,7 @@ terraform {
 
   backend "s3" {
     bucket         = "qnsc-tofu-state"
-    key            = "products/kb/dev/terraform.tfstate"
+    key            = "products/kb-dev/terraform.tfstate"
     region         = "ap-southeast-1"
     encrypt        = true
     dynamodb_table = "qnsc-tofu-locks"

@@ -1,11 +1,14 @@
-# `infra/live/<product>/<env>`
+# `infra/live/<product>-<env>`
 
-One stack per product per environment. Each calls `product-profile` once.
+One stack per product per environment, flat under `live/` like every other stack
+— see `live/README.md` for why the depth is fixed. Each calls `product-profile`
+once.
 
-`dev/` is written; **the other five are written when their step in §17 arrives.**
+`kb-dev` is written; **the other five are written when their step in §17 arrives.**
 Writing all six now would contradict the ordering the migration depends on — and
-`gitops/scripts/check-size-agreement.py` reports the absent ones as *unpaired*
-rather than failing, for exactly that reason.
+`ci/scripts/platform_conformance.py` reports the absent ones as *unpaired* rather
+than failing, for exactly that reason. (It replaced
+`gitops/scripts/check-size-agreement.py`, which this file used to name.)
 
 ## Copying this for the next product
 
@@ -33,7 +36,7 @@ bounds a noisy neighbour on the shared instance**, and the migrator carries the
 
 It is idempotent, so running it again costs nothing.
 
-## Why `kb/dev` is first
+## Why `kb-dev` is first
 
 §17 step 2. The largest product in the estate, and the lowest-risk migration in
 it — **qnsc-kb production has no state file**, so only dev moves here.

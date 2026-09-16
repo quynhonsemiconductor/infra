@@ -99,7 +99,7 @@ jobs:
           # Reported, NOT applied, and the distinction is deliberate.
           #
           # The list above is hardcoded, and six stacks on disk were missing from
-          # it — cluster-dev, cluster-prod, data-dev, data-prod, kb/dev and
+          # it — cluster-dev, cluster-prod, data-dev, data-prod, kb-dev and
           # `organization`, which predates the EKS work entirely. infra-plan.yml
           # now derives its list from the filesystem so a stack cannot be silently
           # unplanned. This job does NOT do the same, on purpose: adding a stack
