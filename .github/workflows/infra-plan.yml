@@ -98,9 +98,20 @@ jobs:
           #                 chain above. §17 migrates one product at a time, so
           #                 this is expected, not broken.
           #
-          #   observability `the Grafana client is required for this resource`. The
-          #                 plan job passes no Grafana url/auth, though
-          #                 GRAFANA_ALERTS_TOKEN exists as an org secret.
+          #   observability `the Grafana client is required for this resource`, on
+          #                 grafana_folder.company and data.grafana_data_source
+          #                 .prometheus. NOT a missing secret — the plan job has
+          #                 passed TF_VAR_grafana_cloud_api_key since before this
+          #                 list existed. Those resources use the `grafana.stack`
+          #                 provider ALIAS, whose url and auth are
+          #                 `grafana_cloud_stack.qnsc.url` and
+          #                 `grafana_cloud_stack_service_account_token.alerting.key`
+          #                 — attributes of resources in the same stack. Until
+          #                 those exist they are unknown, so the aliased provider
+          #                 cannot be configured and every resource under it fails.
+          #                 A provider configured from a resource it plans
+          #                 alongside; the fix is to split the stack or apply in
+          #                 two phases, not to add a credential.
           #
           #   organization  the plan role lacks `sso:DescribePermissionSet`,
           #                 `organizations:ListAccounts` and
@@ -194,7 +205,12 @@ jobs:
           tofu-version: ${{ env.TOFU_VERSION }}
           fmt: 'false'
           tflint: 'true'
-          dirs: 'live/*/'
+          # `live/*/ live/*/*/` reaches a NESTED stack — live/kb/dev, which no CI
+          # job had ever seen. The second pattern necessarily also matches
+          # live/kb/, a parent holding only subdirectories; iac-lint skips a
+          # directory with no *.tf as of ci 1.19.0, which is what makes this
+          # expressible at all.
+          dirs: 'live/*/ live/*/*/'
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
   plan:
