@@ -62,15 +62,31 @@ ALLOWLIST: dict[str, str] = {
 }
 
 
+class ScanFailed(Exception):
+    """A service could not be enumerated, as distinct from being enumerated and found clean.
+
+    This exists because the two used to be indistinguishable and the consequence was a FALSE
+    GREEN. `aws()` returned None on failure, every scanner turned that into an empty list,
+    and main() printed "clean" for each one and exited 0. Measured 2026-09-14 with a bogus
+    profile: the script reported "No unmanaged resources. Everything cost-bearing is in
+    OpenTofu" having read nothing at all.
+
+    A scheduled run whose role had expired would therefore report the account clean, every
+    day, indefinitely — the exact failure this scanner was written to prevent, reproduced
+    inside the scanner. An unreadable service must be louder than an empty one, not quieter.
+    """
+
+
 def aws(*args: str) -> object:
     """Run an AWS CLI command and parse its JSON. The CLI is preinstalled on GitHub
     runners, so this script needs no pip install — the same dependency-free choice
-    scripts/pin_drift.py makes."""
+    scripts/pin_drift.py makes.
+
+    Raises ScanFailed rather than returning None; see that class for why."""
     cmd = ["aws", *args, "--region", REGION, "--output", "json"]
     result = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if result.returncode != 0:
-        print(f"::warning::`{' '.join(cmd)}` failed: {result.stderr.strip()[:300]}")
-        return None
+        raise ScanFailed(f"`{' '.join(cmd[:3])}…` failed: {result.stderr.strip()[:200]}")
     return json.loads(result.stdout or "null")
 
 
@@ -231,8 +247,16 @@ def main() -> int:
     ]
     total = 0
 
+    unreadable: list[tuple[str, str]] = []
+
     for label, scanner in SCANNERS:
-        findings = scanner()
+        try:
+            findings = scanner()
+        except ScanFailed as why:
+            # NOT counted as clean. See ScanFailed for the false green this prevents.
+            unreadable.append((label, str(why)))
+            lines.append(f"- **{label}** — COULD NOT SCAN: {why}")
+            continue
         if not findings:
             lines.append(f"- **{label}** — clean")
             continue
@@ -272,8 +296,18 @@ def main() -> int:
         with open(summary_path, "a", encoding="utf-8") as handle:
             handle.write(report + "\n")
 
+    if unreadable:
+        lines.append("")
+        lines.append(
+            f"**{len(unreadable)} service(s) could not be scanned.** That is not a clean "
+            "result and is deliberately failed: a scan that did not run cannot vouch for "
+            "the account. Usually an expired or missing role."
+        )
+
     # Non-zero so a scheduled run turns red and GitHub notifies. See the module docstring.
-    return 1 if total else 0
+    # Unreadable services fail too — reporting clean on data never read is the one outcome
+    # worse than reporting a finding.
+    return 1 if (total or unreadable) else 0
 
 
 if __name__ == "__main__":
