@@ -64,19 +64,36 @@ resource "aws_iam_role_policy_attachment" "node" {
 # `security-baseline` enforces for the root account, extended to everyone else.
 # ─────────────────────────────────────────────────────────────────────────────
 
-variable "sso_roles" {
-  type = object({
-    platform_admin = string
-    developer      = string
-    read_only      = string
-    break_glass    = string
-  })
-  description = <<-EOT
-    IAM Identity Center permission-set role ARNs. These are created by the
-    `organization` stack; naming them here rather than deriving them is deliberate
-    — Identity Center mangles role names with a random suffix, so this is one of
-    the few things §7c cannot compute.
-  EOT
+# §10b — the human roles. DERIVED from `security-baseline`, not passed.
+#
+# This used to be `variable "sso_roles"`, whose comment said the ARNs "are created
+# by the `organization` stack". They are not: `organization` exports PERMISSION SET
+# arns, which are a different object from the `AWSReservedSSO_*` IAM roles an EKS
+# access entry needs. The three that exist are `security-baseline`'s, and reading
+# them from its state means nothing is typed twice (§7c).
+#
+# Nothing passed the variable either — no tfvars, no TF_VAR — so this stack could
+# not plan at all. It was never planned, so nothing said so.
+data "terraform_remote_state" "security_baseline" {
+  backend = "s3"
+  config = {
+    bucket = "qnsc-tofu-state"
+    key    = "platform/security-baseline/terraform.tfstate"
+    region = "ap-southeast-1"
+  }
+}
+
+locals {
+  # THREE roles, not four. The design named a `read_only` tier; the estate has no
+  # such role, and qnsc-developer already carries ReadOnlyAccess — which is why
+  # the developer entry below is VIEW on production and EDIT on dev. A fourth
+  # field pointing at the same ARN would be a duplicate access entry, since
+  # `aws_eks_access_entry` is keyed on principal_arn.
+  sso_roles = {
+    platform_admin = data.terraform_remote_state.security_baseline.outputs.human_admin_role_arn
+    developer      = data.terraform_remote_state.security_baseline.outputs.human_developer_role_arn
+    break_glass    = data.terraform_remote_state.security_baseline.outputs.prod_breakglass_role_arn
+  }
 }
 
 # NOBODY HAS STANDING ADMIN ON PRODUCTION. On dev, platform-admin is standing —
@@ -84,13 +101,13 @@ variable "sso_roles" {
 # is a Tuesday. Prod's entry is break-glass only; see cluster-prod.
 resource "aws_eks_access_entry" "platform_admin" {
   cluster_name  = aws_eks_cluster.this.name
-  principal_arn = var.sso_roles.platform_admin
+  principal_arn = local.sso_roles.platform_admin
   type          = "STANDARD"
 }
 
 resource "aws_eks_access_policy_association" "platform_admin" {
   cluster_name  = aws_eks_cluster.this.name
-  principal_arn = var.sso_roles.platform_admin
+  principal_arn = local.sso_roles.platform_admin
   policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
   access_scope { type = "cluster" }
 }
@@ -105,27 +122,14 @@ resource "aws_eks_access_policy_association" "platform_admin" {
 # appears in git."
 resource "aws_eks_access_entry" "developer" {
   cluster_name  = aws_eks_cluster.this.name
-  principal_arn = var.sso_roles.developer
+  principal_arn = local.sso_roles.developer
   type          = "STANDARD"
 }
 
 resource "aws_eks_access_policy_association" "developer" {
   cluster_name  = aws_eks_cluster.this.name
-  principal_arn = var.sso_roles.developer
+  principal_arn = local.sso_roles.developer
   policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSEditPolicy"
-  access_scope { type = "cluster" }
-}
-
-resource "aws_eks_access_entry" "read_only" {
-  cluster_name  = aws_eks_cluster.this.name
-  principal_arn = var.sso_roles.read_only
-  type          = "STANDARD"
-}
-
-resource "aws_eks_access_policy_association" "read_only" {
-  cluster_name  = aws_eks_cluster.this.name
-  principal_arn = var.sso_roles.read_only
-  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy"
   access_scope { type = "cluster" }
 }
 
@@ -141,20 +145,32 @@ resource "aws_eks_access_policy_association" "read_only" {
 # thing to review carefully (§2, §10b).
 # ─────────────────────────────────────────────────────────────────────────────
 
-variable "argocd_role_arn" {
-  type        = string
-  description = "The IRSA role ArgoCD assumes in the prod cluster. Output by cluster-prod."
+# §2 — ArgoCD is hub-and-spoke: ONE instance, in prod, managing both clusters. So
+# the role is created there and this stack grants it entry, which makes cluster-prod
+# a dependency of cluster-dev rather than the other way round. There is no cycle:
+# cluster-prod reads runtime-prod and bootstrap only.
+data "terraform_remote_state" "cluster_prod" {
+  backend = "s3"
+  config = {
+    bucket = "qnsc-tofu-state"
+    key    = "platform/cluster-prod/terraform.tfstate"
+    region = "ap-southeast-1"
+  }
+}
+
+locals {
+  argocd_role_arn = data.terraform_remote_state.cluster_prod.outputs.argocd_role_arn
 }
 
 resource "aws_eks_access_entry" "argocd" {
   cluster_name  = aws_eks_cluster.this.name
-  principal_arn = var.argocd_role_arn
+  principal_arn = local.argocd_role_arn
   type          = "STANDARD"
 }
 
 resource "aws_eks_access_policy_association" "argocd" {
   cluster_name  = aws_eks_cluster.this.name
-  principal_arn = var.argocd_role_arn
+  principal_arn = local.argocd_role_arn
   policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
   access_scope { type = "cluster" }
 }

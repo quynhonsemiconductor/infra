@@ -87,18 +87,6 @@ jobs:
           #                 reason that is not about the diff. §17 migrates one
           #                 product at a time; this is expected, not broken.
           #
-          #   cluster-dev   `No value for required variable`. Both declare
-          #   cluster-prod  `sso_roles` (four IAM Identity Center role ARNs) and
-          #                 cluster-prod also declares `alert_topic_arn`; nothing
-          #                 passes either — there is no tfvars file and CI sets no
-          #                 TF_VAR. cluster-dev's `argocd_role_arn` is available
-          #                 from cluster-prod's outputs, but the other two are not
-          #                 derivable: `organization` exports PERMISSION SET arns,
-          #                 which are not the `AWSReservedSSO_*` role arns these
-          #                 need, and it defines qnsc-{admin,power,readonly,billing}
-          #                 — no break-glass set exists for the design's fourth
-          #                 role. Needs a decision, not a lookup.
-          #
           #   observability `the Grafana client is required for this resource`. The
           #                 plan job passes no Grafana url/auth, though
           #                 GRAFANA_ALERTS_TOKEN exists as an org secret.
@@ -112,7 +100,7 @@ jobs:
           # `data-prod` plan cleanly today and never did before, any NEW stack is
           # planned by default, and each gap above is now named in code instead of
           # being absent from a list nobody compared to anything.
-          NOT_PLANNABLE="kb/dev cluster-dev cluster-prod observability organization"
+          NOT_PLANNABLE="kb/dev observability organization"
 
           SKIPPED=""
           PLANNABLE=""
