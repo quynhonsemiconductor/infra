@@ -523,7 +523,17 @@ def main() -> int:
         lines.append("")
 
     lines.append("")
-    if total_fail:
+    # The summary must never claim health for checks that did not run. This line previously
+    # computed from fail==0 and warn==0 alone, so a wholly skipped run — an expired session,
+    # every check SKIPPED — printed "Every configured alarm can reach a confirmed subscriber".
+    # Observed 2026-09-14. That is the exact false green this file exists to catch, reproduced
+    # in its own conclusion, one level above where it was fixed the day before.
+    if len(skipped) == len(CHECKS):
+        lines.append(
+            "**NOTHING WAS VERIFIED.** Every check was skipped, so this run says nothing about "
+            "whether alerting works. Usually an expired session."
+        )
+    elif total_fail:
         lines.append(
             f"**{total_fail} broken delivery path(s).** An alarm that cannot reach anyone is "
             "worse than no alarm, because it reads as coverage."
@@ -532,6 +542,11 @@ def main() -> int:
         lines.append(
             f"**{total_warn} warning(s), nothing broken.** Pending SNS confirmations expire "
             "in about 3 days — click the confirmation emails before then."
+        )
+    elif skipped:
+        lines.append(
+            f"**No findings in the checks that ran — but {len(skipped)} were skipped.** "
+            "Partial coverage is not a clean bill of health; see the SKIPPED lines above."
         )
     else:
         lines.append("**Every configured alarm can reach a confirmed subscriber.**")
