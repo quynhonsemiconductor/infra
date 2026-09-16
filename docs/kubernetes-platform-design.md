@@ -786,12 +786,28 @@ the cluster boundary. Capabilities are a set, each defaulting to absent:
 
 ```hcl
 postgres = { mode = "none" | "shared" | "dedicated", extensions = [...] }
-cache    = { mode = "none" | "shared" | "dedicated" }
-storage  = { r2_buckets = [...] }
-queue    = { sqs = bool }
+cache    = { mode = "none" | "shared" }
+queue    = { sqs = [...] }              # PURPOSES: ["jobs"], not URLs
 search   = { opensearch = bool }        # absent today; added when first needed
 keyvalue = { dynamodb = bool }          # same
 ```
+
+Two corrections the implementation forced, recorded because the first version of
+this list was written before either was known:
+
+**There is no `dedicated` cache.** §15b's whole argument is that per-product Redis
+is the line that grows with product count. Accepting the value would have made the
+interface promise something the design refuses.
+
+**No `storage` block.** R2 buckets are Cloudflare resources and `cf-r2` already
+creates them — it requires provider v5, and a root stack loads one Cloudflare
+major, so accepting buckets in `product-profile` would pin every caller's
+Cloudflare version to suit a module whose callers are the data stacks (aws +
+postgresql, no Cloudflare provider at all). Nothing is lost: §7c derives the
+bucket name on both sides, and the R2 credential is an API token under the secret
+prefix the module already creates. `services[*].needs_s3` went with it — there is
+no S3 in this estate, and a flag that grants nothing reads in review as a grant
+that exists.
 
 A product with no database sets `mode = "none"` and gets no RDS, no secret, no IAM grant, no
 alarms. Adding OpenSearch later means adding one optional block to the module — not a second
@@ -1752,8 +1768,7 @@ module "product" {
   postgres = { mode = "dedicated", pooling = "pgbouncer",
                extensions = ["vector"], engine_version = "16" }
   cache    = { mode = "none" }
-  storage  = { r2_buckets = ["sources", "attachments"] }
-  queue    = { sqs = true }
+  queue    = { sqs = ["jobs"] }   # PURPOSES; the chart derives the URLs (§7c)
 }
 ```
 
@@ -1763,7 +1778,23 @@ graduates from shared to dedicated by changing a value — which is the "adapt a
 expressed where it has to be expressed. rova is the only product that starts dedicated.
 
 `cache = { mode = "none" }` is now the default for every product, and §5d is the argument for why.
-`queue = { sqs = true }` is what replaces it where the need was actually a job queue.
+`queue = { sqs = [...] }` is what replaces it where the need was actually a job queue.
+
+Where a product does set `mode = "shared"`, the module **creates nothing** — §15b
+keeps one instance per environment — and the grant is an endpoint plus an index,
+both passed in as `shared_cache`. The indexes are a MAP rather than a number,
+because §15b's table allocates by USE and qnsc-kb holds two:
+
+```hcl
+shared_cache = {
+  host       = data.terraform_remote_state.data.outputs.cache_host
+  db_indexes = { broker = 0, ratelimit = 1 }
+}
+```
+
+Putting the Celery broker and the rate limiter on one index would let a `FLUSHDB`
+on either take out the other. A `mode = "shared"` with no `shared_cache` fails the
+PLAN rather than yielding `redis://:6379/0` at runtime.
 
 qnsc-kb is shown as `dedicated` because it is one of the two products §5 dedicates in production —
 pgvector, a ~16 GiB working set, and a workload shape unlike anything else in the estate. The same

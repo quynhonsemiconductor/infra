@@ -121,9 +121,13 @@ module "product" {
 
   # Keys MUST match `services` in gitops/values/kb/base.yaml. A mismatch surfaces
   # as a pod that cannot assume anything, which is a slow way to find a typo.
+  #
+  # No `needs_s3`: object storage here is R2 (§7), which has no AWS IAM surface —
+  # the credential is an API token under the secret prefix, already covered by the
+  # one wildcard.
   services = {
-    api      = { needs_sqs = true, needs_s3 = true }
-    worker   = { needs_sqs = true, needs_s3 = true }
+    api      = { needs_sqs = true }
+    worker   = { needs_sqs = true }
     migrator = {}
   }
 
@@ -135,7 +139,15 @@ module "product" {
     identifier = data.terraform_remote_state.data.outputs.postgres_identifier
   }
 
-  vpc_id            = data.terraform_remote_state.network.outputs.vpc_id
+  # §5d's allocation, copied from data-dev's `cache_host` output. TWO indexes:
+  # qnsc-kb is the one product that uses the instance for two unrelated things,
+  # and putting the Celery broker and the rate limiter on the same index would
+  # let a `FLUSHDB` on either take out the other.
+  shared_cache = {
+    host       = data.terraform_remote_state.data.outputs.cache_host
+    db_indexes = { broker = 0, ratelimit = 1 }
+  }
+
   subnet_ids        = data.terraform_remote_state.network.outputs.data_subnet_ids
   security_group_id = data.terraform_remote_state.network.outputs.sg_rds_id
   kms_key_arn       = data.terraform_remote_state.bootstrap.outputs.kms_key_arn

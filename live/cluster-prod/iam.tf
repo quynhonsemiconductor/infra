@@ -214,16 +214,28 @@ resource "aws_iam_role_policy" "argocd_ecr" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Action = [
-        "ecr:GetAuthorizationToken",
-        "ecr:BatchGetImage",
-        "ecr:GetDownloadUrlForLayer",
-        "ecr:DescribeImages",
-      ]
-      Resource = "*"
-    }]
+    Statement = [
+      {
+        # The only ECR action that CANNOT be scoped: it mints a registry-wide
+        # token and AWS rejects any Resource but "*". On its own it grants
+        # nothing — every read below is scoped.
+        Effect   = "Allow"
+        Action   = "ecr:GetAuthorizationToken"
+        Resource = "*"
+      },
+      {
+        # The chart, and nothing else. `Resource = "*"` here would have let
+        # ArgoCD pull every product image in the account, which is not what
+        # "pulling the chart from ECR" means (§11c).
+        Effect = "Allow"
+        Action = [
+          "ecr:BatchGetImage",
+          "ecr:GetDownloadUrlForLayer",
+          "ecr:DescribeImages",
+        ]
+        Resource = "arn:aws:ecr:${local.region}:${data.aws_caller_identity.this.account_id}:repository/charts/*"
+      },
+    ]
   })
 }
 

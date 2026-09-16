@@ -26,6 +26,10 @@ terraform {
   required_version = ">= 1.9"
   required_providers {
     aws = { source = "hashicorp/aws", version = "~> 5.0" }
+    # §2b — `data "tls_certificate"` below reads the OIDC issuer's thumbprint for
+    # the IRSA provider. Without a constraint OpenTofu installs whatever `tls` is
+    # latest at `init` time, which is the unpinned-version class §2b closes.
+    tls = { source = "hashicorp/tls", version = "~> 4.0" }
   }
 
   backend "s3" {
@@ -116,6 +120,11 @@ resource "aws_vpc_endpoint" "s3" {
 # ─────────────────────────────────────────────────────────────────────────────
 
 resource "aws_eks_cluster" "this" {
+  # checkov:skip=CKV_AWS_37: control-plane logs bill per GB in CloudWatch, and §9
+  #   sends this estate's telemetry to Grafana Cloud. api, audit and authenticator
+  #   are the three that answer "who did this and were they allowed to";
+  #   controllerManager and scheduler are high-volume and answer a question nobody
+  #   here has asked. Add them when there is a scheduling problem to debug.
   name     = local.name
   version  = local.kubernetes_version
   role_arn = aws_iam_role.cluster.arn
@@ -159,6 +168,25 @@ resource "aws_eks_cluster" "this" {
   # nothing in §10b's alert list reads them.
   enabled_cluster_log_types = ["api", "audit", "authenticator"]
 
+  # Envelope encryption for Kubernetes Secrets at rest in etcd, under the same CMK
+  # that encrypts the log group and RDS storage.
+  #
+  # §8 routes application secrets through External Secrets Operator, but ESO's
+  # output IS a native Secret — it syncs Secrets Manager INTO etcd rather than
+  # around it. So every secret the platform handles lands here, and without this
+  # block they sit under the AWS-managed key with no CMK boundary and no
+  # CloudTrail record tying a decrypt to this cluster.
+  #
+  # SET AT CREATION. Enabling envelope encryption on a live cluster is a one-way
+  # operation AWS will not undo, so it belongs in the first apply — which is where
+  # this is, the cluster does not exist yet.
+  encryption_config {
+    provider {
+      key_arn = data.terraform_remote_state.bootstrap.outputs.kms_key_arn
+    }
+    resources = ["secrets"]
+  }
+
   access_config {
     # §10b — ACCESS ENTRIES, not the aws-auth ConfigMap. The ConfigMap is the
     # legacy mechanism, it is edited in-cluster rather than in OpenTofu, and a
@@ -180,6 +208,10 @@ resource "aws_eks_cluster" "this" {
 # retention is ours and the cost is visible (§15 budgets ~$15/month for both
 # clusters).
 resource "aws_cloudwatch_log_group" "cluster" {
+  # checkov:skip=CKV_AWS_338: 90 days, not a year. §15 declines a year of
+  #   CloudWatch ingestion everywhere in this estate; audit events worth keeping
+  #   longer reach Grafana Cloud through §9, which is where they are queried from.
+
   name              = "/aws/eks/${local.name}/cluster"
   retention_in_days = 90
   kms_key_id        = data.terraform_remote_state.bootstrap.outputs.kms_key_arn
