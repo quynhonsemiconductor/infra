@@ -89,7 +89,7 @@ jobs:
           # The first two are an APPLY ORDER, not a defect, and reading them in
           # order gives you the order:
           #
-          #       cluster-prod  ->  cluster-dev  ->  kb-dev
+          #       cluster-prod  ->  cluster-dev  ->  rova-dev  ->  kb-dev
           #
           #   cluster-dev   reads cluster-prod's state for `argocd_role_arn`. §2
           #                 makes ArgoCD hub-and-spoke — ONE instance, in prod,
@@ -97,10 +97,15 @@ jobs:
           #                 grants it entry. cluster-prod plans cleanly today and
           #                 has simply never been applied.
           #
-          #   kb-dev        reads cluster-dev and data-dev. data-dev plans and
-          #                 applies independently; cluster-dev is the one in the
+          #   rova-dev      reads cluster-dev and data-dev. data-dev plans and
+          #   kb-dev        applies independently; cluster-dev is the one in the
           #                 chain above. §17 migrates one product at a time, so
           #                 this is expected, not broken.
+          #
+          #                 rova-dev is the FIRST product stack now, not kb-dev —
+          #                 §17's table had rova last ("the only product earning
+          #                 money") and that was reordered deliberately. Both
+          #                 stacks exist; only the order changed.
           #
           #   observability `the Grafana client is required for this resource`, on
           #                 grafana_folder.company and data.grafana_data_source
@@ -142,7 +147,7 @@ jobs:
           # `data-prod` plan cleanly today and never did before, any NEW stack is
           # planned by default, and each gap above is now named in code instead of
           # being absent from a list nobody compared to anything.
-          NOT_PLANNABLE="kb-dev cluster-dev observability organization"
+          NOT_PLANNABLE="rova-dev kb-dev cluster-dev observability organization"
 
           SKIPPED=""
           PLANNABLE=""

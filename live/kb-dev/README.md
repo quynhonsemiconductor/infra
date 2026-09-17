@@ -36,10 +36,15 @@ bounds a noisy neighbour on the shared instance**, and the migrator carries the
 
 It is idempotent, so running it again costs nothing.
 
-## Why `kb-dev` is first
+## Why `kb-dev` is step 4, and no longer first
 
-§17 step 2. The largest product in the estate, and the lowest-risk migration in
-it — **qnsc-kb production has no state file**, so only dev moves here.
+§17 was reordered on 2026-09-17: **rova goes first**, on the product owner's call
+that learning the platform on a workload nobody would notice teaches the wrong
+lessons. `live/rova-dev` is step 2; this is step 4.
+
+kb keeps its place ahead of LMS and opshub because it is still the lowest-risk
+migration in the estate — **qnsc-kb production has no state file**, so only dev
+moves here — and because of what it exercises, below.
 
 It also exercises more of the chart than anything else would: PgBouncer, the
 migrator role, the `worker` kind, KEDA queue scaling, a 1.5 GB ONNX session that
