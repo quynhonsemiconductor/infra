@@ -7,17 +7,73 @@ Written 2026-09-15. Every task cites the design section that justifies it — **
 before starting the task.** Do not infer requirements from this file alone; it is an index, not a
 specification.
 
-## Status — 2026-09-15
+## Status — 2026-09-17
 
 ```
-PHASE 0   0.4 0.5 done · 0.1 0.2 0.3 0.6 0.7 0.8 OUTSTANDING (six, five need a human)
+PHASE 0   0.2 0.4 0.5 done · 0.1 0.3 0.6 0.7 0.8 OUTSTANDING
 PHASE 1   COMPLETE
-PHASE 2   2.1-2.6, 2.8 written · 2.7 deferred by design · 2.9 needs the measurement
-PHASE 3+  not started — blocked on a cluster
+PHASE 2   2.1-2.6, 2.8 written and MERGED · 2.7 deferred by design
+          2.9 needs the measurement
+PHASE 3   rova dev — REORDERED from qnsc-kb, see §17. Stack written, not applied.
+PHASE 4+  not started
 ```
 
-**The critical path is 0.1.** Everything buildable without a cluster is built;
-everything else waits on the residency answer.
+**NOTHING HAS BEEN APPLIED.** Every stack in `live/` is written, validated and
+merged; none has run `tofu apply`. The estate on AWS today is still the ECS one.
+
+**The critical path is 0.1**, the data-residency determination. §17 calls region
+"the single most expensive property to change", and step 1 creates the clusters.
+
+### Apply order, which is also the dependency chain
+
+```
+security-baseline   CONFIRM only — three role ARNs + the alert topic exist
+runtime-prod        already applied; confirm the /20 from 0.6
+data-prod           shared Postgres, preview Postgres, the one cache
+cluster-prod        FIRST cluster — it outputs argocd_role_arn
+runtime-dev · data-dev
+cluster-dev         consumes argocd_role_arn (ArgoCD is hub-and-spoke, §2)
+rova-dev            the first workload
+```
+
+Each of `cluster-dev` and `rova-dev` is unplannable until the stack above it is
+applied — that is why they sit in `NOT_PLANNABLE` in `.github/workflows/infra-plan.yml`
+rather than failing CI. `cluster-prod`, `data-dev` and `data-prod` plan clean today.
+
+### Blocked on a human, not on an agent
+
+```
+0.1  data-residency determination            blocks step 1, everything downstream
+     SNS subscriptions — ALL SIX TOPICS      alerting_health has failed every
+     have zero subscribers                   scheduled run since 2026-09-14
+     the apply sequence itself               needs AWS credentials
+     writing the secret VALUES               containers are created empty (§8)
+```
+
+The SNS one matters more than it looks: `qnsc-security-alerts` is where
+`cluster-prod`'s break-glass rule publishes, so applying the cluster arms a rule
+that reaches nobody. AWS deletes an unconfirmed email subscription after ~3 days
+and Terraform reports success either way, so a clean plan proves nothing here.
+
+### Two stacks cannot plan, with diagnoses
+
+```
+observability   `the Grafana client is required for this resource`. NOT a missing
+                credential — TF_VAR_grafana_cloud_api_key has always been passed.
+                grafana_folder and data.grafana_data_source use the `grafana.stack`
+                provider ALIAS, whose url and auth are attributes of
+                grafana_cloud_stack resources IN THE SAME STACK. Unknown until they
+                exist, so the provider cannot configure. Fix: split the stack, or
+                apply in two phases. Not a credential.
+
+organization    AccessDenied on sso:DescribePermissionSet and organizations:*.
+                CAUSE NOT ESTABLISHED, deliberately: the plan role carries
+                ReadOnlyAccess, which already allows those. The SSO error says
+                "the resource does not exist in this Region", and both services are
+                scoped in ways a region-pinned provider can miss. Needs credentials
+                to settle. Do not guess — a wrong cause was written here once and
+                cost an afternoon.
+```
 
 ### Built but not in the task list above
 
@@ -522,7 +578,18 @@ CPU limits throttle on 100 ms bursts, not averages — which is every service in
 
 ---
 
-## Phase 3 — qnsc-kb dev, the first workload
+## Phase 3 — rova dev, the first workload
+
+**Reordered 2026-09-17.** This phase was qnsc-kb dev. §17's table had rova last
+("the only product earning money"); the product owner reversed it, because proving a
+migration on a workload nobody would notice proves the easy case. qnsc-kb moves to
+Phase 3b — its stack is written at `live/kb-dev` and is unchanged.
+
+The trade, so it is not rediscovered: qnsc-kb prod has NO state file, so kb dev had
+nothing at stake. rova dev is a real environment developers use. Still dev, not
+revenue, and §17b's cutover is reversible at every step. The other cost is schedule:
+kb exercises PgBouncer, the `worker` kind, KEDA, a 1.5 GB ONNX startupProbe and
+clamav; rova exercises none of the last three, so whatever they break is found in 3b.
 
 ### 3.1 Split clamav out of qnsc-kb
 
