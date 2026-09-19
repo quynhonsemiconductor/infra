@@ -3750,13 +3750,39 @@ addressed above — and the sixth and seventh are far enough out to be somebody'
 |---|---|---|
 | 0 | S3 gateway endpoint · subnet resize to /20 · prefix delegation | free, no cluster required, and §15c items 2 and 5 have already cost money |
 | 1 | EKS ×2 · ArgoCD · Alloy two-tier · ESO · KEDA · policy baseline · shared Postgres + PgBouncer · **access entries and audit logs (§10b)** · **chart CI and pinning (§11c)** | foundation — no external dependency. KEDA and the shared database are here because both are painful to retrofit (§15b); access control and chart pinning because retrofitting either means doing it while something is already broken |
-| 2 | **qnsc-kb dev**, with clamav split into `platform` | first workload. Prod has no state file, so dev is genuinely low-risk — and it proves more of the chart than anything else could |
-| 3 | **qnsc-kb prod** | after dev has soaked |
-| 4 | **LMS** | greenfield — proves the chart on something we build |
-| 5 | **opshub** | dev idles to zero, prod never launched |
-| 6 | **rova** | last — the only product earning money |
+| 2 | **rova dev** | first workload — REORDERED, see below |
+| 3 | **rova prod** | after dev has soaked |
+| 4 | **qnsc-kb dev**, with clamav split into `platform` | proves more of the chart than anything else could |
+| 5 | **qnsc-kb prod** | after dev has soaked |
+| 6 | **LMS** | greenfield — proves the chart on something we build |
+| 7 | **opshub** | dev idles to zero, prod never launched |
 
-**qnsc-kb dev is the first workload, and it replaced Flagsmith.** An earlier version put a
+### Reordered 2026-09-17: rova first, not last
+
+This table put rova at step 6 on one argument — **"last, the only product earning
+money"** — and qnsc-kb dev at step 2 because **qnsc-kb production has no state file**, so a
+failure there was a Tuesday rather than an incident.
+
+The product owner reversed it, and the reason is sound: rova is the product that matters, and
+learning a new platform on a workload nobody would notice teaches the wrong lessons. A migration
+proved on qnsc-kb dev is a migration proved on the easy case.
+
+**What the original order bought, stated plainly so the trade is visible.** qnsc-kb dev had
+nothing at stake at all. rova dev is a real environment developers use every day, so a failure is
+visible to people. It is still dev and not revenue, and §17b's cutover is reversible at every
+step — build alongside, run against the SAME database, cut the Cloudflare Tunnel hostname, roll
+back by pointing it back — so the exposure is a development outage, not a customer one.
+
+**Dev before prod is untouched.** Which PRODUCT goes first and which ENVIRONMENT goes first are
+different questions, and only the first was reordered. rova prod still waits for rova dev to soak.
+
+**qnsc-kb still earns its place at step 4, for the reason it was at step 2.** It exercises the
+hard parts — PgBouncer, the migrator role, the `worker` kind, KEDA, a 1.5 GB ONNX session needing
+a startupProbe, and the clamav sidecar. Moving it later means the chart meets those after rova
+rather than before, so anything rova does not exercise is found at step 4 instead of step 2. That
+is the real cost of this reordering, and it is a schedule cost rather than a risk one.
+
+**qnsc-kb dev replaced Flagsmith in this slot.** An earlier version put a
 self-hosted Flagsmith here — real, off-the-shelf, no code to write. §4c removed it as a workload
 entirely, so the slot needed refilling.
 

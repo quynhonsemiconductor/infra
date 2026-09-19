@@ -1,4 +1,4 @@
-# Runbook — from here to qnsc-kb running on Kubernetes
+# Runbook — from here to rova running on Kubernetes
 
 Written 2026-09-16. Everything that can be built without a cluster is built; this
 is the sequence that turns it into something running.
@@ -275,29 +275,55 @@ estimates. It is also the only way to find what is not in git.
 
 ---
 
-# Part 4 — qnsc-kb dev, the first workload
+# Part 4 — rova dev, the first workload
+
+§17 was reordered on 2026-09-17. This part said qnsc-kb dev; **rova goes first**,
+because it is the product that matters and proving a migration on a workload
+nobody would notice proves the easy case. qnsc-kb dev is step 4 and gets its own
+part when it arrives — its stack is already written at `infra/live/kb-dev`.
+
+Two things that did NOT change with the order. Dev still precedes prod: rova prod
+waits for this to soak, and it is a separate stack. And §17b's cutover is still
+the reversible one — build alongside, run against the SAME database, cut the
+Cloudflare Tunnel hostname, roll back by pointing it back.
 
 ## 4.1 Apply the product stack
 
 ```
-DO       cd infra/live/kb-dev && tofu apply
+DO       cd infra/live/rova-dev && tofu apply
          THEN: tofu output -raw role_settings_sql | psql "$ADMIN_URL"
-HAPPENS  a database, two roles, four secret containers, three IRSA roles, an
-         SQS queue and its DLQ.
-KNOW IT  ci/scripts/platform_conformance.py --root . passes with kb-dev PAIRED
+HAPPENS  a database, two roles, eleven secret containers, three IRSA roles, the
+         email-bounce SQS queue and its DLQ.
+KNOW IT  ci/scripts/platform_conformance.py --root . passes with rova/dev PAIRED
 DO NOT   skip the SQL. Until it runs, nothing bounds a noisy neighbour and the
          migrator carries the 30s application timeout rather than 600s.
+WATCH    the cache index. rova's ECS develop stack uses db 0; §15b's consolidation
+         gives rova db 2, because 0 is qnsc-kb's Celery broker. This stack sets 2.
+         Everything else about the migration is like-for-like; this one value is
+         deliberately different.
 ```
 
-## 4.2 Build and deploy
+## 4.2 Write the secret values
 
 ```
-DO       merge anything to qnsc-kb-backend's main with the k8s-deploy workflow wired
-HAPPENS  images build as sha-<commit>, CI edits gitops/values/kb/tags.dev.yaml,
+DO       put a value in every container 4.1 created, under qnsc/dev/rova/app/
+HAPPENS  nothing until ESO next syncs — the containers are created EMPTY (§8) and
+         values never enter state or git.
+KNOW IT  aws secretsmanager list-secrets shows eleven under the prefix, none empty
+WHY      there is no DATABASE_PASSWORD among them, deliberately: §8 chose RDS IAM
+         authentication, so no database password exists to store or rotate.
+```
+
+## 4.3 Build and deploy
+
+```
+DO       merge anything to rova's main with the k8s-deploy workflow wired
+HAPPENS  images build as sha-<commit>, CI edits gitops/values/rova/tags.dev.yaml,
          ArgoCD syncs, the migrator Job runs as a PreSync hook, pods start.
-KNOW IT  kb.dev.qnsc.vn answers, and the migrator Job shows Completed
-WATCH    the api pod's startupProbe — the e5 ONNX session takes tens of seconds.
-         If it is being killed mid-load, the startupProbe is wrong, not the app.
+KNOW IT  rova's dev hostname answers, and the migrator Job shows Completed
+WATCH    /v1/readyz — it reports postgres AND valkey, which is what tells you the
+         cache index above is right. A green deploy with valkey down is the exact
+         failure rova's own notes record from the 2026-08-17 cache migration.
 ```
 
 ## 4.3 Soak for one week

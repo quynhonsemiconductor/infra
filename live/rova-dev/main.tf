@@ -1,21 +1,22 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# kb / dev — §17 step 4.
+# rova / dev — THE FIRST WORKLOAD ON THE PLATFORM.
 #
-# NOT the first workload any more. This file said "THE FIRST WORKLOAD ON THE
-# PLATFORM" and §17 was reordered on 2026-09-17: rova goes first, because it is
-# the product that matters and learning the platform on one nobody would notice
-# teaches the wrong lessons. `live/rova-dev` is step 2.
+# §17's table had rova LAST, on one argument: "the only product earning money".
+# That is a real argument and it is overridden deliberately — rova is the product
+# that matters, and learning the platform on one nobody would notice teaches the
+# wrong lessons. See §17's reordering note.
 #
-# What kb still brings, and why it is step 4 rather than later: it PROVES MORE OF
-# THE CHART than anything else could — PgBouncer, the migrator role, the `worker`
-# kind, KEDA, a 1.5 GB ONNX session needing a startupProbe, and the clamav
-# sidecar, all at once. rova exercises none of the last three, so whatever they
-# break is found here.
+# WHAT THE ORIGINAL ORDER BOUGHT, AND WHAT IT COSTS TO GIVE UP: qnsc-kb
+# PRODUCTION HAS NO STATE FILE, so a kb-dev failure was a Tuesday. rova dev is a
+# real environment developers use every day, so a failure here is visible. It is
+# still dev, not revenue, and §17's cutover is reversible at every step — build
+# alongside, run against the SAME database, cut the Cloudflare Tunnel hostname,
+# roll back by pointing it back.
 #
-# Its own risk is unchanged and still the lowest in the estate: qnsc-kb
-# PRODUCTION HAS NO STATE FILE, so a failure at this step is a Tuesday.
+# DEV BEFORE PROD still holds, and is not the same question as which product goes
+# first. rova prod is a separate stack, written when this one has soaked.
 #
-# ── THIS FILE IS A TEMPLATE FOR THE OTHERS ──────────────────────────────────
+# ── THIS FILE IS THE TEMPLATE FOR THE OTHERS ────────────────────────────────
 # §17 migrates one product at a time, so the remaining stacks are written when
 # their step arrives rather than all at once. Copy this, change the three identity
 # values, and adjust the capability set.
@@ -30,7 +31,7 @@ terraform {
 
   backend "s3" {
     bucket         = "qnsc-tofu-state"
-    key            = "products/kb-dev/terraform.tfstate"
+    key            = "products/rova-dev/terraform.tfstate"
     region         = "ap-southeast-1"
     encrypt        = true
     dynamodb_table = "qnsc-tofu-locks"
@@ -107,38 +108,69 @@ module "product" {
   # identical strings from the same three (§7c). Nothing crosses the repository
   # boundary; nothing can drift.
   #
-  # `kb`, not `qnsc-kb` — §7c shortens the slug because AWS resources already
-  # carry a `qnsc-` prefix and the long form double-prefixes.
-  product = "kb"
+  # `rova` — already short, so §7c's shortening does not apply here the way it
+  # does to `qnsc-kb`.
+  product = "rova"
   env     = "dev"
 
-  # ⚠ MUST MATCH gitops/values/kb/dev.yaml. It is the ONE fact declared in both
+  # ⚠ MUST MATCH gitops/values/rova/dev.yaml. It is the ONE fact declared in both
   # repositories, and gitops/scripts/check-size-agreement.py fails when they
   # disagree — because OpenTofu picks an RDS instance class from it while the
   # chart picks replica counts and PDBs, and neither reads the other at plan time.
+  #
+  # `s`, not `l`. rova is `l` in gitops/values/rova/base.yaml and dev.yaml
+  # OVERRIDES it to `s` — size is a CRITICALITY tier, and a dev outage costs
+  # nobody revenue. The conformance check compares the MERGED value, so this must
+  # be what base+dev resolve to, not what base says.
   size = "s"
 
-  # §5 — dev is SHARED with no exceptions. qnsc-kb is dedicated in PRODUCTION
-  # (pgvector, a ~16 GiB working set, a workload shape unlike anything else), and
-  # that reasoning does not apply to a development database.
+  # §5 — dev is SHARED with no exceptions, including for the product §5 dedicates
+  # in production. rova prod gets its own instance because it is the only product
+  # earning money; that reasoning does not reach a development database.
+  #
+  # No `extensions`: rova needs none. qnsc-kb's `vector` is for pgvector, which is
+  # its whole reason for a dedicated instance — adding extensions here "to match"
+  # would install something nothing uses.
   postgres = {
-    mode       = "shared"
-    pooling    = "pgbouncer"
-    extensions = ["vector", "pgcrypto"]
+    mode    = "shared"
+    pooling = "pgbouncer"
   }
 
   # §5d — one shared Valkey per environment, database index per product. The
   # module grants access; data-dev creates the instance.
   cache = { mode = "shared" }
 
-  queue = { sqs = ["jobs"] }
+  # §6b — rova has NO BullMQ and no general job queue. Its only SQS use is SES
+  # bounce handling, which is why this is one queue and not a set. The design
+  # records the same fact: "rova · opshub … NO BullMQ. Their only SQS use is SES
+  # bounce handling."
+  #
+  # `email-bounce` is the PURPOSE, not a URL — the chart derives
+  # `qnsc-dev-rova-email-bounce` from the same three identity values (§7c), and a
+  # dead-letter queue comes with it.
+  queue = { sqs = ["email-bounce"] }
 
   # §8 — created EMPTY. Values are written out of band and never enter state or
   # git. The path is hierarchical so the IRSA policy is one wildcard.
+  #
+  # Taken from what rova's ECS task definition injects today
+  # (rova/infra/modules/stack/main.tf), so the migration is like-for-like rather
+  # than a redesign of its configuration.
+  #
+  # DATABASE_PASSWORD is deliberately absent: §8 chose RDS IAM authentication, so
+  # there is no database password to store or rotate. PgBouncer holds the endpoint
+  # and the application reaches it at `pgbouncer:6432` in-namespace (§5d).
   secrets = [
     "database-url",
     "redis-url",
-    "openrouter-key",
+    "cookie-secret",
+    "csrf-secret",
+    "jwt-private-key",
+    "entra-client-secret",
+    "github-app-private-key",
+    "github-webhook-secret",
+    "storage-access-key-id",
+    "storage-secret-access-key",
     "grafana-otlp-token",
   ]
 
@@ -148,8 +180,14 @@ module "product" {
   # No `needs_s3`: object storage here is R2 (§7), which has no AWS IAM surface —
   # the credential is an API token under the secret prefix, already covered by the
   # one wildcard.
+  #
+  # Only the WORKER gets SQS. rova's worker owns the CRON and RELAY loops — the
+  # email relay, the Entra guest-invite relay and the notification outbox — so it
+  # is the one that consumes the bounce queue. The api publishes nothing to it.
+  # Widening this later is one word; granting it now is a permission nobody asked
+  # for.
   services = {
-    api      = { needs_sqs = true }
+    api      = {}
     worker   = { needs_sqs = true }
     migrator = {}
   }
@@ -162,13 +200,25 @@ module "product" {
     identifier = data.terraform_remote_state.data.outputs.postgres_identifier
   }
 
-  # §5d's allocation, copied from data-dev's `cache_host` output. TWO indexes:
-  # qnsc-kb is the one product that uses the instance for two unrelated things,
-  # and putting the Celery broker and the rate limiter on the same index would
-  # let a `FLUSHDB` on either take out the other.
+  # §5d's allocation, copied from data-dev's `cache_host` output:
+  #
+  #     db 0  qnsc-kb   Celery broker
+  #     db 1  qnsc-kb   rate limiting
+  #     db 2  rova      platform-cache   <-- this stack
+  #     db 3  opshub    platform-cache
+  #
+  # ONE index. rova uses the instance for one thing — app-platform's
+  # `platform-cache` primitive — unlike qnsc-kb, which holds two.
+  #
+  # NOTE the change from today: rova's ECS develop stack sets `db_index = 0`,
+  # which was correct when each environment's cache served fewer products. §15b
+  # consolidates to one instance per environment, and 0 is qnsc-kb's broker — so
+  # keeping 0 would put rova's cache and kb's Celery broker on the same index,
+  # where a `FLUSHDB` on either takes out the other. This is a like-for-like
+  # migration in every other respect; this one value must change.
   shared_cache = {
     host       = data.terraform_remote_state.data.outputs.cache_host
-    db_indexes = { broker = 0, ratelimit = 1 }
+    db_indexes = { cache = 2 }
   }
 
   subnet_ids        = data.terraform_remote_state.network.outputs.data_subnet_ids
