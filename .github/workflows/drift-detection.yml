@@ -79,8 +79,8 @@ jobs:
         id: module-token
         continue-on-error: true
         with:
-          app-id: ${{ vars.RELEASE_BOT_APP_ID }}
-          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+          app-id: ${{ vars.QNSC_AUTOMATION_APP_ID }}
+          private-key: ${{ secrets.QNSC_AUTOMATION_PRIVATE_KEY }}
           repositories: tf-modules
 
       # Read-only role, same as infra-plan. A detector never needs write credentials.
