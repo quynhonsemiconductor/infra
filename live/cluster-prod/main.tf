@@ -54,13 +54,6 @@ data "terraform_remote_state" "network" {
   }
 }
 
-# The network module outputs no route table IDs, and adding one would mean a
-# version bump to a module every live product consumes. Looking them up from the
-# subnets is exact, read-only, and touches nothing.
-data "aws_route_table" "private" {
-  for_each  = toset(data.terraform_remote_state.network.outputs.cluster_subnet_ids)
-  subnet_id = each.value
-}
 
 # §7 — kms_key_arn lives in `bootstrap`, NOT in the network stack. Reading it from
 # the wrong remote state is invisible to `terraform validate`: outputs are only
@@ -97,23 +90,28 @@ locals {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Prerequisite — §3. MUST BE APPLIED BEFORE THE CLUSTER.
+# NO S3 GATEWAY ENDPOINT HERE — the network stack already owns one.
+#
+# §3's requirement is unchanged and still met: "ECR image layers are served from
+# S3, so every image pull crosses NAT and is billed per gigabyte. August's ECR
+# bill was ~94% DATA TRANSFER", and Kubernetes makes it worse because nodes pull on
+# every scale-out and every Karpenter consolidation, not only on deploy.
+#
+# What changed is WHO CREATES IT. Task 0.4 put the endpoint in this stack when the
+# clusters lived in the ECS VPCs. They now have their own — `live/platform-{dev,prod}`
+# — and `tf-modules/modules/network` has always created `aws_vpc_endpoint.s3` and
+# attached it to every private route table, which the /20 cluster subnets share.
+#
+# Creating a second one is not additive, it is an error. AWS refuses:
+#
+#   Error: creating EC2 VPC Endpoint (com.amazonaws.ap-southeast-1.s3):
+#   RouteAlreadyExists: route table rtb-05611b60b0132006d already has a route with
+#   destination-prefix-list-id pl-6fa54006
+#
+# Found 2026-09-20 on the first apply of this stack. `data.aws_route_table.private`
+# went with it — it existed only to feed the endpoint's route_table_ids.
 # ─────────────────────────────────────────────────────────────────────────────
 
-# §3 — "ECR image layers are served from S3, so every image pull currently crosses
-# fck-nat and is billed per gigabyte. August's ECR bill was ~94% DATA TRANSFER."
-#
-# Kubernetes makes that worse than ECS did: nodes pull on every scale-out and every
-# Karpenter consolidation, not only on deploy. A gateway endpoint is free and has
-# no operational surface.
-resource "aws_vpc_endpoint" "s3" {
-  vpc_id            = data.terraform_remote_state.network.outputs.vpc_id
-  service_name      = "com.amazonaws.${local.region}.s3"
-  vpc_endpoint_type = "Gateway"
-  route_table_ids   = distinct([for rt in data.aws_route_table.private : rt.route_table_id])
-
-  tags = merge(local.tags, { Name = "${local.name}-s3" })
-}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Pod → data tier. WITHOUT THIS, NOTHING CONNECTS.
@@ -192,6 +190,22 @@ resource "aws_eks_cluster" "this" {
   #
   # NOTE: Auto Mode manages NODES. The control-plane version above is still ours
   # to bump (§2b).
+  # REQUIRED BY AUTO MODE, and AWS refuses the create without it:
+  #
+  #   InvalidParameterException: When EKS Auto Mode is enabled,
+  #   bootstrapSelfManagedAddons must be set to false.
+  #
+  # The provider defaults it to TRUE, which asks EKS to install the self-managed
+  # CoreDNS, kube-proxy and VPC CNI addons — exactly the three things Auto Mode
+  # manages itself. Auto Mode runs CoreDNS as a node-level system service rather
+  # than a Deployment and builds the CNI into the AMI, so the two models cannot
+  # coexist: this is the same "Auto Mode rejects a mixed configuration" rule that
+  # forces elastic_load_balancing below.
+  #
+  # Found 2026-09-20 on the first apply. It is not inferable from the resource
+  # schema — the default is simply wrong for Auto Mode.
+  bootstrap_self_managed_addons = false
+
   compute_config {
     enabled = true
 
@@ -329,8 +343,21 @@ resource "aws_cloudwatch_log_group" "cluster" {
 
   name              = "/aws/eks/${local.name}/cluster"
   retention_in_days = 90
-  kms_key_id        = data.terraform_remote_state.bootstrap.outputs.kms_key_arn
-  tags              = local.tags
+  # NO kms_key_id, and this is the SAME decision tf-modules/modules/rds records at
+  # length for its own log groups — reached here the hard way on 2026-09-20:
+  #
+  #   Error: creating CloudWatch Logs Log Group (/aws/eks/qnsc-prod/cluster):
+  #   AccessDeniedException: The specified KMS key does not exist or is not allowed
+  #   to be used with Arn 'arn:aws:logs:...:log-group:/aws/eks/qnsc-prod/cluster'
+  #
+  # CloudWatch Logs encrypts a group by assuming the CALLER's grant on the key, so
+  # the KEY POLICY must allow logs.<region>.amazonaws.com with a
+  # kms:EncryptionContext:aws:logs:arn condition. The product CMK is written for
+  # RDS, ECR and Secrets Manager and grants Logs nothing. No log group in this
+  # account uses a CMK, so setting it here made this the odd one out AND required a
+  # key-policy change nobody asked for. Logs are encrypted at rest with an
+  # AWS-managed key regardless.
+  tags = local.tags
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
