@@ -3770,8 +3770,13 @@ proved on qnsc-kb dev is a migration proved on the easy case.
 **What the original order bought, stated plainly so the trade is visible.** qnsc-kb dev had
 nothing at stake at all. rova dev is a real environment developers use every day, so a failure is
 visible to people. It is still dev and not revenue, and §17b's cutover is reversible at every
-step — build alongside, run against the SAME database, cut the Cloudflare Tunnel hostname, roll
-back by pointing it back — so the exposure is a development outage, not a customer one.
+step **in dev** — build alongside, start on an empty database, cut the Cloudflare Tunnel hostname,
+point it back if it goes wrong — so the exposure is a development outage, not a customer one. Dev
+has no data worth rolling back to, which is exactly what makes it the safe place to learn this.
+
+In PRODUCTION that reversibility no longer holds; see the correction to §17b's step 3. Which is an
+argument for this ordering, not against it: the irreversible step is the one you most want to have
+rehearsed in an environment where it is not.
 
 **Dev before prod is untouched.** Which PRODUCT goes first and which ENVIRONMENT goes first are
 different questions, and only the first was reordered. rova prod still waits for rova dev to soak.
@@ -3885,17 +3890,62 @@ Cloudflare R2  stays                          same buckets, same credentials
 Secrets Manager stays                         ESO reads the same secrets ECS injected
 ```
 
-**Only compute moves.** A cutover is: run the pods in the new cluster against the same database,
-verify, then repoint the Cloudflare Tunnel hostname. Roll back by repointing it again — the ECS
-service is still running and still connected to the same data.
+**⚠ THIS PARAGRAPH IS SUPERSEDED. Read it, then read the correction under it.** It described the
+design as it stood on 2026-09-15, and it is kept because it states the property the new shape gives
+up, which is the thing to understand before cutting over.
 
-**That is true about bytes and misleading about state — see §17b.** The Terraform state that owns
-those databases is the same state that owns the ECS services, so removing the old platform by
-destroying its stack removes the data with it. §17b is the sequence that avoids it.
+> **Only compute moves.** A cutover is: run the pods in the new cluster against the same database,
+> verify, then repoint the Cloudflare Tunnel hostname. Roll back by repointing it again — the ECS
+> service is still running and still connected to the same data.
+
+**THE ESTATE AS BUILT DOES NOT DO THIS, and the divergence was deliberate rather than accidental
+once it was found.** `live/data-{dev,prod}` create new shared Postgres instances, and every product
+stack points at them: `live/rova-dev` reads `postgres_host` out of `platform/data-dev`, not out of
+rova's existing develop RDS. Since 2026-09-20 the platform also has its OWN VPC
+(`live/platform-{dev,prod}`), so the new data tier is not even in the same network as the old one.
+
+The reason is Phase 5. "Only compute moves" made the cutover reversible and made the REMOVAL
+almost impossible: step 7 below — "delete the ECS blocks from the stack configuration" — is
+open-heart surgery on a live state that owns both a database and the services beside it, and for
+rova that state is ~6,200 lines. A self-contained new estate turns Phase 5 into `tofu destroy` on
+stacks nobody is using, which is an action with an undo, because the state is versioned in S3.
+
+**What the trade costs, stated once, plainly.** Rollback is no longer "repoint the hostname". The
+moment the Kubernetes side accepts a write, the two databases have diverged, and the tunnel is a
+traffic switch rather than an undo button. So the cutover needs a data migration and a rehearsed
+procedure, per environment:
+
+```
+dev      NO MIGRATION. Start empty and let the migrator Job create the schema;
+         developers reseed. §5d already says nothing in a development environment
+         justifies protecting its data — "not restore, not noisy neighbours". This
+         is the cheapest correct answer and it needs no network path at all.
+
+prod     A REAL MIGRATION, and the one thing in this plan that must be rehearsed
+         before it is performed. Two options, and the choice is a downtime budget:
+
+         write-freeze + dump/restore   simplest. Stop writes, pg_dump the product
+                                       database, restore into the shared instance,
+                                       repoint, resume. Downtime = the dump plus
+                                       the restore. Viable at this estate's size.
+         logical replication           near-zero downtime. Publication on the old
+                                       database, subscription on the new, cut when
+                                       replication lag is zero. Needs a network
+                                       path between the two VPCs — a peering
+                                       connection, created for the migration and
+                                       DELETED after it, never left in place.
+
+         Either way the ONE-WAY MOMENT is the first write on the new side. Decide
+         and write down in advance how far back you are willing to go, because
+         after that point "roll back" means reverse-migrating the delta.
+```
+
+`prevent_destroy` on every data resource (step 1, task 0.3) matters more under this shape, not
+less: the old database is the only copy of the truth until the migration is verified.
 
 Contrast with 2026-09-14, when rova-prod's database genuinely was destroyed and restored to
 change a subnet group name: twelve minutes of downtime and four snapshots for insurance. Nothing
-in this migration requires that. The database is the part that stays still.
+in this migration requires that of the OLD database — it is read from, never rebuilt.
 
 ## 17b. Running parallel, and retiring the old platform
 
@@ -3954,14 +4004,21 @@ remains available for a calm quarter, or never.
 
 ```
 1  prevent_destroy on every data resource                    today
-2  build the new platform alongside                          nothing shared, nothing touched
-3  run new pods against the SAME database                    both platforms live
-4  cut over the Cloudflare Tunnel hostname                   rollback = point it back
+2  build the new platform alongside                          own VPC, own data tier
+3  migrate the data                                          dev: none. prod: rehearsed
+4  cut over the Cloudflare Tunnel hostname                   THE ONE-WAY MOMENT
 5  soak and verify                                           see below
 6  scale the ECS service to zero                             still there, still reversible
-7  delete the ECS blocks from the stack configuration        data untouched
+7  DESTROY the old stack outright                            no surgery
 8  delete modules, workflows and dead code                   last
 ```
+
+**Steps 3 and 4 changed on 2026-09-20 and step 7 changed with them.** Step 3 used to read "run new
+pods against the SAME database — both platforms live", which made step 4 reversible and step 7 an
+excavation. The new estate is self-contained — its own VPC (`live/platform-{dev,prod}`) and its own
+data tier (`live/data-{dev,prod}`) — so step 7 is `tofu destroy` on a stack nobody is using, and the
+cost is that step 4 is now the point of no return. The full argument, both options for the prod
+migration, and what "point of no return" obliges you to decide in advance are above.
 
 **Steps 6 and 7 are deliberately separate.** Scaling to zero is free and instantly reversible;
 deleting configuration is neither. Nothing is deleted while it could still be needed in a hurry.

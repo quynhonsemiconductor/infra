@@ -148,19 +148,40 @@ develop build."*
 ## 2.4 Subnet resize — the one with real risk
 
 ```
-DO       resize private subnets /24 → /20 in runtime-dev, then runtime-prod
-         enable prefix delegation on the VPC CNI
-HAPPENS  subnets are RECREATED. Existing ECS tasks keep their IPs; new
-         placements use the new range.
-KNOW IT  `aws ec2 describe-subnets` shows /20, and existing services stay healthy
-DO FIRST dev. Watch for a day. Then prod, in the Mon 04:30-06:00 UTC window.
+DO       add the /20 CLUSTER subnets in runtime-dev, then runtime-prod.
+         `cluster_subnet_cidrs` is already set in both — this is an apply.
+         NOTHING to do about prefix delegation. See below.
+HAPPENS  three new subnets per VPC, associated with the EXISTING private route
+         tables. No existing subnet is touched. No ECS task is touched.
+KNOW IT  `aws ec2 describe-subnets --filters Name=tag:Tier,Values=cluster` returns
+         three /20s per VPC, and the /24 private subnets are still there
+DO FIRST dev. Then prod — and it no longer needs a maintenance window, because
+         nothing is recreated.
 IF NOT   §15c failure #2 — pods stuck in ContainerCreating with no obvious cause,
-         at roughly fifteen services. The space is free today and requires
-         recreating subnets under load later.
+         at roughly fifteen services.
 ```
 
-This is the only Part 2 step that touches live networking. It is also the only one
-that cannot be done after the cluster exists.
+**THIS STEP USED TO BE WRONG, AND WRONG IN THE DIRECTION THAT COSTS AN OUTAGE.**
+It said "resize private subnets /24 → /20" and "subnets are RECREATED. Existing
+ECS tasks keep their IPs". They do not. AWS has **no subnet-resize operation**;
+`cidr_block` on `aws_subnet` forces replacement, and a subnet with attached ENIs
+cannot be deleted — so the apply fails part-way, after whatever it managed to do
+first, against the VPC running production. Corrected 2026-09-19.
+
+What happens instead is additive: a fourth tier, `Tier = cluster`, routed through
+the private route tables so it inherits NAT egress and the free S3 gateway
+endpoint. The ECS /24s keep every task where it is, which is also what keeps
+§17b's cutover reversible.
+
+**Prefix delegation needs nothing.** EKS Auto Mode already defaults to /28 prefix
+delegation, and AWS states that VPC CNI configuration options do not apply to Auto
+Mode. There is no addon to configure and adding one would be inert. That default
+is also why a /24 was too small: Auto Mode reserves 16 addresses per node up
+front, so a /24 is about fifteen nodes per AZ, shared with ECS.
+
+This is no longer the only Part 2 step that touches live networking — it is now
+the only one that **adds** to it. It is still the one that cannot be done
+comfortably after the cluster exists.
 
 ---
 
@@ -238,17 +259,25 @@ before cluster-prod, which reads its state for both the roles and the alert topi
 ## 3.4 Apply the stacks, in this order
 
 ```
+0  bootstrap         RE-APPLY. It now also creates the chart's OCI repository,
+                     `charts/qnsc-service` (task 1.8). Nothing else in this list
+                     matters without it: every ArgoCD Application pins that chart
+                     as its source, and ECR does not create a repository on push.
 1  security-baseline the three human role ARNs and the alert topic 3.3 checks.
                      NOT `organization` — an earlier version of this list said
                      that, and it exports permission sets, not role ARNs.
                      (`organization` cannot plan today anyway: AccessDenied on
                      sso:DescribePermissionSet and organizations:ListAccounts.
                      It is in NOT_PLANNABLE with the diagnosis.)
-2  runtime-prod      already applied; confirm the /20 from 2.4
+2  runtime-prod      NOT "confirm". It ADDS three /20 cluster subnets — a real
+                     change to an applied production stack. Read the plan.
 3  data-prod         qnsc-shared-prod, the cache
-4  cluster-prod      FIRST of the two — it outputs argocd_role_arn
+4  cluster-prod      FIRST of the two — it outputs argocd_role_arn, and now also
+                     qnsc-prod-argocd-ecr for the chart-token refresher
 5  runtime-dev · data-dev
-6  cluster-dev       consumes argocd_role_arn
+6  cluster-dev       consumes argocd_role_arn. Also exports the API server CA,
+                     which ArgoCD's cluster registration needs and which was
+                     missing until 2026-09-19
 
 HAPPENS  ~$146/month starts. Two clusters exist and run nothing.
 KNOW IT  `aws eks describe-cluster` returns ACTIVE for both
@@ -260,18 +289,48 @@ going to at least 4.3.
 ## 3.5 Bootstrap the platform
 
 ```
-DO       follow gitops/platform/argocd/bootstrap.md exactly. The ordering is not
-         arbitrary and each line says why.
-HAPPENS  namespaces, policy, ESO, KEDA, Gateway, cloudflared, Alloy, ArgoCD.
-         The last manual command is `kubectl apply -f apps/root.yaml`.
-KNOW IT  argocd app list shows root Synced, and the ApplicationSets have
-         generated Applications
+DO       follow gitops/platform/README.md's apply order exactly. The ordering is
+         not arbitrary and each step says why. Four things in it did not exist
+         before 2026-09-19 and every one of them is load-bearing:
+
+         0  platform/compute/     BEFORE ARGOCD. Auto Mode's built-in
+                                  general-purpose pool is amd64-only and
+                                  on-demand-only, and ArgoCD's own pods ask for
+                                  capacity-type: spot. Skip this and ArgoCD
+                                  never schedules, so there is nothing running
+                                  to reconcile root.yaml. Replace ENV first, and
+                                  verify the cluster security-group tag the
+                                  NodeClass selects on — a NodeClass that matches
+                                  nothing fails at runtime, silently.
+         5  PUBLISH THE CHART     `chart-release.yaml` on a chart-v* tag. It has
+                                  NEVER RUN (task 1.8) because there was no
+                                  registry; step 0 of 3.4 creates it. Until
+                                  0.1.0 exists in ECR, every Application fails
+                                  at source resolution.
+         6b argocd/ecr-credential.yaml  the CronJob that keeps the chart
+                                  repository Secret current. An ECR token lasts
+                                  12 HOURS, and when it lapses the Application
+                                  keeps reporting Synced against the version it
+                                  already has — a deploy that goes green and
+                                  changes nothing.
+         6c argocd/clusters.yaml  registers `dev` and `prod`. appsets/products.yaml
+                                  addresses clusters by NAME; nothing resolved
+                                  those names until this file existed. Fill
+                                  DEV_CLUSTER_ENDPOINT and DEV_CLUSTER_CA_DATA
+                                  from cluster-dev's outputs.
+HAPPENS  namespaces, node pools, policy, ESO, KEDA, Gateway, cloudflared, Alloy,
+         clamd, ArgoCD. The last manual command is `kubectl apply -f apps/root.yaml`.
+KNOW IT  `kubectl get nodes` returns nodes on BOTH arm64 and spot — that is the
+         proof step 0 worked, and it is the check that would have caught its
+         absence. Then argocd app list shows root Synced and the ApplicationSets
+         have generated Applications.
 THEN     DELETE THE DEV CLUSTER AND REBUILD IT FROM THIS RUNBOOK. TIME IT.
          WRITE THE NUMBER INTO §13.
 ```
 
 That last line is §13's demand, and until it happens the RTO figures there are
-estimates. It is also the only way to find what is not in git.
+estimates. It is also the only way to find what is not in git — which is exactly
+how the four items above were found, by tracing the path on paper instead.
 
 ---
 
@@ -283,9 +342,19 @@ nobody would notice proves the easy case. qnsc-kb dev is step 4 and gets its own
 part when it arrives — its stack is already written at `infra/live/kb-dev`.
 
 Two things that did NOT change with the order. Dev still precedes prod: rova prod
-waits for this to soak, and it is a separate stack. And §17b's cutover is still
-the reversible one — build alongside, run against the SAME database, cut the
-Cloudflare Tunnel hostname, roll back by pointing it back.
+waits for this to soak, and it is a separate stack. And dev needs NO DATA
+MIGRATION — the new platform has its own database, so the migrator Job creates the
+schema in an empty one and developers reseed. §5d already says nothing in a
+development environment justifies protecting its data.
+
+**What DID change, on 2026-09-20: the cutover is no longer reversible by pointing
+the hostname back.** §17b used to run new pods against the SAME database, which
+made step 4 an undo button. The new estate is self-contained — its own VPC and its
+own data tier, so that Phase 5 is a `tofu destroy` instead of surgery on a live
+state — and the price is that in PRODUCTION the first write on the Kubernetes side
+is the point of no return. Dev is unaffected, because dev has no data worth
+rolling back to. Read §17b before scheduling any prod cutover; it carries both
+migration options and what each costs in downtime.
 
 ## 4.1 Apply the product stack
 
@@ -317,16 +386,33 @@ WHY      there is no DATABASE_PASSWORD among them, deliberately: §8 chose RDS I
 ## 4.3 Build and deploy
 
 ```
-DO       merge anything to rova's main with the k8s-deploy workflow wired
-HAPPENS  images build as sha-<commit>, CI edits gitops/values/rova/tags.dev.yaml,
-         ArgoCD syncs, the migrator Job runs as a PreSync hook, pods start.
+DO       merge anything to rova's main
+HAPPENS  rova/.github/workflows/k8s-deploy.yml calls ci's k8s-deploy reusable:
+         images build as sha-<commit> for linux/arm64, CI edits
+         gitops/values/rova/tags.dev.yaml, ArgoCD syncs, the migrator Job runs as
+         a PreSync hook, pods start.
 KNOW IT  rova's dev hostname answers, and the migrator Job shows Completed
 WATCH    /v1/readyz — it reports postgres AND valkey, which is what tells you the
          cache index above is right. A green deploy with valkey down is the exact
          failure rova's own notes record from the 2026-08-17 cache migration.
+FIRST    two repository secrets must exist, and neither is an agent's to create:
+         GITOPS_DEV_TOKEN      write to the DEV path only. §10b — a token that can
+                               write prod.yaml makes the promotion review
+                               decorative.
+         GITOPS_PROMOTE_TOKEN  opens the prod pull request, cannot merge it.
+         And rova-github-ecr-push's OIDC trust must accept the two new workflow
+         subjects. No new deploy role: the Kubernetes path touches no cluster, it
+         edits one line in another repository.
 ```
 
-## 4.3 Soak for one week
+**That workflow did not exist until 2026-09-19.** `ci`'s `k8s-deploy.yml` and
+`k8s-promote.yml` were complete and nothing in the estate called either — rova
+still called the ECS `backend-deploy.yml`, and this step used to read "with the
+k8s-deploy workflow wired", which was a condition nobody had met. Both paths now
+run side by side, which is what §17b requires: nothing leaves ECS until Phase 5,
+and `ecs-run-task` keeps running every product's migrations until then.
+
+## 4.4 Soak for one week
 
 §17b's checklist, and *all* of it:
 
