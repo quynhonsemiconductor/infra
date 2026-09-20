@@ -317,6 +317,22 @@ Order matters: remove from the old state only after the import into the new one
 has succeeded, so an interrupted migration leaves the object managed twice rather
 than not at all.
 
+**`infra/scripts/migrate_observability_state.sh` does all of it**, and prefer it to
+the commands below — it reads each import ID out of the old state instead of having
+you transcribe ten UIDs, and Grafana's import IDs are not uniform (a folder is a
+UID, a dashboard is `<folder-uid>:<dashboard-uid>`, the notification policy is the
+literal string `policy`), which is where a hand-made migration goes wrong.
+
+```bash
+./scripts/migrate_observability_state.sh              # dry run — prints every import
+APPLY=true ./scripts/migrate_observability_state.sh   # performs it
+```
+
+It refuses to `state rm` anything until the sibling's plan is **empty**, so a
+configuration that disagrees with what is live in Grafana stops the migration
+instead of being applied past. The commands below are the same steps by hand, kept
+because a script you cannot read is not a runbook.
+
 ```bash
 cd live/observability-alerting
 tofu init

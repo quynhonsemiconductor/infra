@@ -10,8 +10,8 @@ specification.
 ## Status — 2026-09-19
 
 ```
-PHASE 0   0.2 0.4 0.5 0.6 0.7 0.8 done · 0.1 OUTSTANDING (human)
-          0.3 ATTEMPTED AND REVERTED — needs a decision, see below
+PHASE 0   0.2 0.3 0.4 0.5 0.6 0.7 0.8 done · 0.1 OUTSTANDING (human)
+          0.3 shipped as a PLAN GATE, not prevent_destroy — see below
 PHASE 1   COMPLETE
 PHASE 2   2.1-2.8 written and MERGED · 2.7 COMPLETE (clamd now exists)
           2.9 needs the measurement
@@ -446,65 +446,82 @@ DONE   `product`, `env` and `size` are activated as cost allocation tags in Bill
 **No lead time can be bought back here.** A tag activated next year says nothing about this year,
 and §12b's entire contingency plan depends on per-product numbers existing when the bill transfers.
 
-### ⛔ 0.3 `prevent_destroy` on every data resource
+### ✅ 0.3 Stop a plan that would lose data
 
-> **ATTEMPTED 2026-09-19, REVERTED 2026-09-20. STILL OUTSTANDING, and it now needs
-> a decision rather than an implementation.**
+> **DONE 2026-09-20, AND NOT WITH `prevent_destroy`.** The task named a mechanism;
+> what it actually asks for is that nobody can approve a green plan that deletes a
+> database. `prevent_destroy` is one way to get there and, on this estate, the
+> wrong one.
 >
-> The attempt made it a module variable, `protect_from_destroy`, because a
-> `lifecycle` block lives where the resource is declared and every data resource in
-> this estate is declared in `tf-modules` and consumed through a pinned ref. A
-> per-stack edit was never available.
+> **Attempt one, reverted.** A `protect_from_destroy` module variable driving
+> `lifecycle { prevent_destroy }`. CI rejected it: every workflow pins **OpenTofu
+> 1.9.1**, and variables in a `lifecycle` block are a later feature — 1.12 accepts
+> and enforces them, 1.9.1 fails validate with "Variables not allowed". The
+> verification was done on a local 1.12.3 and generalised from this document's own
+> false claim that the estate was 1.12.
 >
-> **CI rejected it and CI was right.** Variables in `prevent_destroy` do not exist
-> in the OpenTofu version this estate pins:
->
-> ```
-> tofu 1.9.1   what every workflow pins.  "Error: Variables not allowed"
-> tofu 1.12.3  a local install.           accepted at plan, enforced at destroy
-> ```
->
-> The verification was done on 1.12.3 and generalised on the strength of this
-> document's own line "The estate is OpenTofu 1.12", which was false. That line is
-> now corrected above. The lesson is cheap to state and was not free to learn:
-> **a local `tofu` newer than the pin will accept configuration CI rejects.**
->
-> **WHY HARDCODING `true` IS NOT THE OBVIOUS FIX.** `prevent_destroy` refuses
-> REPLACEMENT as well as deletion, so a literal `true` in the module would break
-> two operations this estate documents as necessary:
+> **Attempt two, rejected before writing it.** Hardcoding `true` in the modules
+> would work on 1.9.1 and block two operations this estate documents as necessary,
+> because `prevent_destroy` refuses REPLACEMENT as well as deletion:
 >
 > ```
-> docs/rova-subnet-group-rebuild.md   an RDS instance replaced to rename a subnet
->                                     group. Already performed once; prevent_destroy
->                                     would have blocked the plan outright
-> the secrets module's own comments    develop deletes secrets immediately on
->                                     teardown so a destroy+redeploy cycle does not
->                                     hit "secret scheduled for deletion" on the
->                                     recreate. recovery_window_days = 0 exists for
->                                     exactly that
+> docs/rova-subnet-group-rebuild.md   an RDS instance replaced to correct a subnet
+>                                     group name. Already performed once
+> the secrets module's comments       develop deletes secrets immediately on
+>                                     teardown so a destroy+redeploy does not hit
+>                                     "secret scheduled for deletion"
 > ```
 >
-> **THE DECISION OWED.** Three options, and this is a human's call because each
-> trades something real:
+> It also lives in the wrong repository: data resources are declared in
+> `tf-modules`, so protecting a type is a module release plus a caller bump in four
+> repositories — and it protects by TYPE, forever, rather than by what a specific
+> change is about to do.
+>
+> **What shipped: a plan-time gate.** `ci/actions/plan-guard`, wired into
+> `infra-plan.yml`, reads `tofu show -json tfplan` and fails the job if any data
+> resource is being deleted or replaced. Properties that fall out of reading the
+> proposed change rather than annotating the declaration:
 >
 > ```
-> upgrade the estate to OpenTofu 1.12    the variable approach works as designed.
->                                        But it changes the binary that will apply
->                                        real infrastructure, across 7 repositories,
->                                        immediately before the first apply
-> hardcode true, scoped                  protect only resources with no documented
->                                        rebuild path. Excludes the `secrets` module
->                                        and needs a per-resource argument for RDS
-> accept deletion_protection alone       what is in force today. The AWS API
->                                        refuses, so a destroy PLANS cleanly and
->                                        fails part-way through applying. §17b's
->                                        2026-09-14 incident happened with
->                                        deletion_protection ON, because the destroy
->                                        was authorised and protection was turned
->                                        off first, in the same change
+> version-independent   parses plan JSON, which 1.9.1 emits happily. No upgrade,
+>                       and no change to the binary that will apply production
+> blocks nothing        the subnet-group rebuild still works. The plan just has to
+>                       declare that it is doing it
+> covers what is not    any aws_db_instance, aws_rds_cluster, postgresql_database,
+> written yet           aws_elasticache_*, aws_secretsmanager_secret, aws_s3_bucket,
+>                       aws_dynamodb_table or snapshot — including ones added later,
+>                       with no per-module plumbing
+> fails in REVIEW       which is the gap deletion_protection leaves. §17b's
+>                       2026-09-14 incident happened WITH deletion_protection on:
+>                       the destroy was authorised, protection was turned off first,
+>                       in the same change, by someone who had read the plan
 > ```
 >
-> Nothing is applied yet, so the gap costs nothing today. It costs at Phase 5.
+> **The override is a file, deliberately.** To destroy a data resource you add its
+> address to `.allow-data-destroy` in the stack directory, with a reason after `--`.
+> Not a workflow input and not a PR label, because both vanish from the record. A
+> file is a diff someone reviews, it has to be removed afterwards, and the guard
+> reports a stale entry so that it is — the same shape as the lesson in
+> `modules/.checkov.baseline`, where suppressions keyed to something specific
+> stopped matching when the situation changed.
+>
+> An allowance with no reason is refused rather than accepted. "Someone added a line
+> once" is not a decision anybody can review later.
+>
+> **What is NOT protected, and why.** `aws_db_subnet_group` and
+> `aws_db_parameter_group` are absent from the list: they hold no data, they point
+> at it, and one of them is the subject of the documented rebuild. The test is
+> reproducible-from-git, not importance — which is why an ECS service, a security
+> group and a route table are absent too. **Protect what holds data, not what points
+> at it.**
+>
+> 19 tests in `ci/tests/test_plan_guard.py`, including the three ways a guard like
+> this passes when it should not: a replace disguised as a create, an unreadable
+> plan document, and an allowance with no reason.
+>
+> `deletion_protection = true` stays on production RDS as the AWS-side backstop.
+> The two are complementary: one makes the API refuse, the other makes the review
+> refuse.
 
 ```text
 OWNER  PAIR
