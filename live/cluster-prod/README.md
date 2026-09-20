@@ -11,21 +11,56 @@ The two EKS clusters. §2 of `infra/docs/kubernetes-platform-design.md`.
 ## Apply order
 
 ```
-1  runtime-dev / runtime-prod    subnets resized /24 → /20, prefix delegation (§3)
+1  runtime-dev / runtime-prod    the /20 CLUSTER subnets are ADDED (§3, task 0.6)
 2  organization                  the Identity Center permission sets this consumes
 3  cluster-prod                  FIRST — it outputs argocd_role_arn
 4  cluster-dev                   consumes it
-5  bootstrap ArgoCD in prod       then apply gitops/apps/root.yaml
+5  bootstrap ArgoCD in prod      platform/compute FIRST, then gitops/apps/root.yaml
 ```
 
-**The subnet resize is not optional and not reversible under load.** §3:
+**Step 5's order is not cosmetic.** ArgoCD's own pods ask for
+`karpenter.sh/capacity-type: spot`, and Auto Mode's built-in `general-purpose`
+pool is on-demand-only and amd64-only — see `compute_config` in `main.tf`. Apply
+`gitops/platform/compute/` before ArgoCD, or ArgoCD never schedules and there is
+nothing running to reconcile `root.yaml`.
+
+**The subnets are ADDED, not resized — and the earlier wording here was wrong.**
+This file used to say "subnets resized /24 → /20" and call the resize "not
+optional and not reversible under load". It is worse than that: it is **not
+available**. AWS has no operation that resizes a subnet, `cidr_block` on
+`aws_subnet` forces replacement, and `runtime-prod` is applied with production
+ECS ENIs in its private subnets — so the plan is a destroy the EC2 API refuses
+part-way, and the only way to make it succeed is to drain production first.
+
+What actually happens is a fourth subnet tier at /20 (`cluster_subnet_cidrs`),
+routed through the existing private route tables so it inherits NAT egress and
+§3's free S3 gateway endpoint. The ECS /24s do not move. That also makes the step
+reversible, which a resize never was.
+
+§3 on why /20 at all:
 
 > "The AWS VPC CNI assigns every pod a *real subnet IP*… At fifteen services with
 > replicas, plus Alloy on every node, plus system workloads, that is not enough —
 > and exhaustion presents as pods stuck in `ContainerCreating` with no obvious
 > cause."
 
-§15c lists it as failure #2, arriving at roughly fifteen services.
+§15c lists it as failure #2, arriving at roughly fifteen services. Auto Mode makes
+a /24 worse than that reads: it reserves a **/28 per node up front**, so a /24 is
+about fifteen nodes per AZ, shared with whatever ECS still holds.
+
+## Prefix delegation is already on, and is not configurable
+
+Task 0.6's second half — "the VPC CNI has prefix delegation enabled" — needs no
+work and cannot be done. AWS: *"EKS Auto Mode defaults to using prefix delegation
+(/28 prefixes) for pod networking"*, and *"Configuration options for the previous
+AWS VPC CNI will not apply to EKS Auto Mode"*. Auto Mode explicitly does not
+support warm IP / warm prefix / warm ENI or minimum-IP-target configuration.
+
+So there is no `vpc-cni` addon to configure here, and adding one would be inert.
+The only related knob is `advancedNetworking.ipv4PrefixSize: "32"` on a custom
+NodeClass, which turns prefix delegation **off** in favour of one IP per pod — the
+right choice for pod-sparse workloads at hundreds of nodes per AZ, and the wrong
+one here.
 
 ## What differs between the two
 
@@ -89,13 +124,25 @@ week, then prod.
 
 ```
 an ALB                     §3 — Cloudflare Tunnel replaces the load balancer.
-                           elastic_load_balancing.enabled = false
+                           BUT elastic_load_balancing.enabled = TRUE, because Auto
+                           Mode rejects a mixed configuration: compute, block
+                           storage and load balancing must all be true or all
+                           false. It enables the CONTROLLER, not a balancer —
+                           nothing is provisioned until something asks, and §3
+                           routes through Gateway API behind the tunnel, so
+                           nothing does. (This line used to claim `false`, which
+                           the code has never said.)
 a public API endpoint      endpoint_public_access = false. "No inbound surface is
                            the strongest property of the current architecture"
-a dedicated system pool    §2 — system pods run on the general Spot pool with PDBs
+a dedicated system pool    §2 — system pods run on the general SPOT pool with PDBs
                            and topology spread. Instance-family diversity beats two
                            on-demand nodes, because what kills a Spot workload is a
-                           CORRELATED reclaim across one capacity pool
+                           CORRELATED reclaim across one capacity pool.
+                           THAT POOL IS gitops/platform/compute/nodepools.yaml, and
+                           until it was written it did not exist anywhere — this
+                           line described an intention, not a resource. Auto Mode's
+                           built-in `general-purpose` is on-demand-only and
+                           amd64-only and cannot be modified.
 controllerManager /        high volume, and nothing in §10b's alert list reads them
 scheduler logs
 ```

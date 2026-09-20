@@ -107,20 +107,29 @@ jobs:
           #                 money") and that was reordered deliberately. Both
           #                 stacks exist; only the order changed.
           #
-          #   observability `the Grafana client is required for this resource`, on
-          #                 grafana_folder.company and data.grafana_data_source
-          #                 .prometheus. NOT a missing secret — the plan job has
-          #                 passed TF_VAR_grafana_cloud_api_key since before this
-          #                 list existed. Those resources use the `grafana.stack`
-          #                 provider ALIAS, whose url and auth are
-          #                 `grafana_cloud_stack.qnsc.url` and
-          #                 `grafana_cloud_stack_service_account_token.alerting.key`
-          #                 — attributes of resources in the same stack. Until
-          #                 those exist they are unknown, so the aliased provider
-          #                 cannot be configured and every resource under it fails.
-          #                 A provider configured from a resource it plans
-          #                 alongside; the fix is to split the stack or apply in
-          #                 two phases, not to add a credential.
+          #   observability-alerting
+          #                 reads `observability`'s state for the Grafana INSTANCE
+          #                 url and the stack service-account token that configure
+          #                 its `grafana` provider. `observability` itself now
+          #                 plans cleanly (its resources use only the default
+          #                 provider, configured from var.grafana_cloud_api_key)
+          #                 and has simply never been applied — the same
+          #                 cluster-prod -> cluster-dev shape.
+          #
+          #                 This REPLACES the old `observability` provider-alias
+          #                 diagnosis: the single stack used to configure an
+          #                 aliased provider from `grafana_cloud_stack.qnsc.url`
+          #                 and `..._service_account_token.alerting.key`, resources
+          #                 in the SAME plan, so the client could never configure
+          #                 against an empty state ("the Grafana client is required
+          #                 for this resource"). It was never a missing secret —
+          #                 TF_VAR_grafana_cloud_api_key was always passed. The fix
+          #                 was to split the stack in two, which is done: the
+          #                 provider is now configured from the sibling's outputs
+          #                 via terraform_remote_state, known before any resource
+          #                 is evaluated. So `observability` left this list, and
+          #                 `observability-alerting` takes its place until the
+          #                 first apply of `observability`.
           #
           #   organization  AccessDenied on sso:DescribePermissionSet,
           #                 organizations:ListAccounts and
@@ -143,11 +152,65 @@ jobs:
           #                 the next person an afternoon — see observability above,
           #                 where exactly that happened.
           #
-          # Keeping them here rather than dropping the derivation: `data-dev` and
-          # `data-prod` plan cleanly today and never did before, any NEW stack is
-          # planned by default, and each gap above is now named in code instead of
-          # being absent from a list nobody compared to anything.
-          NOT_PLANNABLE="rova-dev kb-dev cluster-dev observability organization"
+          # ── THE NEW VPC CHANGED THIS LIST, 2026-09-20 ────────────────────
+          #
+          #   data-{dev,prod}     LEFT the plannable set. They used to read
+          #   cluster-{dev,prod}  `platform/runtime-{dev,prod}`, which is APPLIED,
+          #                       so they planned cleanly. They now read
+          #                       `platform/platform-{dev,prod}` — the estate's own
+          #                       new VPCs, created so the ECS estate can be
+          #                       DESTROYED rather than carved (§17b). Those states
+          #                       do not exist yet, so a remote-state read returns
+          #                       nothing and the plan fails on a subnet list that
+          #                       is null rather than empty.
+          #
+          #                       This is a DEPENDENCY, not a defect, and it is the
+          #                       same shape as cluster-dev needing cluster-prod.
+          #                       They become plannable the moment platform-prod
+          #                       and platform-dev are applied, which is the first
+          #                       step of the chain in
+          #                       infra/docs/runbook-first-deploy.md.
+          #
+          #   platform-{dev,prod} PLAN CLEANLY and are NOT excluded. They read no
+          #                       remote state at all — a VPC depends on nothing —
+          #                       which is exactly why they go first.
+          #
+          #   observability       BACK IN THIS LIST, and for a DIFFERENT reason than
+          #                       before. It briefly left on 2026-09-20 when the
+          #                       stack was split; putting it back is the correction.
+          #
+          #                       THE SPLIT NEEDS A STATE MIGRATION AND CODE ALONE
+          #                       DOES NOT PERFORM ONE. This stack HAS BEEN APPLIED:
+          #                       its state holds grafana_folder.{alerts,slos,
+          #                       rally_dashboards,...} created by the `grafana.stack`
+          #                       provider alias. Moving the code to
+          #                       `observability-alerting` removed that alias, so the
+          #                       plan now fails with:
+          #
+          #                         Error: Provider configuration not present
+          #                         To work with grafana_folder.alerts (orphan) its
+          #                         original provider configuration at
+          #                         provider["...grafana/grafana"].stack is required,
+          #                         but it has been removed.
+          #
+          #                       That is a BETTER error than the one it replaced —
+          #                       it names the exact objects and what to do — but it
+          #                       is still a failing plan, and it will fail until
+          #                       each object is removed from this stack's state and
+          #                       imported into the sibling's. `moved` blocks cannot
+          #                       do it: they do not cross state files.
+          #
+          #                       The migration needs credentials, so it is written
+          #                       up rather than performed — see
+          #                       infra/docs/runbook-first-deploy.md. Nothing is lost
+          #                       meanwhile: the Grafana objects keep existing and
+          #                       keep working, they are simply unmanaged until the
+          #                       state moves.
+          #
+          # Keeping the exclusions named in code rather than dropping the
+          # derivation: any NEW stack is planned by default, and each gap is named
+          # here instead of being absent from a list nobody compared to anything.
+          NOT_PLANNABLE="rova-dev kb-dev data-dev data-prod cluster-dev cluster-prod observability observability-alerting organization"
 
           SKIPPED=""
           PLANNABLE=""

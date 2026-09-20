@@ -42,3 +42,21 @@ output "cloudflare_ipv4" {
   value       = local.cloudflare_ipv4
   description = "Cloudflare IPv4 ranges — products read this for prod ALB ingress allow-lists (single source of truth)"
 }
+
+# Task 1.8, §11c — the OCI repository `gitops/appsets/products.yaml` gives every
+# Application as its chart source, and the one `chart-release.yaml` pushes to.
+#
+# Exposed as an output rather than left to be read off the console because two
+# different things must agree on it and neither reads the other: the
+# ApplicationSet's `repoURL`/`chart` pair, and the ARN in ArgoCD's chart-pull
+# policy (`cluster-prod/iam.tf`). A disagreement is a sync failure at source
+# resolution, which does not name the repository.
+output "chart_repository_url" {
+  value       = module.chart_registry.repository_urls["charts/qnsc-service"]
+  description = "OCI repository holding the qnsc-service Helm chart."
+}
+
+output "chart_repository_arn" {
+  value       = module.chart_registry.repository_arns["charts/qnsc-service"]
+  description = "ARN of the chart repository — what a pull policy scopes to."
+}

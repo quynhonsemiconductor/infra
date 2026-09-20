@@ -73,6 +73,63 @@ module "artifacts_bucket" {
   tags        = { Layer = "platform" }
 }
 
+# ── The Helm chart's OCI registry — task 1.8, §11c ──────────────────────────
+#
+# WITHOUT THIS, NOTHING DEPLOYS. `gitops/appsets/products.yaml` gives every
+# Application a source of:
+#
+#   repoURL: 608983206583.dkr.ecr.ap-southeast-1.amazonaws.com
+#   chart:   charts/qnsc-service
+#
+# and ECR does not create a repository on first push. So `chart-release.yaml` has
+# nowhere to push, ArgoCD has nothing to resolve, and every Application — rova-dev
+# included — fails at source resolution rather than at anything that looks like a
+# cause. Found 2026-09-19 while tracing the delivery path end to end; task 1.8
+# required `image_tag_mutability = IMMUTABLE` on this repository and the
+# repository itself was never declared anywhere.
+#
+# WHY IT LIVES IN `bootstrap` AND NOT PER PRODUCT OR PER ENVIRONMENT.
+# The chart is ONE artefact the whole estate shares, versioned rather than
+# environment-scoped — which is §7c's argument against a per-environment image
+# repository, applied to the chart. `live/<product>-shared` is the home for
+# product ECR (repository-boundaries.md), and the chart is not a product.
+# `bootstrap` already owns the other account-wide artefact store
+# (`artifacts_bucket`) and the CMK both are encrypted with, so this is the same
+# class of thing in the same place.
+#
+# IMMUTABLE MATTERS MORE HERE THAN ON AN IMAGE. Every Application pins
+# `targetRevision: "0.1.0"`. If that version can be rewritten underneath them, one
+# `helm push` silently changes the rendered manifests of every product in both
+# environments at once — the single widest blast radius in the estate. §11c: "a
+# version cannot be rewritten."
+#
+# NOTHING EXPIRES A CHART VERSION, and that is deliberate rather than a gap in the
+# module's lifecycle policy. The module writes three rules, keyed on tag PREFIX:
+# untagged after 1 day, `v*` after `release_retention_days`, and the newest
+# `sha-*` by count. `helm push` tags with Chart.yaml's version — `0.1.0` — which
+# matches neither prefix, so only the untagged rule can ever apply, and that one
+# only reaps orphaned layers. This is load-bearing: an expired chart version
+# breaks every Application pinned to it, and the failure arrives at the next sync,
+# long after the push that caused it.
+module "chart_registry" {
+  # checkov:skip=CKV_TF_1: a version TAG, not a commit hash, and that is the
+  #   estate's convention — every other stack pins the same way (network-v1.4.0,
+  #   rds-v2.3.0, cf-r2-v1.1.0). release-please cuts these tags, so the ref is as
+  #   immutable as a SHA in practice and a module upgrade stays a diff someone can
+  #   read. `?ref=<40 hex chars>` would make the one line that says WHICH VERSION
+  #   unreadable, in the change reviewers actually look at.
+  source = "git::https://github.com/quynhonsemiconductor/tf-modules.git//modules/ecr?ref=ecr-v2.1.0"
+
+  repository_names = ["charts/qnsc-service"]
+
+  # Task 1.8, §11c. Also the module's default — stated anyway, because this is the
+  # one repository where mutability would reach every product at once.
+  image_tag_mutability = "IMMUTABLE"
+
+  kms_key_arn = module.kms.key_arn
+  tags        = { Layer = "platform" }
+}
+
 # ── GitHub OIDC — this repo's own infra-plan/infra-apply roles ──────────────
 # plan.yml/apply.yml assume qnsc-github-infra-plan / qnsc-github-infra-apply.
 # environments left empty — no per-environment app deploy role needed here
