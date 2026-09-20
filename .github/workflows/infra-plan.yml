@@ -375,6 +375,20 @@ jobs:
           TF_VAR_grafana_cloud_api_key: ${{ secrets.GRAFANA_CLOUD_API_KEY }}
           TF_VAR_teams_webhook_url:     ${{ secrets.TEAMS_ALERTS_WEBHOOK_URL }}
 
+      # TASK 0.3 / §17b — refuse a plan that would lose data, before anyone reads
+      # it. Runs BEFORE the plan comment on purpose: if the answer is "this deletes
+      # a database", that should be the first thing in the job log, not a footnote
+      # under sixty thousand characters of diff.
+      #
+      # `if: always()` so it still runs when the plan reported changes (exit 2) —
+      # which is every plan worth guarding.
+      - name: Data-destroy guard
+        if: always() && steps.plan.outputs.exitcode != '1'
+        uses: quynhonsemiconductor/ci/actions/plan-guard@v1
+        with:
+          plan-file: tfplan
+          working-directory: live/${{ matrix.stack }}
+
       - name: Post plan comment
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
         env:
