@@ -195,6 +195,23 @@ data "aws_iam_policy_document" "argocd_trust" {
       identifiers = [aws_iam_openid_connect_provider.this.arn]
     }
 
+    # ONE SUBJECT, and the reason is worth stating because `values.yaml` used to
+    # imply two. The application-controller is the component that talks to the DEV
+    # cluster, which is what this role is for — cluster-dev grants it an access
+    # entry. The repo-server does NOT assume this role: it pulls the chart using
+    # the repository Secret the ECR refresher keeps current (see
+    # `aws_iam_role.argocd_ecr` below), so it needs no AWS identity at all.
+    #
+    # `gitops/platform/argocd/values.yaml` annotated the repo-server's
+    # ServiceAccount with this role anyway. That annotation granted nothing — the
+    # repo-server's SA is `argocd-repo-server`, which is not in this list, so the
+    # token exchange fails with "Not authorized to perform
+    # sts:AssumeRoleWithWebIdentity". It is the SAME BUG already recorded below
+    # for eso and keda on 2026-09-16: a ServiceAccount name in one repository and
+    # a trust condition in another, with nothing comparing them. The annotation
+    # has been removed rather than the subject added, because adding it would have
+    # granted dev cluster-admin to the component that renders untrusted Helm
+    # charts.
     condition {
       test     = "StringEquals"
       variable = "${replace(aws_eks_cluster.this.identity[0].oidc[0].issuer, "https://", "")}:sub"
@@ -209,11 +226,54 @@ resource "aws_iam_role" "argocd" {
   tags               = local.tags
 }
 
-# Pulling the chart from ECR (§11c). Nothing else — ArgoCD reaches the dev cluster
-# through the access entry cluster-dev grants this role, not through an IAM policy.
-resource "aws_iam_role_policy" "argocd_ecr" {
+# ── The chart-pull credential, and why it is a CronJob's role ───────────────
+#
+# ArgoCD 3.x HAS NO NATIVE ECR AUTHENTICATION for an OCI Helm repository. The
+# repo-server reads a repository Secret with a username and password, and an ECR
+# authorization token IS that password — but it EXPIRES AFTER 12 HOURS.
+#
+# That expiry is the reason this is not simply an IRSA annotation on the
+# repo-server. A static Secret works until lunchtime and then stops, and the
+# symptom is not an auth error anyone sees: the Application keeps reporting Synced
+# and Healthy against the chart version it already resolved, while silently never
+# seeing a new one. A deploy that "went green and changed nothing" is how that
+# presents.
+#
+# So `gitops/platform/argocd/ecr-credential.yaml` runs a CronJob every 6 hours
+# that mints a token and patches the Secret. THIS is the role it assumes, and the
+# permissions live here rather than on `aws_iam_role.argocd` because an ECR
+# authorization token carries the permissions of whoever minted it — so the
+# minter, not the reader, is what must be allowed to pull.
+data "aws_iam_policy_document" "argocd_ecr_trust" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+
+    principals {
+      type        = "Federated"
+      identifiers = [aws_iam_openid_connect_provider.this.arn]
+    }
+
+    # MUST MATCH the ServiceAccount in gitops/platform/argocd/ecr-credential.yaml.
+    # Nothing compares these two files — see the eso/keda incident below, and the
+    # repo-server annotation above, both of which were this exact mismatch.
+    condition {
+      test     = "StringEquals"
+      variable = "${replace(aws_eks_cluster.this.identity[0].oidc[0].issuer, "https://", "")}:sub"
+      values   = ["system:serviceaccount:argocd:argocd-ecr-refresher"]
+    }
+  }
+}
+
+resource "aws_iam_role" "argocd_ecr" {
+  name               = "${local.name}-argocd-ecr"
+  assume_role_policy = data.aws_iam_policy_document.argocd_ecr_trust.json
+  tags               = local.tags
+}
+
+resource "aws_iam_role_policy" "argocd_ecr_refresh" {
   name = "chart-pull"
-  role = aws_iam_role.argocd.id
+  role = aws_iam_role.argocd_ecr.id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -221,19 +281,22 @@ resource "aws_iam_role_policy" "argocd_ecr" {
       {
         # The only ECR action that CANNOT be scoped: it mints a registry-wide
         # token and AWS rejects any Resource but "*". On its own it grants
-        # nothing — every read below is scoped.
+        # nothing — the token inherits the reads below, which ARE scoped.
         Effect   = "Allow"
         Action   = "ecr:GetAuthorizationToken"
         Resource = "*"
       },
       {
-        # The chart, and nothing else. `Resource = "*"` here would have let
-        # ArgoCD pull every product image in the account, which is not what
-        # "pulling the chart from ECR" means (§11c).
+        # The chart, and nothing else. `Resource = "*"` here would mint a token
+        # that pulls every product image in the account, and that token is written
+        # into a Kubernetes Secret — so its scope is the blast radius if the
+        # argocd namespace is ever read (§8's argument against a
+        # ClusterSecretStore, one layer down).
         Effect = "Allow"
         Action = [
           "ecr:BatchGetImage",
           "ecr:GetDownloadUrlForLayer",
+          "ecr:BatchCheckLayerAvailability",
           "ecr:DescribeImages",
         ]
         Resource = "arn:aws:ecr:${local.region}:${data.aws_caller_identity.this.account_id}:repository/charts/*"

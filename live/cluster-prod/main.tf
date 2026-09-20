@@ -49,7 +49,7 @@ data "terraform_remote_state" "network" {
   backend = "s3"
   config = {
     bucket = "qnsc-tofu-state"
-    key    = "platform/runtime-prod/terraform.tfstate"
+    key    = "platform/platform-prod/terraform.tfstate"
     region = "ap-southeast-1"
   }
 }
@@ -58,7 +58,7 @@ data "terraform_remote_state" "network" {
 # version bump to a module every live product consumes. Looking them up from the
 # subnets is exact, read-only, and touches nothing.
 data "aws_route_table" "private" {
-  for_each  = toset(data.terraform_remote_state.network.outputs.private_subnet_ids)
+  for_each  = toset(data.terraform_remote_state.network.outputs.cluster_subnet_ids)
   subnet_id = each.value
 }
 
@@ -116,6 +116,60 @@ resource "aws_vpc_endpoint" "s3" {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Pod → data tier. WITHOUT THIS, NOTHING CONNECTS.
+#
+# The `network` module writes `rds_from_app` and `cache_from_app` ingress rules
+# that admit traffic from its OWN `app` security group — the one it was written
+# for, when the only clients were ECS tasks. EKS Auto Mode does not use that
+# group: it attaches the EKS-MANAGED CLUSTER security group to every node, and
+# `gitops/platform/compute/nodeclass.yaml` selects exactly that group by its
+# `kubernetes.io/cluster/<name>: owned` tag.
+#
+# So out of the box a pod's packets arrive at the database's security group from a
+# source it does not admit, and are dropped. The failure is the worst shape there
+# is to debug: no rejection, no log line on either side, just a TCP connect that
+# hangs until the client's timeout — which for the app role is 30s, and for the
+# migrator 600s. Nothing in `tofu plan`, `helm template` or admission says a word.
+#
+# Found 2026-09-19 while giving the platform its own VPC, which is what made the
+# question visible: the old VPC's rules had been written for ECS and inherited by
+# accident, not by design.
+#
+# THE RULE BELONGS HERE, not in the network module or the data stack, because the
+# cluster security group is created BY the cluster — it does not exist until this
+# stack applies, and only this stack knows its id. That also makes the grant
+# readable as what it is: "this cluster may reach the data tier", one hop, in the
+# file that creates the cluster.
+locals {
+  # `vpc_config[0].cluster_security_group_id` is the group EKS creates and
+  # attaches to Auto Mode nodes. NOT `aws_security_group.*` — this stack creates
+  # none — and not the network module's `app` group.
+  cluster_sg_id = aws_eks_cluster.this.vpc_config[0].cluster_security_group_id
+}
+
+resource "aws_vpc_security_group_ingress_rule" "rds_from_cluster" {
+  security_group_id            = data.terraform_remote_state.network.outputs.sg_rds_id
+  referenced_security_group_id = local.cluster_sg_id
+  from_port                    = 5432
+  to_port                      = 5432
+  ip_protocol                  = "tcp"
+  description                  = "Postgres from EKS pods (${local.name})"
+
+  tags = merge(local.tags, { Name = "${local.name}-rds-from-cluster" })
+}
+
+resource "aws_vpc_security_group_ingress_rule" "cache_from_cluster" {
+  security_group_id            = data.terraform_remote_state.network.outputs.sg_cache_id
+  referenced_security_group_id = local.cluster_sg_id
+  from_port                    = 6379
+  to_port                      = 6379
+  ip_protocol                  = "tcp"
+  description                  = "Valkey from EKS pods (${local.name})"
+
+  tags = merge(local.tags, { Name = "${local.name}-cache-from-cluster" })
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # The cluster
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -139,7 +193,37 @@ resource "aws_eks_cluster" "this" {
   # NOTE: Auto Mode manages NODES. The control-plane version above is still ours
   # to bump (§2b).
   compute_config {
-    enabled       = true
+    enabled = true
+
+    # `general-purpose` IS NOT SUFFICIENT ON ITS OWN, and it is kept for two
+    # narrow reasons rather than as the estate's node pool.
+    #
+    # AWS documents this built-in pool as amd64 ONLY, on-demand ONLY, C/M/R,
+    # generation 5+, and NOT MODIFIABLE — enable or disable, nothing else. Every
+    # pod this estate renders asks for something it cannot give: `arch: arm64`
+    # across every product values file, and `capacity-type: spot` for ArgoCD, ESO,
+    # KEDA, Alloy, Envoy Gateway and cloudflared. Applied alone, this pool yields a
+    # cluster on which ARGOCD ITSELF NEVER SCHEDULES, so nothing is running to
+    # reconcile `gitops/apps/root.yaml` — the one thing installed by hand.
+    #
+    # The pools that do the work are custom, and they live in
+    # `gitops/platform/compute/` because a NodePool is a Kubernetes object, not an
+    # AWS one (§7: OpenTofu owns what outlives a deploy; ArgoCD owns the rest).
+    # `ci/scripts/platform_conformance.py --only schedulable` fails if a rendered
+    # nodeSelector has no pool that can satisfy it.
+    #
+    # WHY KEEP IT ENABLED AT ALL:
+    #   1. Enabling at least one built-in pool is what makes AWS provision the
+    #      `default` NodeClass. Disabling all of them means creating a NodeClass
+    #      AND an EKS access entry of type EC2 for its role by hand — two more
+    #      bootstrap steps, before ArgoCD exists to do them.
+    #   2. It is a floor of last resort for amd64/on-demand system workloads if a
+    #      custom pool is ever misconfigured. It costs nothing while idle:
+    #      Karpenter provisions from a pool only when a pod matches it.
+    #
+    # `system` stays OFF — §2, no dedicated on-demand system pool. It also carries
+    # a `CriticalAddonsOnly` taint nothing here tolerates, so enabling it would
+    # schedule nothing new.
     node_pools    = ["general-purpose"]
     node_role_arn = aws_iam_role.node.arn
   }
@@ -167,7 +251,24 @@ resource "aws_eks_cluster" "this" {
   }
 
   vpc_config {
-    subnet_ids = data.terraform_remote_state.network.outputs.private_subnet_ids
+    # The /20 cluster tier in `platform-prod` — this cluster's OWN VPC.
+    #
+    # This used to read `runtime-prod`'s subnets, and moving it is what makes
+    # Phase 5 a deletion instead of surgery. While the new platform's data tier
+    # lived inside the old VPC, `runtime-prod` could never be destroyed; now the
+    # Kubernetes estate is self-contained and the whole ECS estate can go at once.
+    # See `live/platform-prod/main.tf` for the full argument and for what the
+    # trade costs — a real data migration, because §17b's "same database" cutover
+    # is no longer what happens.
+    #
+    # Sized for Auto Mode's pod networking: it reserves a /28 per node up front,
+    # so a /24 exhausts at roughly fifteen nodes per AZ, which is §15c's failure
+    # #2 and presents as pods stuck in `ContainerCreating`.
+    #
+    # An EMPTY list here means `platform-prod` has not been applied yet.
+    # `aws_eks_cluster` rejects that at PLAN time rather than creating something
+    # subtly wrong, which is the right order to fail in.
+    subnet_ids = data.terraform_remote_state.network.outputs.cluster_subnet_ids
 
     # §3 — "no inbound surface is the strongest property of the current
     # architecture." The API server is private; humans reach it through

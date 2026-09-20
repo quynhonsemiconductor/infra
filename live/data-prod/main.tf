@@ -53,7 +53,7 @@ data "terraform_remote_state" "network" {
   backend = "s3"
   config = {
     bucket = "qnsc-tofu-state"
-    key    = "platform/runtime-prod/terraform.tfstate"
+    key    = "platform/platform-prod/terraform.tfstate"
     region = "ap-southeast-1"
   }
 }
@@ -108,7 +108,7 @@ module "postgres" {
   #   tags, so the ref is as immutable as a SHA in practice and a module upgrade
   #   stays a diff someone can read. `?ref=<40 hex chars>` would make the one
   #   line that says WHICH VERSION unreadable, in the change reviewers look at.
-  source = "git::https://github.com/quynhonsemiconductor/tf-modules.git//modules/rds?ref=rds-v2.2.0"
+  source = "git::https://github.com/quynhonsemiconductor/tf-modules.git//modules/rds?ref=rds-v2.3.0"
 
   identifier        = "qnsc-shared-prod"
   subnet_ids        = data.terraform_remote_state.network.outputs.data_subnet_ids
@@ -130,10 +130,22 @@ module "postgres" {
   # which 7 days of PITR covers comfortably.
   backup_retention_days = 7
 
-  # §17b — this is production data. Both of these, and the `prevent_destroy`
-  # below, exist because ONE Terraform state used to own both a database and the
-  # ECS services beside it, and on 2026-09-14 that cost twelve minutes of downtime
-  # and four snapshots taken for insurance.
+  # §17b — this is production data. Both of these exist because ONE Terraform state
+  # used to own both a database and the ECS services beside it, and on 2026-09-14
+  # that cost twelve minutes of downtime and four snapshots taken for insurance.
+  #
+  # ⚠ THERE IS STILL NO `prevent_destroy` HERE, AND THAT IS A KNOWN GAP — task 0.3.
+  # This comment used to claim one ("Both of these, and the `prevent_destroy`
+  # below"), which was false. An attempt on 2026-09-19 to add it as a module
+  # variable was reverted: `lifecycle` blocks reject variables on OpenTofu 1.9.1,
+  # which is what every workflow in this estate pins, and hardcoding `true` in the
+  # module would block the RDS rebuild `docs/rova-subnet-group-rebuild.md`
+  # documents, because `prevent_destroy` refuses replacement as well as deletion.
+  #
+  # So `deletion_protection` is the only control in force today. It makes the AWS
+  # API refuse the call — which means OpenTofu plans a destroy cleanly and fails
+  # part-way through applying it, rather than refusing to produce the plan. A
+  # reviewer can still approve a green plan that deletes this instance.
   deletion_protection = true
   skip_final_snapshot = false
 

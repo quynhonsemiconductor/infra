@@ -45,7 +45,7 @@ data "terraform_remote_state" "network" {
   backend = "s3"
   config = {
     bucket = "qnsc-tofu-state"
-    key    = "platform/runtime-dev/terraform.tfstate"
+    key    = "platform/platform-dev/terraform.tfstate"
     region = "ap-southeast-1"
   }
 }
@@ -54,7 +54,7 @@ data "terraform_remote_state" "network" {
 # version bump to a module every live product consumes. Looking them up from the
 # subnets is exact, read-only, and touches nothing.
 data "aws_route_table" "private" {
-  for_each  = toset(data.terraform_remote_state.network.outputs.private_subnet_ids)
+  for_each  = toset(data.terraform_remote_state.network.outputs.cluster_subnet_ids)
   subnet_id = each.value
 }
 
@@ -112,6 +112,44 @@ resource "aws_vpc_endpoint" "s3" {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Pod → data tier. WITHOUT THIS, NOTHING CONNECTS.
+#
+# See `cluster-prod/main.tf` for the full argument. In short: the `network`
+# module's `rds_from_app` rule admits its own `app` security group, written when
+# the only clients were ECS tasks. EKS Auto Mode attaches the EKS-MANAGED CLUSTER
+# security group to nodes instead — the one
+# `gitops/platform/compute/nodeclass.yaml` selects — so a pod's packets arrive
+# from a source the database's group does not admit and are silently dropped.
+#
+# The symptom is a TCP connect that hangs to the client's timeout with no log on
+# either side. Nothing in plan, render or admission mentions it.
+locals {
+  cluster_sg_id = aws_eks_cluster.this.vpc_config[0].cluster_security_group_id
+}
+
+resource "aws_vpc_security_group_ingress_rule" "rds_from_cluster" {
+  security_group_id            = data.terraform_remote_state.network.outputs.sg_rds_id
+  referenced_security_group_id = local.cluster_sg_id
+  from_port                    = 5432
+  to_port                      = 5432
+  ip_protocol                  = "tcp"
+  description                  = "Postgres from EKS pods (${local.name})"
+
+  tags = merge(local.tags, { Name = "${local.name}-rds-from-cluster" })
+}
+
+resource "aws_vpc_security_group_ingress_rule" "cache_from_cluster" {
+  security_group_id            = data.terraform_remote_state.network.outputs.sg_cache_id
+  referenced_security_group_id = local.cluster_sg_id
+  from_port                    = 6379
+  to_port                      = 6379
+  ip_protocol                  = "tcp"
+  description                  = "Valkey from EKS pods (${local.name})"
+
+  tags = merge(local.tags, { Name = "${local.name}-cache-from-cluster" })
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # The cluster
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -135,7 +173,14 @@ resource "aws_eks_cluster" "this" {
   # NOTE: Auto Mode manages NODES. The control-plane version above is still ours
   # to bump (§2b).
   compute_config {
-    enabled       = true
+    enabled = true
+
+    # NOT the estate's node pool — see cluster-prod/main.tf for the full argument.
+    # In short: AWS fixes this built-in pool at amd64-only and on-demand-only and
+    # will not let it be modified, while every pod here asks for arm64 and most ask
+    # for Spot. The pools that can schedule this estate are custom and live in
+    # `gitops/platform/compute/`. This stays enabled only so AWS provisions the
+    # `default` NodeClass and the node role's access entry.
     node_pools    = ["general-purpose"]
     node_role_arn = aws_iam_role.node.arn
   }
@@ -163,7 +208,17 @@ resource "aws_eks_cluster" "this" {
   }
 
   vpc_config {
-    subnet_ids = data.terraform_remote_state.network.outputs.private_subnet_ids
+    # The /20 cluster tier in `platform-dev` — this cluster's OWN VPC. See
+    # `cluster-prod` and `live/platform-dev/main.tf`.
+    #
+    # Dev had a second reason to stop reading the old VPC, beyond making Phase 5 a
+    # deletion: `runtime-dev` narrows its `private_subnet_ids` output to
+    # `serving_azs`, two of three AZs. That is right for ECS behind a single-AZ
+    # NAT and wrong for a cluster whose every rendered manifest spreads on
+    # `topology.kubernetes.io/zone` across three — with two zones a `maxSkew: 1`
+    # is unsatisfiable and pods sit Pending, which reads as a capacity problem and
+    # is a topology one. `platform-dev` is three AZs, unnarrowed.
+    subnet_ids = data.terraform_remote_state.network.outputs.cluster_subnet_ids
 
     # §3 — "no inbound surface is the strongest property of the current
     # architecture." The API server is private; humans reach it through
