@@ -39,7 +39,7 @@ data "terraform_remote_state" "network" {
   backend = "s3"
   config = {
     bucket = "qnsc-tofu-state"
-    key    = "platform/runtime-dev/terraform.tfstate"
+    key    = "platform/platform-dev/terraform.tfstate"
     region = "ap-southeast-1"
   }
 }
@@ -94,7 +94,7 @@ module "postgres" {
   #   tags, so the ref is as immutable as a SHA in practice and a module upgrade
   #   stays a diff someone can read. `?ref=<40 hex chars>` would make the one
   #   line that says WHICH VERSION unreadable, in the change reviewers look at.
-  source = "git::https://github.com/quynhonsemiconductor/tf-modules.git//modules/rds?ref=rds-v2.2.0"
+  source = "git::https://github.com/quynhonsemiconductor/tf-modules.git//modules/rds?ref=rds-v2.3.0"
 
   identifier        = "qnsc-shared-dev"
   subnet_ids        = data.terraform_remote_state.network.outputs.data_subnet_ids
@@ -114,9 +114,15 @@ module "postgres" {
   backup_retention_days = 1
   deletion_protection   = false
 
-  # §17b — `prevent_destroy` is the insurance that matters, and it is NOT set here
-  # deliberately: this instance holds development data only. Production is a
-  # different file with a different answer.
+  # §5d — "nothing in a development environment justifies an instance: not restore,
+  # not noisy neighbours, not upgrade timing." One day of backups is enough to undo
+  # an accident.
+  #
+  # NO `prevent_destroy`, and it is a gap rather than a decision — task 0.3. §5 made
+  # this the single instance for six products, so destroying it blocks every
+  # developer, not one person with scratch data. An attempt to add it on 2026-09-19
+  # was reverted: OpenTofu 1.9.1, which this estate pins everywhere, rejects a
+  # variable in a `lifecycle` block.
   skip_final_snapshot = true
 
   kms_key_arn = data.terraform_remote_state.bootstrap.outputs.kms_key_arn
@@ -142,7 +148,7 @@ module "postgres_preview" {
   #   tags, so the ref is as immutable as a SHA in practice and a module upgrade
   #   stays a diff someone can read. `?ref=<40 hex chars>` would make the one
   #   line that says WHICH VERSION unreadable, in the change reviewers look at.
-  source = "git::https://github.com/quynhonsemiconductor/tf-modules.git//modules/rds?ref=rds-v2.2.0"
+  source = "git::https://github.com/quynhonsemiconductor/tf-modules.git//modules/rds?ref=rds-v2.3.0"
 
   identifier        = "qnsc-preview"
   subnet_ids        = data.terraform_remote_state.network.outputs.data_subnet_ids
@@ -157,6 +163,7 @@ module "postgres_preview" {
   backup_retention_days = 0
   deletion_protection   = false
   skip_final_snapshot   = true
+
 
   kms_key_arn = data.terraform_remote_state.bootstrap.outputs.kms_key_arn
   tags        = merge(local.tags, { purpose = "preview" })

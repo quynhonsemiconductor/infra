@@ -56,7 +56,7 @@ data "aws_secretsmanager_secret_version" "pg_admin" {
 
 data "terraform_remote_state" "network" {
   backend = "s3"
-  config  = { bucket = "qnsc-tofu-state", key = "platform/runtime-dev/terraform.tfstate", region = "ap-southeast-1" }
+  config  = { bucket = "qnsc-tofu-state", key = "platform/platform-dev/terraform.tfstate", region = "ap-southeast-1" }
 }
 
 # §7 — kms_key_arn lives in `bootstrap`, NOT in the network stack. Reading it from

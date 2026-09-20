@@ -33,3 +33,24 @@ output "platform_role_arns" {
     the moment something does not assume and the question is which name exists.
   EOT
 }
+
+# ArgoCD's cluster registration needs this, and the absence of it is why
+# `gitops/platform/argocd/clusters.yaml` could not be completed offline.
+#
+# §2/§5b make ArgoCD hub-and-spoke: one instance in PROD managing both clusters.
+# The hub reaches this cluster through a Secret labelled
+# `argocd.argoproj.io/secret-type: cluster`, carrying `cluster_endpoint` above,
+# an awsAuthConfig naming `cluster_name` and prod's `argocd_role_arn`, and
+# `tlsClientConfig.caData` — this value.
+#
+# IT IS NOT OPTIONAL HERE, unlike on a public cluster. `endpoint_public_access`
+# is false, so the API server presents a certificate no public chain validates;
+# without the CA the hub cannot verify the spoke and every Application targeting
+# `dev` fails on TLS rather than on anything that names a missing output.
+#
+# Not sensitive: a CA certificate is public by construction. Marking it so would
+# only make it harder to paste into the Secret it exists to fill.
+output "cluster_certificate_authority_data" {
+  value       = aws_eks_cluster.this.certificate_authority[0].data
+  description = "Base64 CA for this cluster's API server — ArgoCD's caData."
+}

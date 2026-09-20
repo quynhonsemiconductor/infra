@@ -57,7 +57,7 @@ data "aws_secretsmanager_secret_version" "pg_admin" {
 
 data "terraform_remote_state" "network" {
   backend = "s3"
-  config  = { bucket = "qnsc-tofu-state", key = "platform/runtime-dev/terraform.tfstate", region = "ap-southeast-1" }
+  config  = { bucket = "qnsc-tofu-state", key = "platform/platform-dev/terraform.tfstate", region = "ap-southeast-1" }
 }
 
 # §7 — kms_key_arn lives in `bootstrap`, NOT in the network stack. Reading it from
@@ -114,9 +114,11 @@ module "product" {
   env     = "dev"
 
   # ⚠ MUST MATCH gitops/values/rova/dev.yaml. It is the ONE fact declared in both
-  # repositories, and gitops/scripts/check-size-agreement.py fails when they
-  # disagree — because OpenTofu picks an RDS instance class from it while the
+  # repositories, and `ci/scripts/platform_conformance.py --only size` fails when
+  # they disagree — because OpenTofu picks an RDS instance class from it while the
   # chart picks replica counts and PDBs, and neither reads the other at plan time.
+  # (That check used to be gitops/scripts/check-size-agreement.py, which no longer
+  # exists; the conformance script replaced it and this comment outlived it.)
   #
   # `s`, not `l`. rova is `l` in gitops/values/rova/base.yaml and dev.yaml
   # OVERRIDES it to `s` — size is a CRITICALITY tier, and a dev outage costs
@@ -174,8 +176,9 @@ module "product" {
     "grafana-otlp-token",
   ]
 
-  # Keys MUST match `services` in gitops/values/kb/base.yaml. A mismatch surfaces
+  # Keys MUST match `services` in gitops/values/rova/base.yaml. A mismatch surfaces
   # as a pod that cannot assume anything, which is a slow way to find a typo.
+  # `ci/scripts/platform_conformance.py --only services` is the check.
   #
   # No `needs_s3`: object storage here is R2 (§7), which has no AWS IAM surface —
   # the credential is an API token under the secret prefix, already covered by the
