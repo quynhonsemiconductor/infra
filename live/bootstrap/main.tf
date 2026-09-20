@@ -112,6 +112,12 @@ module "artifacts_bucket" {
 # breaks every Application pinned to it, and the failure arrives at the next sync,
 # long after the push that caused it.
 module "chart_registry" {
+  # checkov:skip=CKV_TF_1: a version TAG, not a commit hash, and that is the
+  #   estate's convention — every other stack pins the same way (network-v1.4.0,
+  #   rds-v2.3.0, cf-r2-v1.1.0). release-please cuts these tags, so the ref is as
+  #   immutable as a SHA in practice and a module upgrade stays a diff someone can
+  #   read. `?ref=<40 hex chars>` would make the one line that says WHICH VERSION
+  #   unreadable, in the change reviewers actually look at.
   source = "git::https://github.com/quynhonsemiconductor/tf-modules.git//modules/ecr?ref=ecr-v2.1.0"
 
   repository_names = ["charts/qnsc-service"]

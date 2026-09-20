@@ -175,10 +175,42 @@ jobs:
           #                       remote state at all — a VPC depends on nothing —
           #                       which is exactly why they go first.
           #
+          #   observability       BACK IN THIS LIST, and for a DIFFERENT reason than
+          #                       before. It briefly left on 2026-09-20 when the
+          #                       stack was split; putting it back is the correction.
+          #
+          #                       THE SPLIT NEEDS A STATE MIGRATION AND CODE ALONE
+          #                       DOES NOT PERFORM ONE. This stack HAS BEEN APPLIED:
+          #                       its state holds grafana_folder.{alerts,slos,
+          #                       rally_dashboards,...} created by the `grafana.stack`
+          #                       provider alias. Moving the code to
+          #                       `observability-alerting` removed that alias, so the
+          #                       plan now fails with:
+          #
+          #                         Error: Provider configuration not present
+          #                         To work with grafana_folder.alerts (orphan) its
+          #                         original provider configuration at
+          #                         provider["...grafana/grafana"].stack is required,
+          #                         but it has been removed.
+          #
+          #                       That is a BETTER error than the one it replaced —
+          #                       it names the exact objects and what to do — but it
+          #                       is still a failing plan, and it will fail until
+          #                       each object is removed from this stack's state and
+          #                       imported into the sibling's. `moved` blocks cannot
+          #                       do it: they do not cross state files.
+          #
+          #                       The migration needs credentials, so it is written
+          #                       up rather than performed — see
+          #                       infra/docs/runbook-first-deploy.md. Nothing is lost
+          #                       meanwhile: the Grafana objects keep existing and
+          #                       keep working, they are simply unmanaged until the
+          #                       state moves.
+          #
           # Keeping the exclusions named in code rather than dropping the
           # derivation: any NEW stack is planned by default, and each gap is named
           # here instead of being absent from a list nobody compared to anything.
-          NOT_PLANNABLE="rova-dev kb-dev data-dev data-prod cluster-dev cluster-prod observability-alerting organization"
+          NOT_PLANNABLE="rova-dev kb-dev data-dev data-prod cluster-dev cluster-prod observability observability-alerting organization"
 
           SKIPPED=""
           PLANNABLE=""
