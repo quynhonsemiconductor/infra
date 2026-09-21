@@ -21,7 +21,8 @@
 terraform {
   required_version = ">= 1.9"
   required_providers {
-    aws = { source = "hashicorp/aws", version = "~> 5.0" }
+    cloudflare = { source = "cloudflare/cloudflare", version = "~> 4.0" }
+    aws        = { source = "hashicorp/aws", version = "~> 5.0" }
     # §2b — `data "tls_certificate"` below reads the OIDC issuer's thumbprint for
     # the IRSA provider. Without a constraint OpenTofu installs whatever `tls` is
     # latest at `init` time, which is the unpinned-version class §2b closes.
@@ -39,6 +40,10 @@ terraform {
 
 provider "aws" {
   region = local.region
+}
+
+provider "cloudflare" {
+  api_token = var.cloudflare_api_token
 }
 
 data "terraform_remote_state" "network" {
@@ -375,4 +380,77 @@ variable "public_access_cidrs" {
     condition     = !contains(var.public_access_cidrs, "0.0.0.0/0")
     error_message = "0.0.0.0/0 is refused. Pass the single /32 you are bootstrapping from — §3, §10b."
   }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The cluster's Cloudflare Tunnel — §3
+#
+# §3 replaces the load balancer with a tunnel, so this IS the cluster's ingress.
+# `gitops/platform/cloudflared` runs three connectors against it with one catch-all
+# rule, and reads its token from `qnsc/<env>/platform/cloudflared-token` through ESO.
+#
+# ── WHY THIS IS NOT CREATED IN THE DASHBOARD ────────────────────────────────
+#
+# `modules/cf-tunnel`'s own header says it "replaces the 'create it in the dashboard
+# and paste the token into a secret' step", and its `lifecycle` block explains why a
+# hand-made tunnel is worse than merely untracked:
+#
+#   A tunnel created by hand has a secret Cloudflare knows and nobody else does. On
+#   `tofu import`, Terraform would compare it against this module's freshly generated
+#   random_id and try to write the generated one — which changes the tunnel's secret
+#   and therefore its CONNECTOR TOKEN. Every running cloudflared then holds a token
+#   that no longer authenticates, and the API is unreachable until the next deploy.
+#
+# So the dashboard route costs an outage later, at the moment somebody tidies up.
+#
+# ── ONE TUNNEL PER CLUSTER, NOT PER PRODUCT ────────────────────────────────
+#
+# The products' own tunnels (rova/develop/tunnel-token-tf and the rest) are the ECS
+# estate's, one per service, and they go at Phase 5. §3's arithmetic for the cluster:
+# "seven products × 2 replicas would be 14 pods and roughly a gibibyte of RAM
+# proxying". One tunnel, three connectors, a catch-all rule.
+#
+# `hostname` is deliberately UNSET, which means this module creates NO configuration
+# resource. Cloudflare's tunnel-config API is a whole-document PUT, so writing a
+# partial rule set discards anything the live configuration holds that this file does
+# not reproduce. Routing belongs to the Gateway API objects in `gitops`, and the
+# catch-all lives with cloudflared's own config — not here.
+module "tunnel" {
+  # checkov:skip=CKV_TF_1: a version TAG, not a commit hash — the estate's convention.
+  source = "git::https://github.com/quynhonsemiconductor/tf-modules.git//modules/cf-tunnel?ref=cf-tunnel-v0.2.1"
+
+  account_id = var.cloudflare_account_id
+  name       = local.name
+}
+
+# ⚠ THE TOKEN IS A LIVE CREDENTIAL AND IT IS IN THIS STATE. `modules/cf-tunnel`'s
+# header says so outright, and it is the deliberate trade for not having a hand-made
+# tunnel nobody can reproduce. The state bucket is encrypted with the product CMK and
+# versioned; treat a state dump as a credential leak.
+#
+# The NAME is what `gitops/platform/secrets/external-secrets.yaml` looks up, so it is
+# a contract with that file, not a local choice.
+resource "aws_secretsmanager_secret" "cloudflared_token" {
+  name                    = "qnsc/${local.env}/platform/cloudflared-token"
+  description             = "Cloudflare Tunnel connector token for ${local.name}'s cloudflared. Written by OpenTofu."
+  kms_key_id              = data.terraform_remote_state.bootstrap.outputs.kms_key_arn
+  recovery_window_in_days = 7
+
+  tags = merge(local.tags, { Name = "qnsc/${local.env}/platform/cloudflared-token" })
+}
+
+resource "aws_secretsmanager_secret_version" "cloudflared_token" {
+  secret_id     = aws_secretsmanager_secret.cloudflared_token.id
+  secret_string = module.tunnel.token
+}
+
+variable "cloudflare_account_id" {
+  type        = string
+  description = "Cloudflare account that owns the tunnel. CI passes TF_VAR_cloudflare_account_id from the CLOUDFLARE_ACCOUNT_ID org variable."
+}
+
+variable "cloudflare_api_token" {
+  type        = string
+  sensitive   = true
+  description = "Cloudflare API token. CI passes TF_VAR_cloudflare_api_token from the CLOUDFLARE_API_TOKEN org secret."
 }
