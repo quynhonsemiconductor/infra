@@ -42,16 +42,46 @@ provider "aws" {
 }
 
 provider "postgresql" {
-  host      = data.terraform_remote_state.data.outputs.postgres_host
-  port      = 5432
-  username  = "qnsc_admin"
-  password  = data.aws_secretsmanager_secret_version.pg_admin.secret_string
+  # ── host ──────────────────────────────────────────────────────────────────
+  # THE INSTANCE IS NOT PUBLICLY ACCESSIBLE (`publicly_accessible = false`), and it
+  # sits in a private data subnet, so this provider cannot reach it from a laptop.
+  # `var.postgres_host_override` is how you apply this stack through the SSM
+  # port-forward `platform-dev`'s NAT instance exists to provide:
+  #
+  #   aws ssm start-session --target $(tofu -chdir=../platform-dev output -raw nat_instance_id) \
+  #     --document-name AWS-StartPortForwardingSessionToRemoteHost \
+  #     --parameters '{"host":["<postgres_host>"],"portNumber":["5432"],"localPortNumber":["15432"]}'
+  #
+  #   tofu apply -var postgres_host_override=localhost:15432
+  #
+  # Without the override the host came straight from remote state with no way to
+  # substitute it, so there was no path to applying this stack at all — the tunnel
+  # existed and nothing could use it.
+  host = var.postgres_host_override != "" ? split(":", var.postgres_host_override)[0] : split(":", data.terraform_remote_state.data.outputs.postgres_host)[0]
+  port = var.postgres_host_override != "" ? tonumber(split(":", var.postgres_host_override)[1]) : 5432
+
+  # ── credentials ───────────────────────────────────────────────────────────
+  # From the RDS-MANAGED secret, by ARN, decoded. Not a hand-made secret and not a
+  # hardcoded username: see data-dev's `postgres_admin_secret_arn` output for the
+  # three things that were wrong here before 2026-09-22.
+  username  = jsondecode(data.aws_secretsmanager_secret_version.pg_admin.secret_string)["username"]
+  password  = jsondecode(data.aws_secretsmanager_secret_version.pg_admin.secret_string)["password"]
   superuser = false
   sslmode   = "require"
 }
 
+variable "postgres_host_override" {
+  type        = string
+  default     = ""
+  description = <<-EOT
+    `host:port` to reach Postgres, for applying this stack through an SSM
+    port-forward. Empty means use the private endpoint from data-*'s remote state,
+    which only resolves from inside the VPC.
+  EOT
+}
+
 data "aws_secretsmanager_secret_version" "pg_admin" {
-  secret_id = "qnsc/dev/platform/postgres-admin"
+  secret_id = data.terraform_remote_state.data.outputs.postgres_admin_secret_arn
 }
 
 data "terraform_remote_state" "network" {

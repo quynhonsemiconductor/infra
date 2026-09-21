@@ -25,7 +25,8 @@
 terraform {
   required_version = ">= 1.9"
   required_providers {
-    aws = { source = "hashicorp/aws", version = "~> 5.0" }
+    cloudflare = { source = "cloudflare/cloudflare", version = "~> 4.0" }
+    aws        = { source = "hashicorp/aws", version = "~> 5.0" }
     # §2b — `data "tls_certificate"` below reads the OIDC issuer's thumbprint for
     # the IRSA provider. Without a constraint OpenTofu installs whatever `tls` is
     # latest at `init` time, which is the unpinned-version class §2b closes.
@@ -45,6 +46,10 @@ provider "aws" {
   region = local.region
 }
 
+provider "cloudflare" {
+  api_token = var.cloudflare_api_token
+}
+
 data "terraform_remote_state" "network" {
   backend = "s3"
   config = {
@@ -54,13 +59,6 @@ data "terraform_remote_state" "network" {
   }
 }
 
-# The network module outputs no route table IDs, and adding one would mean a
-# version bump to a module every live product consumes. Looking them up from the
-# subnets is exact, read-only, and touches nothing.
-data "aws_route_table" "private" {
-  for_each  = toset(data.terraform_remote_state.network.outputs.cluster_subnet_ids)
-  subnet_id = each.value
-}
 
 # §7 — kms_key_arn lives in `bootstrap`, NOT in the network stack. Reading it from
 # the wrong remote state is invisible to `terraform validate`: outputs are only
@@ -97,23 +95,28 @@ locals {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Prerequisite — §3. MUST BE APPLIED BEFORE THE CLUSTER.
+# NO S3 GATEWAY ENDPOINT HERE — the network stack already owns one.
+#
+# §3's requirement is unchanged and still met: "ECR image layers are served from
+# S3, so every image pull crosses NAT and is billed per gigabyte. August's ECR
+# bill was ~94% DATA TRANSFER", and Kubernetes makes it worse because nodes pull on
+# every scale-out and every Karpenter consolidation, not only on deploy.
+#
+# What changed is WHO CREATES IT. Task 0.4 put the endpoint in this stack when the
+# clusters lived in the ECS VPCs. They now have their own — `live/platform-{dev,prod}`
+# — and `tf-modules/modules/network` has always created `aws_vpc_endpoint.s3` and
+# attached it to every private route table, which the /20 cluster subnets share.
+#
+# Creating a second one is not additive, it is an error. AWS refuses:
+#
+#   Error: creating EC2 VPC Endpoint (com.amazonaws.ap-southeast-1.s3):
+#   RouteAlreadyExists: route table rtb-05611b60b0132006d already has a route with
+#   destination-prefix-list-id pl-6fa54006
+#
+# Found 2026-09-20 on the first apply of this stack. `data.aws_route_table.private`
+# went with it — it existed only to feed the endpoint's route_table_ids.
 # ─────────────────────────────────────────────────────────────────────────────
 
-# §3 — "ECR image layers are served from S3, so every image pull currently crosses
-# fck-nat and is billed per gigabyte. August's ECR bill was ~94% DATA TRANSFER."
-#
-# Kubernetes makes that worse than ECS did: nodes pull on every scale-out and every
-# Karpenter consolidation, not only on deploy. A gateway endpoint is free and has
-# no operational surface.
-resource "aws_vpc_endpoint" "s3" {
-  vpc_id            = data.terraform_remote_state.network.outputs.vpc_id
-  service_name      = "com.amazonaws.${local.region}.s3"
-  vpc_endpoint_type = "Gateway"
-  route_table_ids   = distinct([for rt in data.aws_route_table.private : rt.route_table_id])
-
-  tags = merge(local.tags, { Name = "${local.name}-s3" })
-}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Pod → data tier. WITHOUT THIS, NOTHING CONNECTS.
@@ -192,6 +195,22 @@ resource "aws_eks_cluster" "this" {
   #
   # NOTE: Auto Mode manages NODES. The control-plane version above is still ours
   # to bump (§2b).
+  # REQUIRED BY AUTO MODE, and AWS refuses the create without it:
+  #
+  #   InvalidParameterException: When EKS Auto Mode is enabled,
+  #   bootstrapSelfManagedAddons must be set to false.
+  #
+  # The provider defaults it to TRUE, which asks EKS to install the self-managed
+  # CoreDNS, kube-proxy and VPC CNI addons — exactly the three things Auto Mode
+  # manages itself. Auto Mode runs CoreDNS as a node-level system service rather
+  # than a Deployment and builds the CNI into the AMI, so the two models cannot
+  # coexist: this is the same "Auto Mode rejects a mixed configuration" rule that
+  # forces elastic_load_balancing below.
+  #
+  # Found 2026-09-20 on the first apply. It is not inferable from the resource
+  # schema — the default is simply wrong for Auto Mode.
+  bootstrap_self_managed_addons = false
+
   compute_config {
     enabled = true
 
@@ -274,7 +293,10 @@ resource "aws_eks_cluster" "this" {
     # architecture." The API server is private; humans reach it through
     # Identity Center (§10b), not over the internet.
     endpoint_private_access = true
-    endpoint_public_access  = false
+    # Derived, never hardcoded — see var.public_access_cidrs. Empty list means
+    # private-only, which is what the committed configuration always says.
+    endpoint_public_access = length(var.public_access_cidrs) > 0
+    public_access_cidrs    = length(var.public_access_cidrs) > 0 ? var.public_access_cidrs : null
   }
 
   # §10b — control-plane logs are OFF by default, which means the record of who did
@@ -329,8 +351,21 @@ resource "aws_cloudwatch_log_group" "cluster" {
 
   name              = "/aws/eks/${local.name}/cluster"
   retention_in_days = 90
-  kms_key_id        = data.terraform_remote_state.bootstrap.outputs.kms_key_arn
-  tags              = local.tags
+  # NO kms_key_id, and this is the SAME decision tf-modules/modules/rds records at
+  # length for its own log groups — reached here the hard way on 2026-09-20:
+  #
+  #   Error: creating CloudWatch Logs Log Group (/aws/eks/qnsc-prod/cluster):
+  #   AccessDeniedException: The specified KMS key does not exist or is not allowed
+  #   to be used with Arn 'arn:aws:logs:...:log-group:/aws/eks/qnsc-prod/cluster'
+  #
+  # CloudWatch Logs encrypts a group by assuming the CALLER's grant on the key, so
+  # the KEY POLICY must allow logs.<region>.amazonaws.com with a
+  # kms:EncryptionContext:aws:logs:arn condition. The product CMK is written for
+  # RDS, ECR and Secrets Manager and grants Logs nothing. No log group in this
+  # account uses a CMK, so setting it here made this the odd one out AND required a
+  # key-policy change nobody asked for. Logs are encrypted at rest with an
+  # AWS-managed key regardless.
+  tags = local.tags
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -346,4 +381,126 @@ resource "aws_iam_openid_connect_provider" "this" {
   client_id_list  = ["sts.amazonaws.com"]
   thumbprint_list = [data.tls_certificate.oidc.certificates[0].sha1_fingerprint]
   tags            = local.tags
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The bootstrap keyhole — §3, §10b
+#
+# §3 calls "no inbound surface" the strongest property of the current
+# architecture, and `endpoint_public_access = false` is how the cluster keeps it.
+# That is correct in steady state and it makes the cluster IMPOSSIBLE TO BOOTSTRAP.
+#
+# Found 2026-09-20, on the first apply: `gitops/platform/` is applied with kubectl,
+# ArgoCD is installed with helm, and both need to reach the API server. With a
+# private-only endpoint the only paths in are an instance inside the VPC or a VPN —
+# and there is no instance, because `platform-prod` runs a NAT GATEWAY rather than a
+# NAT instance, so there is no SSM target either. `kubectl` simply times out.
+#
+# ── WHY A VARIABLE AND NOT AN EDIT ──────────────────────────────────────────
+#
+# The obvious fix is to flip `endpoint_public_access` to true, bootstrap, and flip it
+# back. The problem is the middle state: a committed `true` that somebody forgets to
+# revert, in the file that is supposed to be the record of the cluster being closed.
+#
+# So the DEFAULT IS CLOSED and opening it is `-var`, which lives in a shell history
+# and a CloudTrail entry rather than in `main.tf`. There is no way to accidentally
+# commit the open state, because the open state is not written down.
+#
+#     tofu apply -var 'public_access_cidrs=["203.0.113.4/32"]'    # bootstrap
+#     tofu apply                                                  # closed again
+#
+# An empty list means private-only, which is what `git` always shows.
+variable "public_access_cidrs" {
+  type    = list(string)
+  default = []
+
+  description = <<-EOT
+    CIDRs allowed to reach the PUBLIC API endpoint, for bootstrap only.
+
+    EMPTY means the endpoint is private, which is the committed state and the one
+    §3 wants. Pass a /32 to open a keyhole for `kubectl` and `helm` while applying
+    `gitops/platform/`, then apply again with no `-var` to close it.
+
+    NEVER a broad range. `0.0.0.0/0` here would put the API server of a cluster
+    with cluster-admin access entries on the open internet, which is the exact
+    property §3 spent the Cloudflare Tunnel design avoiding.
+  EOT
+
+  validation {
+    condition     = !contains(var.public_access_cidrs, "0.0.0.0/0")
+    error_message = "0.0.0.0/0 is refused. Pass the single /32 you are bootstrapping from — §3, §10b."
+  }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The cluster's Cloudflare Tunnel — §3
+#
+# §3 replaces the load balancer with a tunnel, so this IS the cluster's ingress.
+# `gitops/platform/cloudflared` runs three connectors against it with one catch-all
+# rule, and reads its token from `qnsc/<env>/platform/cloudflared-token` through ESO.
+#
+# ── WHY THIS IS NOT CREATED IN THE DASHBOARD ────────────────────────────────
+#
+# `modules/cf-tunnel`'s own header says it "replaces the 'create it in the dashboard
+# and paste the token into a secret' step", and its `lifecycle` block explains why a
+# hand-made tunnel is worse than merely untracked:
+#
+#   A tunnel created by hand has a secret Cloudflare knows and nobody else does. On
+#   `tofu import`, Terraform would compare it against this module's freshly generated
+#   random_id and try to write the generated one — which changes the tunnel's secret
+#   and therefore its CONNECTOR TOKEN. Every running cloudflared then holds a token
+#   that no longer authenticates, and the API is unreachable until the next deploy.
+#
+# So the dashboard route costs an outage later, at the moment somebody tidies up.
+#
+# ── ONE TUNNEL PER CLUSTER, NOT PER PRODUCT ────────────────────────────────
+#
+# The products' own tunnels (rova/develop/tunnel-token-tf and the rest) are the ECS
+# estate's, one per service, and they go at Phase 5. §3's arithmetic for the cluster:
+# "seven products × 2 replicas would be 14 pods and roughly a gibibyte of RAM
+# proxying". One tunnel, three connectors, a catch-all rule.
+#
+# `hostname` is deliberately UNSET, which means this module creates NO configuration
+# resource. Cloudflare's tunnel-config API is a whole-document PUT, so writing a
+# partial rule set discards anything the live configuration holds that this file does
+# not reproduce. Routing belongs to the Gateway API objects in `gitops`, and the
+# catch-all lives with cloudflared's own config — not here.
+module "tunnel" {
+  # checkov:skip=CKV_TF_1: a version TAG, not a commit hash — the estate's convention.
+  source = "git::https://github.com/quynhonsemiconductor/tf-modules.git//modules/cf-tunnel?ref=cf-tunnel-v0.2.1"
+
+  account_id = var.cloudflare_account_id
+  name       = local.name
+}
+
+# ⚠ THE TOKEN IS A LIVE CREDENTIAL AND IT IS IN THIS STATE. `modules/cf-tunnel`'s
+# header says so outright, and it is the deliberate trade for not having a hand-made
+# tunnel nobody can reproduce. The state bucket is encrypted with the product CMK and
+# versioned; treat a state dump as a credential leak.
+#
+# The NAME is what `gitops/platform/secrets/external-secrets.yaml` looks up, so it is
+# a contract with that file, not a local choice.
+resource "aws_secretsmanager_secret" "cloudflared_token" {
+  name                    = "qnsc/${local.env}/platform/cloudflared-token"
+  description             = "Cloudflare Tunnel connector token for ${local.name}'s cloudflared. Written by OpenTofu."
+  kms_key_id              = data.terraform_remote_state.bootstrap.outputs.kms_key_arn
+  recovery_window_in_days = 7
+
+  tags = merge(local.tags, { Name = "qnsc/${local.env}/platform/cloudflared-token" })
+}
+
+resource "aws_secretsmanager_secret_version" "cloudflared_token" {
+  secret_id     = aws_secretsmanager_secret.cloudflared_token.id
+  secret_string = module.tunnel.token
+}
+
+variable "cloudflare_account_id" {
+  type        = string
+  description = "Cloudflare account that owns the tunnel. CI passes TF_VAR_cloudflare_account_id from the CLOUDFLARE_ACCOUNT_ID org variable."
+}
+
+variable "cloudflare_api_token" {
+  type        = string
+  sensitive   = true
+  description = "Cloudflare API token. CI passes TF_VAR_cloudflare_api_token from the CLOUDFLARE_API_TOKEN org secret."
 }

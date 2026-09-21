@@ -109,8 +109,17 @@ resource "aws_eks_access_entry" "break_glass" {
 }
 
 resource "aws_eks_access_policy_association" "break_glass" {
-  cluster_name  = aws_eks_cluster.this.name
-  principal_arn = local.sso_roles.break_glass
+  cluster_name = aws_eks_cluster.this.name
+  # `principal_arn` reads the ENTRY rather than `local.sso_roles.*`, and that is a
+  # dependency edge, not a style preference. Pointing both at the same local gave
+  # OpenTofu no reason to order them, so it created the association in parallel with
+  # the entry and AWS answered:
+  #
+  #   ResourceNotFoundException: The requested resource does not exist
+  #
+  # — a 404 on a role that plainly existed, because the ACCESS ENTRY did not yet.
+  # Found 2026-09-20 on the first apply of this stack.
+  principal_arn = aws_eks_access_entry.break_glass.principal_arn
   policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
   access_scope { type = "cluster" }
 }
@@ -162,8 +171,17 @@ resource "aws_eks_access_entry" "developer" {
 }
 
 resource "aws_eks_access_policy_association" "developer" {
-  cluster_name  = aws_eks_cluster.this.name
-  principal_arn = local.sso_roles.developer
+  cluster_name = aws_eks_cluster.this.name
+  # `principal_arn` reads the ENTRY rather than `local.sso_roles.*`, and that is a
+  # dependency edge, not a style preference. Pointing both at the same local gave
+  # OpenTofu no reason to order them, so it created the association in parallel with
+  # the entry and AWS answered:
+  #
+  #   ResourceNotFoundException: The requested resource does not exist
+  #
+  # — a 404 on a role that plainly existed, because the ACCESS ENTRY did not yet.
+  # Found 2026-09-20 on the first apply of this stack.
+  principal_arn = aws_eks_access_entry.developer.principal_arn
   policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy"
   access_scope { type = "cluster" }
 }
