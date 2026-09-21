@@ -429,12 +429,12 @@ module "tunnel" {
   # Cloudflare — the exact shape §3 rejected — and it would also cost a tunnel edit
   # per pull request, which is what §11's preview environments cannot afford:
   #
-  #     *.dev.qnsc.vn  ->  the tunnel  ->  the Gateway  ->  an HTTPRoute
+  #     <product>-dev.qnsc.vn  ->  the tunnel  ->  the Gateway  ->  an HTTPRoute
   #
   # So ONE wildcard rule, and every real routing decision is a Gateway API object
   # that ArgoCD reconciles. The module appends the `http_status:404` fallback that
   # Cloudflare requires as the last rule.
-  hostname = "*.dev.qnsc.vn"
+  hostname = "*.qnsc.vn"
 
   # A NAME `gitops` OWNS, deliberately not the Service Envoy Gateway generates.
   # That one is `envoy-platform-qnsc-<hash>`, invented by the controller, and
@@ -447,24 +447,46 @@ module "tunnel" {
   service = "http://gateway.platform.svc.cluster.local:8080"
 }
 
-# ── The wildcard DNS record that points at the tunnel ────────────────────────
+# ── One DNS record per hostname, NOT a wildcard ──────────────────────────────
 #
-# Without this the tunnel is reachable by nothing: a connector with ingress rules
-# still needs a record telling Cloudflare which hostnames belong to it. CNAME to
-# `<tunnel-id>.cfargotunnel.com`, which is what `module.tunnel.cname` returns.
+# A wildcard was the first attempt and it could not work: `*.dev.qnsc.vn` needs a
+# certificate Cloudflare's Universal SSL does not issue (it covers the apex and ONE
+# wildcard level), so every request died at the edge with SSL alert 40 before the
+# tunnel was consulted. Covering it costs Advanced Certificate Manager, ~$10/month on
+# this Free zone.
 #
-# `proxied` MUST be true. A grey-clouded record would resolve to a name that means
-# nothing outside Cloudflare's edge, and the tunnel would never be consulted.
+# Explicit first-level records are free, because Cloudflare issues a certificate for a
+# first-level hostname automatically. They are also SAFER, and that matters more than
+# the money: the apex wildcard this replaces would have changed the DNS answer for
+# every unrecorded hostname in a zone the ECS estate is still serving. There is now
+# nothing to gate, so `enable_tunnel_wildcard_dns` is gone with it.
+#
+# The tunnel's own rule stays `*.qnsc.vn`. That is not a contradiction — a rule only
+# ever sees hostnames whose DNS already points at THIS tunnel, so the wildcard there
+# saves a rule per product while these records remain the thing that grants access.
+locals {
+  # Products served by this cluster. Add a product here when it cuts over; removing
+  # one withdraws its DNS and nothing else.
+  # FULL hostnames, not product names — the API hostname carries the service
+  # (`rova-api-dev`), the bare `rova-dev` is the Pages frontend, and a format string
+  # that guessed between them is how the wrong record nearly got overwritten.
+  #
+  # `-eks-` is deliberate and TEMPORARY: `rova-api-dev.qnsc.vn` still points at the
+  # ECS tunnel. Cutover repoints that record here and drops this one.
+  tunnel_hostnames = ["rova-api-eks-dev.qnsc.vn"]
+}
+
 module "tunnel_dns" {
   # checkov:skip=CKV_TF_1: a version TAG, not a commit hash — the estate's convention.
-  source = "git::https://github.com/quynhonsemiconductor/tf-modules.git//modules/dns-record?ref=dns-record-v1.1.0"
+  source   = "git::https://github.com/quynhonsemiconductor/tf-modules.git//modules/dns-record?ref=dns-record-v1.1.0"
+  for_each = toset(local.tunnel_hostnames)
 
   zone_id = var.cloudflare_zone_id
-  name    = "*.dev.qnsc.vn"
+  name    = each.value
   type    = "CNAME"
   content = module.tunnel.cname
-  proxied = true
-  comment = "Wildcard for the ${local.name} cluster tunnel. Managed by cluster-dev."
+  proxied = true # a grey-clouded record resolves to a name meaningless outside the edge
+  comment = "${each.value} on the ${local.name} cluster tunnel. Managed by cluster-dev."
 }
 
 variable "cloudflare_zone_id" {
