@@ -288,7 +288,10 @@ resource "aws_eks_cluster" "this" {
     # architecture." The API server is private; humans reach it through
     # Identity Center (§10b), not over the internet.
     endpoint_private_access = true
-    endpoint_public_access  = false
+    # Derived, never hardcoded — see var.public_access_cidrs. Empty list means
+    # private-only, which is what the committed configuration always says.
+    endpoint_public_access = length(var.public_access_cidrs) > 0
+    public_access_cidrs    = length(var.public_access_cidrs) > 0 ? var.public_access_cidrs : null
   }
 
   # §10b — control-plane logs are OFF by default, which means the record of who did
@@ -373,4 +376,53 @@ resource "aws_iam_openid_connect_provider" "this" {
   client_id_list  = ["sts.amazonaws.com"]
   thumbprint_list = [data.tls_certificate.oidc.certificates[0].sha1_fingerprint]
   tags            = local.tags
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The bootstrap keyhole — §3, §10b
+#
+# §3 calls "no inbound surface" the strongest property of the current
+# architecture, and `endpoint_public_access = false` is how the cluster keeps it.
+# That is correct in steady state and it makes the cluster IMPOSSIBLE TO BOOTSTRAP.
+#
+# Found 2026-09-20, on the first apply: `gitops/platform/` is applied with kubectl,
+# ArgoCD is installed with helm, and both need to reach the API server. With a
+# private-only endpoint the only paths in are an instance inside the VPC or a VPN —
+# and there is no instance, because `platform-prod` runs a NAT GATEWAY rather than a
+# NAT instance, so there is no SSM target either. `kubectl` simply times out.
+#
+# ── WHY A VARIABLE AND NOT AN EDIT ──────────────────────────────────────────
+#
+# The obvious fix is to flip `endpoint_public_access` to true, bootstrap, and flip it
+# back. The problem is the middle state: a committed `true` that somebody forgets to
+# revert, in the file that is supposed to be the record of the cluster being closed.
+#
+# So the DEFAULT IS CLOSED and opening it is `-var`, which lives in a shell history
+# and a CloudTrail entry rather than in `main.tf`. There is no way to accidentally
+# commit the open state, because the open state is not written down.
+#
+#     tofu apply -var 'public_access_cidrs=["203.0.113.4/32"]'    # bootstrap
+#     tofu apply                                                  # closed again
+#
+# An empty list means private-only, which is what `git` always shows.
+variable "public_access_cidrs" {
+  type    = list(string)
+  default = []
+
+  description = <<-EOT
+    CIDRs allowed to reach the PUBLIC API endpoint, for bootstrap only.
+
+    EMPTY means the endpoint is private, which is the committed state and the one
+    §3 wants. Pass a /32 to open a keyhole for `kubectl` and `helm` while applying
+    `gitops/platform/`, then apply again with no `-var` to close it.
+
+    NEVER a broad range. `0.0.0.0/0` here would put the API server of a cluster
+    with cluster-admin access entries on the open internet, which is the exact
+    property §3 spent the Cloudflare Tunnel design avoiding.
+  EOT
+
+  validation {
+    condition     = !contains(var.public_access_cidrs, "0.0.0.0/0")
+    error_message = "0.0.0.0/0 is refused. Pass the single /32 you are bootstrapping from — §3, §10b."
+  }
 }
