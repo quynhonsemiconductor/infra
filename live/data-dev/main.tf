@@ -88,6 +88,25 @@ locals {
 # A pinned ref is also what makes a module upgrade a reviewable diff (§11), the
 # same argument as the image tag.
 module "postgres" {
+
+  # ── §8's IAM AUTH NEEDED THIS AND NOBODY HAD TURNED IT ON ──────────────────
+  #
+  # The module defaults to false, and this stack never set it. Everything above that
+  # layer was built as if it were true: §8 specifies IAM database auth,
+  # `product-profile` creates roles that are members of `rds_iam` WITH NO PASSWORD,
+  # and rova now mints a token per connection. The instance itself rejected every one
+  # of them, and the only symptom was a readiness probe reporting
+  #
+  #     postgres: down — Failed query: SELECT 1
+  #
+  # with no mention of authentication anywhere in the chain. An `rds_iam` role cannot
+  # fall back to a password, so this flag was the difference between the design
+  # working and the database being unreachable by any route at all.
+  #
+  # SAFE TO ENABLE ON A LIVE INSTANCE, in the module's own words: "Additive: password
+  # authentication keeps working, so turning this on changes nothing for a caller that
+  # does not use it." For PostgreSQL it applies without a reboot.
+  iam_database_authentication = true
   # checkov:skip=CKV_TF_1: a version TAG, not a commit hash, and that is the
   #   estate's convention — every other stack pins the same way
   #   (network-v1.3.1, cf-r2-v1.1.0, alb-logs-v1.0.1). release-please cuts these
