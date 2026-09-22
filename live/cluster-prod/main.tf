@@ -479,7 +479,7 @@ module "tunnel" {
   # Cloudflare — the exact shape §3 rejected — and it would also cost a tunnel edit
   # per pull request, which is what §11's preview environments cannot afford:
   #
-  #     *.qnsc.vn  ->  the tunnel  ->  the Gateway  ->  an HTTPRoute
+  #     <product>.qnsc.vn  ->  the tunnel  ->  the Gateway  ->  an HTTPRoute
   #
   # So ONE wildcard rule, and every real routing decision is a Gateway API object
   # that ArgoCD reconciles. The module appends the `http_status:404` fallback that
@@ -497,52 +497,40 @@ module "tunnel" {
   service = "http://gateway.platform.svc.cluster.local:8080"
 }
 
-# ── The wildcard DNS record that points at the tunnel ────────────────────────
+# ── One DNS record per hostname, NOT a wildcard ──────────────────────────────
 #
-# Without this the tunnel is reachable by nothing: a connector with ingress rules
-# still needs a record telling Cloudflare which hostnames belong to it. CNAME to
-# `<tunnel-id>.cfargotunnel.com`, which is what `module.tunnel.cname` returns.
+# A wildcard was the first attempt and it could not work: `*.qnsc.vn` needs a
+# certificate Cloudflare's Universal SSL does not issue (it covers the apex and ONE
+# wildcard level), so every request died at the edge with SSL alert 40 before the
+# tunnel was consulted. Covering it costs Advanced Certificate Manager, ~$10/month on
+# this Free zone.
 #
-# `proxied` MUST be true. A grey-clouded record would resolve to a name that means
-# nothing outside Cloudflare's edge, and the tunnel would never be consulted.
-# ⚠ DISABLED BY DEFAULT, AND THIS IS A PRODUCTION SAFETY GATE, not a TODO.
+# Explicit first-level records are free, because Cloudflare issues a certificate for a
+# first-level hostname automatically. They are also SAFER, and that matters more than
+# the money: the apex wildcard this replaces would have changed the DNS answer for
+# every unrecorded hostname in a zone the ECS estate is still serving. There is now
+# nothing to gate, so `enable_tunnel_wildcard_dns` is gone with it.
 #
-# `*.qnsc.vn` is the APEX zone that the ECS estate is serving right now. A wildcard
-# does not outrank an exact record — `rova.qnsc.vn` keeps resolving to ECS while its
-# own record exists — so this would not hijack live traffic. What it WOULD do is
-# change the answer for every hostname in the zone that has NO record: today they
-# NXDOMAIN, and with this they would resolve, reach an empty cluster, and return a
-# Cloudflare-branded error. On the production zone, mid-migration, that is a change
-# in blast radius nobody asked for and nobody would attribute to a DNS record.
-#
-# Phase 5 turns this on as part of a cutover that is deliberately one-way. Until
-# then `tofu apply` must not create it, which is why the default is false rather
-# than a comment asking someone to remember.
-variable "enable_tunnel_wildcard_dns" {
-  type        = bool
-  default     = false
-  description = <<-EOT
-    Create the `*.qnsc.vn` wildcard pointing at the cluster tunnel.
-
-    Leave FALSE until the Phase 5 cutover. The prod tunnel and its ingress rule are
-    created either way, so the cluster is ready to serve; only the public DNS answer
-    is withheld. That ordering is what makes the cutover a single reviewable change
-    rather than a scramble.
-  EOT
+# The tunnel's own rule stays `*.qnsc.vn`. That is not a contradiction — a rule only
+# ever sees hostnames whose DNS already points at THIS tunnel, so the wildcard there
+# saves a rule per product while these records remain the thing that grants access.
+locals {
+  # Products served by this cluster. Add a product here when it cuts over; removing
+  # one withdraws its DNS and nothing else.
+  tunnel_hostnames = []
 }
 
 module "tunnel_dns" {
   # checkov:skip=CKV_TF_1: a version TAG, not a commit hash — the estate's convention.
-  source = "git::https://github.com/quynhonsemiconductor/tf-modules.git//modules/dns-record?ref=dns-record-v1.1.0"
-
-  enabled = var.enable_tunnel_wildcard_dns
+  source   = "git::https://github.com/quynhonsemiconductor/tf-modules.git//modules/dns-record?ref=dns-record-v1.1.0"
+  for_each = toset(local.tunnel_hostnames)
 
   zone_id = var.cloudflare_zone_id
-  name    = "*.qnsc.vn"
+  name    = each.value
   type    = "CNAME"
   content = module.tunnel.cname
-  proxied = true
-  comment = "Wildcard for the ${local.name} cluster tunnel. Managed by cluster-prod."
+  proxied = true # a grey-clouded record resolves to a name meaningless outside the edge
+  comment = "${each.value} on the ${local.name} cluster tunnel. Managed by cluster-prod."
 }
 
 variable "cloudflare_zone_id" {

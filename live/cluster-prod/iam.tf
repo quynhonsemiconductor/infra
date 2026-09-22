@@ -396,6 +396,61 @@ resource "aws_iam_role_policy" "external_secrets" {
 
 # KEDA reads queue DEPTH and nothing else. It never consumes — the product's own
 # IRSA role does that (§4b Axis 7).
+# ── READING THE PLATFORM NAMESPACE'S OWN SECRETS ─────────────────────────────
+#
+# THIS WAS MISSING, and it is the reason every ExternalSecret in `platform` reported
+# `SecretSyncedError` / "could not get secret data from provider" while the
+# SecretStore itself reported `Valid`. Validation only proves the provider is
+# reachable; it does not attempt a read.
+#
+# The policy above is right for PRODUCTS: a product's SecretStore names the product's
+# ServiceAccount, ESO assumes that role, and the blast radius stays one namespace.
+# But the `platform` namespace has secrets of its own —
+#
+#     qnsc/<env>/platform/cloudflared-token    the cluster's ingress
+#     qnsc/<env>/platform/grafana/*            the one Alloy credential (§8)
+#
+# — and no role anywhere could read them. `assume-product-stores` grants sts:AssumeRole
+# and nothing else, so the platform store had no identity that could complete a GET.
+#
+# This does NOT weaken §8. The isolation §8 argues for is between PRODUCTS: "one
+# compromised namespace would read every product's secrets." The scope here is
+# `qnsc/<env>/platform/*` only — the platform namespace reading the platform namespace's
+# own infrastructure credentials. Product paths remain unreachable with this role, and
+# still require assuming the product's own.
+resource "aws_iam_role_policy" "external_secrets_platform_reads" {
+  name = "read-platform-secrets"
+  role = aws_iam_role.platform["external-secrets"].id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
+        # Secrets Manager appends a random 6-character suffix to every ARN, so the
+        # trailing `*` is required. Without it this matches nothing and the failure is
+        # indistinguishable from having no policy at all.
+        Resource = "arn:aws:secretsmanager:${local.region}:${data.aws_caller_identity.this.account_id}:secret:qnsc/${local.env}/platform/*"
+      },
+      {
+        # NOT OPTIONAL. These secrets are encrypted with the estate's CMK, and a
+        # GetSecretValue on a CMK-encrypted secret fails with AccessDenied on
+        # kms:Decrypt — an error that names KMS, not Secrets Manager, and sends you
+        # looking at the wrong policy.
+        Effect   = "Allow"
+        Action   = ["kms:Decrypt"]
+        Resource = data.terraform_remote_state.bootstrap.outputs.kms_key_arn
+        Condition = {
+          StringEquals = {
+            "kms:ViaService" = "secretsmanager.${local.region}.amazonaws.com"
+          }
+        }
+      },
+    ]
+  })
+}
+
 resource "aws_iam_role_policy" "keda" {
   name = "read-queue-depth"
   role = aws_iam_role.platform["keda"].id

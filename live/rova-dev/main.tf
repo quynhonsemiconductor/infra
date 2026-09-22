@@ -131,7 +131,7 @@ module "product" {
   #   tags, so the ref is as immutable as a SHA in practice and a module upgrade
   #   stays a diff someone can read. `?ref=<40 hex chars>` would make the one
   #   line that says WHICH VERSION unreadable, in the change reviewers look at.
-  source = "git::https://github.com/quynhonsemiconductor/tf-modules.git//modules/product-profile?ref=product-profile-v0.1.0"
+  source = "git::https://github.com/quynhonsemiconductor/tf-modules.git//modules/product-profile?ref=product-profile-v0.3.0"
 
   # ── The three identity values ──────────────────────────────────────────────
   # These derive EVERY name this stack creates, and the Helm chart derives the
