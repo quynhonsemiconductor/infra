@@ -339,6 +339,8 @@ jobs:
           app-id: ${{ vars.QNSC_AUTOMATION_APP_ID }}
           private-key: ${{ secrets.QNSC_AUTOMATION_PRIVATE_KEY }}
           repositories: tf-modules
+          # Read-only: the installation can write org-wide; this job only reads modules.
+          permission-contents: read
 
       - uses: quynhonsemiconductor/ci/actions/setup-tofu-aws@v1
         with:
