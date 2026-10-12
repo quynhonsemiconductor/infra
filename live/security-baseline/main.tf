@@ -241,6 +241,16 @@ resource "aws_guardduty_detector_feature" "rds_login_events" {
   detector_id = aws_guardduty_detector.this.id
   name        = "RDS_LOGIN_EVENTS"
   status      = "DISABLED"
+
+  # GuardDuty now returns an `additional_configuration { name = "RDS_DATA_RISK", status = "DISABLED" }` block on this
+  # feature. The aws provider pinned here (5.100.0) cannot declare it, and treats its absence from the configuration as
+  # a change that FORCES REPLACEMENT, so every plan of this stack shows a delete-and-recreate of a setting that is
+  # already correct (a no-op re-create, but it makes the plan and the daily drift report permanently noisy and hides
+  # real changes). Ignore it. When the stack moves to the v6 provider, declare RDS_DATA_RISK = DISABLED explicitly
+  # and remove this block.
+  lifecycle {
+    ignore_changes = [additional_configuration]
+  }
 }
 
 # ── IAM Access Analyzer — external-access findings ───────────────────────────
