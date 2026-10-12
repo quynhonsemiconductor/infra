@@ -1,0 +1,31 @@
+{
+  "version": "0",
+  "id": "00000000-0000-0000-0000-000000000000",
+  "detail-type": "AWS API Call via CloudTrail",
+  "source": "aws.sts",
+  "account": "608983206583",
+  "time": "2026-10-12T07:42:38Z",
+  "region": "ap-southeast-1",
+  "resources": [],
+  "detail": {
+    "eventVersion": "1.11",
+    "eventTime": "2026-10-12T07:42:38Z",
+    "eventSource": "sts.amazonaws.com",
+    "eventName": "AssumeRole",
+    "awsRegion": "ap-southeast-1",
+    "sourceIPAddress": "203.0.113.9",
+    "userAgent": "aws-cli/2",
+    "readOnly": true,
+    "userIdentity": {
+      "type": "AssumedRole",
+      "principalId": "AROAEXAMPLE:botocore-session-1",
+      "arn": "arn:aws:sts::608983206583:assumed-role/qnsc-admin/botocore-session-1",
+      "accountId": "608983206583"
+    },
+    "requestParameters": {
+      "roleArn": "arn:aws:iam::608983206583:role/qnsc-developer",
+      "roleSessionName": "x"
+    },
+    "responseElements": null
+  }
+}
