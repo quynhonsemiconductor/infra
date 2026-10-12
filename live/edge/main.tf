@@ -255,7 +255,10 @@ resource "cloudflare_record" "ses_mail_from_spf" {
   type    = "TXT"
   # `~all`, not `-all`: multiple products send from this subdomain and a softfail cannot turn a
   # misconfiguration into silently discarded mail while a new sender's setup settles.
-  value   = "v=spf1 include:amazonses.com ~all"
+  #
+  # QUOTED, because Cloudflare's dashboard warns about an unquoted TXT value (owner report, 2026-10-13). The string resolvers
+  # return is the same either way; this only clears the warning and stores the value the way a TXT record is written.
+  value   = "\"v=spf1 include:amazonses.com ~all\""
   ttl     = 300
   comment = "SES custom MAIL FROM SPF — managed by qnsc-infra/edge"
 
