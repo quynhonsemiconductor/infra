@@ -8,8 +8,11 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
-def drift(address, rtype, actions):
-    return {"address": address, "type": rtype, "change": {"actions": actions}}
+def drift(address, rtype, actions, before=None, after=None):
+    change = {"actions": actions}
+    if before is not None or after is not None:
+        change.update(before=before, after=after)
+    return {"address": address, "type": rtype, "change": change}
 
 
 def run(doc=None, raw=None):
@@ -37,10 +40,34 @@ class DriftReport(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("DELETED outside OpenTofu", out)
 
-    def test_a_dns_or_identity_change_matters(self):
+    def test_a_dns_or_identity_change_matters_when_we_cannot_tell_what_changed(self):
+        # no before/after in the plan: fail closed
         for rtype in ("cloudflare_record", "aws_acm_certificate", "aws_sesv2_email_identity", "cloudflare_r2_custom_domain"):
             with self.subTest(rtype=rtype):
                 self.assertEqual(run([drift("x.y", rtype, ["update"])])[0], 2)
+
+    def test_a_real_attribute_change_on_a_dns_record_matters(self):
+        code, out = run([drift("cloudflare_record.landing", "cloudflare_record", ["update"],
+                               {"content": "a.pages.dev", "tags": None}, {"content": "evil.example", "tags": []})])
+        self.assertEqual(code, 2)
+        self.assertIn("content", out)
+        self.assertNotIn("tags", out.split("content")[1][:3])
+
+    def test_the_2026_10_13_noise_on_dns_records_and_r2_domain_is_informational(self):
+        # what run 38282001351 reported for edge (tags null -> []) and storage-dev/prod (status pending -> active)
+        code, out = run([
+            drift("cloudflare_record.ses_dkim[0]", "cloudflare_record", ["update"], {"name": "k", "tags": None}, {"name": "k", "tags": []}),
+            drift("module.r.cloudflare_r2_custom_domain.this[0]", "cloudflare_r2_custom_domain", ["update"],
+                  {"domain": "d", "status": {"ownership": "pending", "ssl": "initializing"}},
+                  {"domain": "d", "status": {"ownership": "active", "ssl": "active"}})])
+        self.assertEqual(code, 3, out)
+
+    def test_computed_attributes_are_only_ignored_for_cloudflare(self):
+        # an ACM certificate's status really matters
+        code, _ = run([drift("aws_acm_certificate.w", "aws_acm_certificate", ["update"], {"status": "ISSUED"}, {"status": "EXPIRED"})])
+        self.assertEqual(code, 2)
+        code, _ = run([drift("cloudflare_record.a", "cloudflare_record", ["update"], {"modified_on": "1"}, {"modified_on": "2"})])
+        self.assertEqual(code, 3)
 
     def test_significant_wins_over_informational(self):
         code, _ = run([drift("a.b", "aws_sns_topic", ["update"]), drift("cloudflare_record.c", "cloudflare_record", ["update"])])
