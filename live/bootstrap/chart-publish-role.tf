@@ -13,7 +13,7 @@
 #
 # ── WHY THE TRUST IS SCOPED TO TAGS, NOT THE REPOSITORY ─────────────────────
 #
-# The subject is `repo:<org>/gitops:ref:refs/tags/chart-v*`, so this role cannot be
+# The subject is `repo:<org>@<org-id>/gitops@<repo-id>:ref:refs/tags/chart-v*`, so this role cannot be
 # assumed by a workflow running on a branch or a pull request — only by one triggered
 # by a release tag. A push to `main` cannot publish a chart, which keeps the version
 # in Chart.yaml and the version in the registry describing the same contents.
@@ -43,12 +43,21 @@ data "aws_iam_policy_document" "chart_publish_trust" {
       values   = ["sts.amazonaws.com"]
     }
 
+    # THE SUBJECT IS THE IMMUTABLE FORM, with the ids pinned. gitops has `use_immutable_subject: true`
+    # (GET /repos/quynhonsemiconductor/gitops/actions/oidc/customization/sub), so GitHub issues
+    #   repo:quynhonsemiconductor@297362956/gitops@1372532884:ref:refs/tags/chart-v0.8.0
+    # and NOT the name-only form. Under the name-only pattern the first CI chart-release (run 35742603847, attempt 1,
+    # 2026-09-22 14:46) failed at the OIDC step; the state was then written from a laptop at 14:53 with a `@*/gitops@*`
+    # wildcard that was never committed, and attempt 2 passed at 14:54. That uncommitted local apply is also what blanked
+    # bootstrap's cloudflare_zone_id output (docs/incidents/2026-10-09-edge-dns.md). The ids are pinned instead of
+    # wildcarded: a wildcard on the ids would also admit a DIFFERENT repository named gitops, which is exactly what
+    # immutable subjects exist to rule out. The legacy name-only form is dropped on purpose.
     # StringLike, because the tag carries the version. `chart-v*` is the whole point:
     # it admits chart-v0.8.0 and refuses `refs/heads/main`.
     condition {
       test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:quynhonsemiconductor/gitops:ref:refs/tags/chart-v*"]
+      values   = ["repo:quynhonsemiconductor@297362956/gitops@1372532884:ref:refs/tags/chart-v*"]
     }
   }
 }
