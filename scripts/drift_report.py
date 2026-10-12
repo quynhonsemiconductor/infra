@@ -34,11 +34,33 @@ from destructive_guard import is_protected  # noqa: E402  (same directory)
 # Attributes a provider COMPUTES and updates by itself: they change without anyone touching the resource and are not part
 # of any configuration, so a refresh-only difference in them only ever means "state is catching up". Cloudflare only: for
 # other providers a `status` can be meaningful (an ACM certificate going from ISSUED to EXPIRED), so nothing is assumed.
-CLOUDFLARE_COMPUTED = frozenset({
-    "created_on", "modified_on", "created_at", "modified_at", "updated_at",
-    "status",          # r2 custom domain: ownership pending -> active, ssl initializing -> active, a few minutes after create
-    "zone_name", "metadata", "proxiable", "hostname",
-})
+#
+# NARROW, PER TYPE. A name that is computed on one resource can be the whole point of another (`hostname` is what a
+# cloudflare_custom_hostname IS), so nothing is ignored for "every cloudflare_*" except timestamps.
+CLOUDFLARE_TIMESTAMPS = frozenset({"created_on", "modified_on", "created_at", "modified_at", "updated_at"})
+CLOUDFLARE_COMPUTED_BY_TYPE = {
+    "cloudflare_record": frozenset({"proxiable", "metadata", "zone_name"}),
+    "cloudflare_r2_custom_domain": frozenset({"zone_name"}),
+}
+# `status` is a lifecycle, not a constant: it is noise only while it is ARRIVING at "active" (a custom domain finishing
+# activation: ownership pending -> active, ssl initializing -> active). Anything LEAVING active, or arriving anywhere else
+# (error, deactivated, blocked, moved), is a real change: the domain stopped serving.
+CLOUDFLARE_STATUS_OK = "active"
+
+
+def _leaves(value, path=()):
+    if isinstance(value, dict):
+        for k, v in value.items():
+            yield from _leaves(v, path + (k,))
+    else:
+        yield path, value
+
+
+def status_is_noise(before, after) -> bool:
+    """True only if every leaf of `status` that changed now says active (and none that was active changed)."""
+    b, a = dict(_leaves(before)), dict(_leaves(after))
+    changed = [p for p in set(b) | set(a) if b.get(p) != a.get(p)]
+    return bool(changed) and all(a.get(p) == CLOUDFLARE_STATUS_OK for p in changed)
 
 
 def _norm(value):
@@ -56,9 +78,16 @@ def meaningful_attrs(rtype: str, change: dict) -> list[str] | None:
     before, after = change.get("before"), change.get("after")
     if not isinstance(before, dict) or not isinstance(after, dict):
         return None
-    ignore = CLOUDFLARE_COMPUTED if rtype.startswith("cloudflare_") else frozenset()
-    return sorted(k for k in set(before) | set(after)
-                  if k not in ignore and _norm(before.get(k)) != _norm(after.get(k)))
+    cf = rtype.startswith("cloudflare_")
+    ignore = (CLOUDFLARE_TIMESTAMPS | CLOUDFLARE_COMPUTED_BY_TYPE.get(rtype, frozenset())) if cf else frozenset()
+    out = []
+    for k in set(before) | set(after):
+        if k in ignore or _norm(before.get(k)) == _norm(after.get(k)):
+            continue
+        if cf and k == "status" and status_is_noise(before.get(k), after.get(k)):
+            continue
+        out.append(k)
+    return sorted(out)
 
 
 def classify(doc: dict) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
@@ -77,7 +106,8 @@ def classify(doc: dict) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
         if is_protected(rtype, address) and (attrs is None or attrs):
             significant.append((address, f"{verb} ({', '.join(attrs) if attrs else 'cannot tell which attributes'})"))
         else:
-            informational.append((address, verb + (f" ({', '.join(attrs)})" if attrs else " (computed / empty-equivalent only)")))
+            label = " (cannot tell which attributes)" if attrs is None else (f" ({', '.join(attrs)})" if attrs else " (computed / empty-equivalent only)")
+            informational.append((address, verb + label))
     return significant, informational
 
 

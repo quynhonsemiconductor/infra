@@ -62,6 +62,35 @@ class DriftReport(unittest.TestCase):
                   {"domain": "d", "status": {"ownership": "active", "ssl": "active"}})])
         self.assertEqual(code, 3, out)
 
+    def test_status_arriving_at_active_is_noise_but_leaving_or_failing_is_not(self):
+        r2 = "cloudflare_r2_custom_domain"
+        pa = lambda b, a: run([drift("x.y", r2, ["update"], {"domain": "d", "status": b}, {"domain": "d", "status": a})])[0]
+        self.assertEqual(pa({"ownership": "pending", "ssl": "initializing"}, {"ownership": "active", "ssl": "active"}), 3)
+        self.assertEqual(pa("pending", "active"), 3)
+        self.assertEqual(pa({"ownership": "active", "ssl": "active"}, {"ownership": "active", "ssl": "error"}), 2)       # leaving active
+        self.assertEqual(pa({"ownership": "active", "ssl": "active"}, {"ownership": "deactivated", "ssl": "active"}), 2)
+        self.assertEqual(pa("pending", "error"), 2)                                                                       # arriving somewhere bad
+        self.assertEqual(pa("pending", "initializing"), 2)                                                                # not active yet: look at it
+        self.assertEqual(pa("active", "pending"), 2)
+        # a mix: one leaf arrives active, another leaves active -> real
+        self.assertEqual(pa({"ownership": "pending", "ssl": "active"}, {"ownership": "active", "ssl": "error"}), 2)
+
+    def test_hostname_is_not_ignored_where_it_is_the_resource(self):
+        code, out = run([drift("x.y", "cloudflare_custom_hostname", ["update"], {"hostname": "a.example"}, {"hostname": "b.example"})])
+        self.assertEqual(code, 2, out)
+        self.assertIn("hostname", out)
+
+    def test_timestamps_are_noise_on_any_cloudflare_type_but_zone_name_is_per_type(self):
+        self.assertEqual(run([drift("x.y", "cloudflare_pages_domain", ["update"], {"modified_on": "1"}, {"modified_on": "2"})])[0], 3)
+        self.assertEqual(run([drift("x.y", "cloudflare_record", ["update"], {"zone_name": "a"}, {"zone_name": "b"})])[0], 3)
+        self.assertEqual(run([drift("x.y", "cloudflare_pages_domain", ["update"], {"zone_name": "a"}, {"zone_name": "b"})])[0], 2)
+
+    def test_an_unprotected_resource_without_before_after_says_cannot_tell(self):
+        code, out = run([drift("aws_sns_topic.t", "aws_sns_topic", ["update"])])
+        self.assertEqual(code, 3)
+        self.assertIn("cannot tell which attributes", out)
+        self.assertNotIn("computed / empty-equivalent only", out)
+
     def test_computed_attributes_are_only_ignored_for_cloudflare(self):
         # an ACM certificate's status really matters
         code, _ = run([drift("aws_acm_certificate.w", "aws_acm_certificate", ["update"], {"status": "ISSUED"}, {"status": "EXPIRED"})])
