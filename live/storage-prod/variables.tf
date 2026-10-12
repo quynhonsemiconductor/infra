@@ -13,15 +13,17 @@ variable "cloudflare_api_token" {
 
 variable "cloudflare_account_id" {
   type        = string
-  default     = ""
   description = <<-EOT
-    Cloudflare account ID that owns the R2 buckets. Supplied via
-    TF_VAR_cloudflare_account_id in CI from the CLOUDFLARE_ACCOUNT_ID Actions
-    VARIABLE (not a secret — the workflows read `vars.CLOUDFLARE_ACCOUNT_ID`, and
-    an account ID is not sensitive). Pairs with the CLOUDFLARE_API_TOKEN secret.
-    Leave empty only for plan-only bootstrapping — the bucket modules are gated
-    on it.
+    Cloudflare account ID that owns the R2 buckets: 32 hex characters, REQUIRED (no default). CI passes it as
+    TF_VAR_cloudflare_account_id from the CLOUDFLARE_ACCOUNT_ID Actions VARIABLE (not a secret). It used to default to ""
+    ("leave empty for plan-only bootstrapping") and the bucket modules were gated on it (count = 0); an empty value therefore planned to DESTROY every R2 bucket, its CORS and lifecycle rules, and the public-assets custom domain, so it is
+    now an error instead.
   EOT
+
+  validation {
+    condition     = can(regex("^[0-9a-f]{32}$", var.cloudflare_account_id))
+    error_message = "cloudflare_account_id must be the 32-hex-character Cloudflare account id (CI: the CLOUDFLARE_ACCOUNT_ID Actions variable)."
+  }
 }
 
 variable "cloudflare_zone_id" {

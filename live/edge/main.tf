@@ -170,7 +170,7 @@ resource "aws_sesv2_email_identity" "mail_domain" {
   }
 
   lifecycle {
-    prevent_destroy = true # losing it regenerates the DKIM tokens / unattaches the domain
+    prevent_destroy = true # destroying the SES identity deletes its DKIM tokens: every DKIM CNAME would have to be re-created and re-verified, and mail fails DKIM meanwhile
   }
 }
 
@@ -289,7 +289,7 @@ resource "cloudflare_pages_project" "landing" {
   production_branch = "main"
 
   lifecycle {
-    prevent_destroy = true # losing it regenerates the DKIM tokens / unattaches the domain
+    prevent_destroy = true # destroying the Pages project deletes its deployments and detaches its custom domains: the landing site goes down
   }
 }
 
@@ -306,7 +306,7 @@ resource "cloudflare_pages_domain" "landing" {
   domain       = each.value
 
   lifecycle {
-    prevent_destroy = true # losing it regenerates the DKIM tokens / unattaches the domain
+    prevent_destroy = true # destroying the Pages domain detaches the hostname from the project: the site stops answering on it
   }
 }
 

@@ -6,8 +6,8 @@ variable "cloudflare_zone_id" {
   type = string
   # NO DEFAULT, deliberately. It used to default to "" ("leave empty to skip DNS wiring org-wide"), so any apply that
   # did not pass TF_VAR_cloudflare_zone_id (a local `tofu apply`, a job without the variable) silently wrote "" to the
-  # output below, and every stack that read it then planned to REPLACE its DNS records. That is how the 9 records of
-  # live/edge were destroyed on 2026-10-09 (docs/incidents/2026-10-09-edge-dns.md). A missing value must stop the plan,
+  # output below, and every stack that read it then planned to REPLACE its DNS records. That is how 8 DNS records (plus the
+  # ACM validation) of live/edge were destroyed on 2026-10-09 (docs/incidents/2026-10-09-edge-dns.md). A missing value must stop the plan,
   # not become an empty string.
   description = <<-EOT
     Cloudflare Zone ID for the qnsc.vn zone: 32 hex characters. One zone serves every product, so it's an account-level

@@ -60,12 +60,15 @@ variable "mail_region" {
 
 variable "cloudflare_account_id" {
   type        = string
-  default     = ""
   description = <<-EOT
-    Cloudflare account ID that owns the qnsc.vn zone and hosts the Pages
-    projects (static sites). Supplied via TF_VAR_cloudflare_account_id in CI
-    from the CLOUDFLARE_ACCOUNT_ID org secret — the same account as
-    cloudflare_api_token. Leave empty only for plan-only bootstrapping without
-    Pages resources.
+    Cloudflare account ID that owns the qnsc.vn zone and hosts the Pages projects: 32 hex characters, REQUIRED (no default). CI passes it as
+    TF_VAR_cloudflare_account_id from the CLOUDFLARE_ACCOUNT_ID Actions VARIABLE (not a secret). It used to default to ""
+    ("leave empty for plan-only bootstrapping") and the Pages project, its domains and the Turnstile widget needed it; an empty value therefore planned to DESTROY the landing Pages project and its domains, so it is
+    now an error instead.
   EOT
+
+  validation {
+    condition     = can(regex("^[0-9a-f]{32}$", var.cloudflare_account_id))
+    error_message = "cloudflare_account_id must be the 32-hex-character Cloudflare account id (CI: the CLOUDFLARE_ACCOUNT_ID Actions variable)."
+  }
 }
