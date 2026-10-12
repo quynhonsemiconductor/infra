@@ -285,9 +285,11 @@ resource "cloudflare_record" "dmarc" {
   zone_id = var.cloudflare_zone_id
   name    = "_dmarc"
   type    = "TXT"
-  value   = "\"v=DMARC1; p=none; rua=mailto:devops@qnsc.vn\""
-  ttl     = 300
-  comment = "DMARC (report-only) — managed by qnsc-infra/edge"
+  # Exactly what is live (read from the CI plan of the import): TTL 1 = Cloudflare "automatic", no comment, content as typed. Matching it
+  # is what makes the first apply a pure IMPORT. Quote the content and set a comment in a follow-up in-place update (as for the SPF record),
+  # not in the same change as the import.
+  content = "v=DMARC1; p=none; rua=mailto:devops@qnsc.vn"
+  ttl     = 1
 
   lifecycle {
     prevent_destroy = true # see docs/incidents/2026-10-09-edge-dns.md
