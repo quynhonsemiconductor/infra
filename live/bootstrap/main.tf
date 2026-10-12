@@ -82,8 +82,8 @@ module "artifacts_bucket" {
 #   chart:   charts/qnsc-service
 #
 # and ECR does not create a repository on first push. So `chart-release.yaml` has
-# nowhere to push, ArgoCD has nothing to resolve, and every Application — rova-dev
-# included — fails at source resolution rather than at anything that looks like a
+# nowhere to push, ArgoCD has nothing to resolve, and every Application
+# fails at source resolution rather than at anything that looks like a
 # cause. Found 2026-09-19 while tracing the delivery path end to end; task 1.8
 # required `image_tag_mutability = IMMUTABLE` on this repository and the
 # repository itself was never declared anywhere.

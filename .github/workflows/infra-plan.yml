@@ -258,12 +258,11 @@ jobs:
           # ONE LEVEL, and it stays that way. Every stack sits directly under
           # live/ as `<name>-<env>`, so this glob finds all of them.
           #
-          # It briefly read `live/*/ live/*/*/`, to reach `live/kb/dev` — the one
-          # nested stack in the estate. That nesting is what `live/*/` could not
-          # see, and what let a module path pointing OUT of the repository, and
-          # then a ref to a tag that did not exist, both reach main through that
-          # stack unreviewed. kb is `live/kb-dev` now and the second pattern is
-          # unnecessary.
+          # It briefly read `live/*/ live/*/*/`, to reach a nested stack. That nesting is
+          # what `live/*/` could not see, and what let a module path pointing OUT of the
+          # repository, and then a ref to a tag that did not exist, both reach main through
+          # that stack unreviewed. There is no nested stack any more, so the second pattern
+          # is unnecessary.
           dirs: 'live/*/'
           github-token: ${{ secrets.GITHUB_TOKEN }}
 

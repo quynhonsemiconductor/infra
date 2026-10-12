@@ -61,5 +61,4 @@ in `.github/workflows/infra-plan.yml` **with the reason**, because a stack is
 either planned or explicitly excluded, and there is no third state.
 
 `infra-apply.yml` is deliberately NOT derived: adding a stack there starts
-applying it on merge to `main`, which for an EKS cluster is a decision with a bill
-attached. It reports what it does not manage on every run instead.
+applying it on merge to `main`, which should be a decision, not a side effect. It reports what it does not manage on every run instead.

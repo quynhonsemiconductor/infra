@@ -53,11 +53,11 @@ output "cloudflare_ipv4" {
 # Task 1.8, §11c — the OCI repository `gitops/appsets/products.yaml` gives every
 # Application as its chart source, and the one `chart-release.yaml` pushes to.
 #
-# Exposed as an output rather than left to be read off the console because two
-# different things must agree on it and neither reads the other: the
-# ApplicationSet's `repoURL`/`chart` pair, and the ARN in ArgoCD's chart-pull
-# policy (`cluster-prod/iam.tf`). A disagreement is a sync failure at source
-# resolution, which does not name the repository.
+# Exposed as an output rather than left to be read off the console so the ApplicationSet's
+# `repoURL`/`chart` pair has one place to agree with. (The second consumer, ArgoCD's chart-pull IAM
+# policy in the EKS `cluster-prod` stack, was removed with that stack on 2026-10-13.) A disagreement is
+# a sync failure at source resolution, which does not name the repository. This registry itself goes
+# when the chart moves to GHCR (the bootstrap PR gated on ghcr_gate.sh).
 output "chart_repository_url" {
   value       = module.chart_registry.repository_urls["charts/qnsc-service"]
   description = "OCI repository holding the qnsc-service Helm chart."
