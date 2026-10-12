@@ -24,6 +24,25 @@
 # knows about, so a resource created outside it has no address to compare. That gap is
 # covered by unmanaged-resources.yml, which is a different mechanism for a different class.
 # Neither replaces the other.
+#
+# CREDENTIALS. The Cloudflare stacks (edge, storage-*) are planned with a SEPARATE, READ-ONLY token,
+# secrets.CLOUDFLARE_API_TOKEN_READONLY, never the write token the apply uses. A detector must not be able to change
+# what it detects, and a scheduled job on a PR-less trigger is the wrong place for a token that can edit DNS.
+# Scopes (read only): Zone:Read, DNS:Read, Zone WAF:Read (rulesets), Account: Cloudflare Pages:Read, Workers R2
+# Storage:Read, Turnstile:Read. If the secret is missing the job FAILS with that message; it does not fall back.
+# Before 2026-10-09 this job passed no Cloudflare token at all, so edge and storage-* errored every night
+# ("drift job red") and the red had become background noise: nobody saw the destroyed DNS records for three days.
+#
+# WHAT COUNTS AS A FAILURE. The unapplied-config pass (`plan`) fails the stack on ANY change: main moved away from
+# reality. The refresh-only pass fails it only for drift that matters (scripts/drift_report.py): a resource DELETED
+# outside OpenTofu, or any change to a DNS / edge / mail-identity / certificate / key resource. Other refresh-only drift
+# (provider-computed attributes: user_group_ids = [], tags = {}, security-group ingress that separate rule resources
+# added) is printed in the summary as informational. Reported nightly it was pure noise on runtime-dev, runtime-prod and
+# security-baseline, and an alarm that fires every night is one nobody reads.
+#
+# A FAILED RUN ALERTS. A red scheduled run only emails whoever last touched the cron line. The `alert` job opens (or
+# updates) one GitHub issue labelled `drift-detection` and posts to the platform Teams channel, for ANY non-success
+# of any stack, including a plan that errored. See docs/incidents/2026-10-09-edge-dns.md.
 # =============================================================================
 name: Drift detection
 
@@ -55,11 +74,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The same eight stacks infra-apply.yml manages. `organization` is deliberately
+        # The same stacks infra-apply.yml manages, less observability (below). `organization` is deliberately
         # absent from both: it is applied out of band, and this account is a MEMBER of
         # another organisation (payer 033086823579), so parts of that stack cannot apply
         # here at all. Adding it would produce permanent red that teaches people to ignore
         # this job.
+        #
+        # `observability` is EXCLUDED, with a reason: it cannot be planned. Its state holds grafana_* objects created
+        # under a provider alias that the 2026-09-20 split removed, so every plan fails with 'Provider configuration not
+        # present ... (orphan)' (re-tested 2026-10-12 on infra#161; the same exclusion is in infra-plan.yml). Before that
+        # it also errored for want of its variables. Left in, it would be a permanent red and the alert would fire every
+        # night, which is how a real failure goes unread. Put it back, with TF_VAR_grafana_cloud_api_key and
+        # TF_VAR_teams_webhook_url, in the same change that migrates its state.
         stack:
           - bootstrap
           - security-baseline
@@ -68,7 +94,6 @@ jobs:
           - edge
           - storage-dev
           - storage-prod
-          - observability
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -97,6 +122,16 @@ jobs:
         working-directory: live/${{ matrix.stack }}
         run: tofu init -input=false
 
+      - name: Require the read-only Cloudflare token
+        if: ${{ contains(fromJSON('["edge","storage-dev","storage-prod"]'), matrix.stack) }}
+        env:
+          HAVE_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN_READONLY != '' }}
+        run: |
+          if [ "$HAVE_TOKEN" != "true" ]; then
+            echo "::error title=Drift cannot see Cloudflare::secrets.CLOUDFLARE_API_TOKEN_READONLY is not set. Create a READ-ONLY Cloudflare API token (scopes in this file's header) and add it as an organisation or repository secret. This job never falls back to the write token."
+            exit 1
+          fi
+
       # `-lock=false` because the infra-plan role is read-only and cannot write the DynamoDB
       # lock table. Neither pass mutates state, so running lock-free is safe; apply still
       # locks via the admin role. PIPESTATUS[0] captures tofu's exit past the `tee`.
@@ -104,23 +139,37 @@ jobs:
         id: refresh
         working-directory: live/${{ matrix.stack }}
         env:
-          TF_VAR_cloudflare_zone_id:    ${{ vars.CLOUDFLARE_ZONE_ID }}      # required and validated by bootstrap, edge and storage-*
-          TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}   # required and validated by edge and storage-*
+          TF_VAR_cloudflare_zone_id:    ${{ vars.CLOUDFLARE_ZONE_ID }}
+          TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          # Read-only token, and only for the stacks that talk to Cloudflare. Empty elsewhere on purpose.
+          TF_VAR_cloudflare_api_token:  ${{ contains(fromJSON('["edge","storage-dev","storage-prod"]'), matrix.stack) && secrets.CLOUDFLARE_API_TOKEN_READONLY || '' }}
         run: |
           set +e
-          tofu plan -refresh-only -input=false -lock=false -no-color -detailed-exitcode 2>&1 | tee refresh.txt
+          tofu plan -refresh-only -input=false -lock=false -no-color -detailed-exitcode -out=refresh.tfplan 2>&1 | tee refresh.txt
           echo "exitcode=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
 
       - name: Detect unapplied config
         id: plan
         working-directory: live/${{ matrix.stack }}
         env:
-          TF_VAR_cloudflare_zone_id:    ${{ vars.CLOUDFLARE_ZONE_ID }}      # required and validated by bootstrap, edge and storage-*
-          TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}   # required and validated by edge and storage-*
+          TF_VAR_cloudflare_zone_id:    ${{ vars.CLOUDFLARE_ZONE_ID }}
+          TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          # Read-only token, and only for the stacks that talk to Cloudflare. Empty elsewhere on purpose.
+          TF_VAR_cloudflare_api_token:  ${{ contains(fromJSON('["edge","storage-dev","storage-prod"]'), matrix.stack) && secrets.CLOUDFLARE_API_TOKEN_READONLY || '' }}
         run: |
           set +e
           tofu plan -input=false -lock=false -no-color -detailed-exitcode 2>&1 | tee plan.txt
           echo "exitcode=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      # Only when the refresh-only pass found something: classify it (see scripts/drift_report.py).
+      - name: Classify external drift
+        id: classify
+        if: ${{ steps.refresh.outputs.exitcode == '2' }}
+        working-directory: live/${{ matrix.stack }}
+        run: |
+          set +e
+          tofu show -json refresh.tfplan | python3 "$GITHUB_WORKSPACE/scripts/drift_report.py"
+          echo "class=${PIPESTATUS[1]}" >> "$GITHUB_OUTPUT"
 
       # Exit codes: 0 = no changes, 1 = error, 2 = changes present.
       - name: Report
@@ -128,6 +177,7 @@ jobs:
         run: |
           refresh="${{ steps.refresh.outputs.exitcode }}"
           plan="${{ steps.plan.outputs.exitcode }}"
+          class="${{ steps.classify.outputs.class }}"   # 2 matters, 3 informational, 0 none, 1 could not classify
           stack="${{ matrix.stack }}"
 
           {
@@ -135,7 +185,10 @@ jobs:
             echo ""
             case "$refresh" in
               0) echo "- External drift: **none**" ;;
-              2) echo "- External drift: **DETECTED** — reality diverged from state" ;;
+              2) case "$class" in
+                   3) echo "- External drift: informational only (provider-computed attributes), listed above" ;;
+                   *) echo "- External drift: **DETECTED** — reality diverged from state" ;;
+                 esac ;;
               *) echo "- External drift: :warning: refresh-only errored (exit $refresh)" ;;
             esac
             case "$plan" in
@@ -157,7 +210,108 @@ jobs:
 
           # Fail so the scheduled run turns red and GitHub notifies. An errored pass (1)
           # also fails — a detector that cannot run is not a passing detector.
-          if [ "$refresh" != "0" ] || [ "$plan" != "0" ]; then
+          # refresh 2 is a failure unless it was classified as informational (3). A classifier that could not run
+          # (1, or no output) counts as a failure: not knowing is not a pass.
+          refresh_bad=1
+          if [ "$refresh" = "0" ] || { [ "$refresh" = "2" ] && [ "$class" = "3" ]; }; then refresh_bad=0; fi
+          if [ "$refresh_bad" = "1" ] || [ "$plan" != "0" ]; then
             echo "::error::$stack — refresh exit $refresh, plan exit $plan"
             exit 1
           fi
+
+  # Any stack that is not green, including "could not run", raises an alert that does not depend on someone watching Actions.
+  alert:
+    name: Alert on drift failure
+    needs: drift
+    if: ${{ always() && needs.drift.result != 'success' && needs.drift.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+      actions: read      # lists this run's jobs, to name the failing stacks
+    steps:
+      - name: Name the failing stacks
+        id: failing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -uo pipefail
+          # jobs are named "Drift <stack>"; a lookup failure must not hide the alert, so it degrades to "see the run"
+          list="$(gh api --paginate "repos/$REPO/actions/runs/$RUN_ID/jobs" --jq '.jobs[] | select(.name | startswith("Drift ")) | select(.conclusion != "success" and .conclusion != "skipped") | .name | sub("^Drift "; "")' 2>/dev/null | paste -sd, - || true)"
+          echo "stacks=${list:-unknown (see the run)}" >> "$GITHUB_OUTPUT"
+
+      - name: Open or update the drift issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          STACKS: ${{ steps.failing.outputs.stacks }}
+        run: |
+          set -euo pipefail
+          gh label create drift-detection -R "$REPO" --color D93F0B --description "Nightly drift job did not pass" 2>/dev/null || true
+          body="Failing stacks: ${STACKS}. Run: ${RUN_URL}. A stack fails when its plan has unapplied changes, when a plan errors, or when a resource was deleted outside OpenTofu or a DNS/identity resource changed. The per-stack summary is on the run. This issue closes itself on the next fully green run."
+          n="$(gh issue list -R "$REPO" --label drift-detection --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$n" ]; then
+            gh issue comment "$n" -R "$REPO" --body "$body"
+          else
+            gh issue create -R "$REPO" --title "Drift detection is failing" --label drift-detection --body "$body"
+          fi
+
+      # TEAMS_ALERTS_WEBHOOK_URL is a Teams *Workflows* webhook. It answers 202 to ANY body and posts nothing unless the body
+      # is {"type":"message","attachments":[{"contentType":"application/vnd.microsoft.card.adaptive","content":<card>}]};
+      # a plain {"text": ...} (the Office 365 connector format) is silently dropped. So the payload is an Adaptive Card.
+      # The GitHub issue above is the durable alert; this step only warns when it cannot post.
+      - name: Post to the platform Teams channel
+        env:
+          WEBHOOK: ${{ secrets.TEAMS_ALERTS_WEBHOOK_URL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          STACKS: ${{ steps.failing.outputs.stacks }}
+        run: |
+          if [ -z "$WEBHOOK" ]; then echo "::warning::TEAMS_ALERTS_WEBHOOK_URL is not set; only the GitHub issue was raised"; exit 0; fi
+          payload="$(python3 - <<'PY'
+          import json, os
+          card = {
+              "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+              "type": "AdaptiveCard",
+              "version": "1.4",
+              "body": [
+                  {"type": "TextBlock", "size": "Medium", "weight": "Bolder", "wrap": True,
+                   "text": "Drift detection failed: qnsc infra"},
+                  {"type": "FactSet", "facts": [{"title": "Stacks", "value": os.environ["STACKS"]}]},
+                  {"type": "TextBlock", "wrap": True, "isSubtle": True,
+                   "text": "Unapplied config, a plan that errored, a resource deleted outside OpenTofu, or a DNS/identity change."},
+              ],
+              "actions": [{"type": "Action.OpenUrl", "title": "Open the run", "url": os.environ["RUN_URL"]}],
+          }
+          print(json.dumps({"type": "message",
+                            "attachments": [{"contentType": "application/vnd.microsoft.card.adaptive",
+                                             "contentUrl": None, "content": card}]}))
+          PY
+          )"
+          curl -fsS --max-time 20 -H 'Content-Type: application/json' -d "$payload" "$WEBHOOK" >/dev/null \
+            || echo "::warning::Teams post failed; see the GitHub issue"
+
+  # A green run closes the issue, so an open drift-detection issue always means "failing now".
+  resolve:
+    name: Close the drift issue
+    needs: drift
+    if: ${{ always() && needs.drift.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Close open drift issues
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          for n in $(gh issue list -R "$REPO" --label drift-detection --state open --json number --jq '.[].number'); do
+            gh issue close "$n" -R "$REPO" --comment "Every stack passed in ${RUN_URL}. Closing; it reopens as a new issue if drift returns."
+          done
