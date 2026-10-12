@@ -34,7 +34,7 @@
 # ("drift job red") and the red had become background noise: nobody saw the destroyed DNS records for three days.
 #
 # WHAT COUNTS AS A FAILURE. The unapplied-config pass (`plan`) fails the stack on ANY change: main moved away from
-# reality. The refresh-only pass fails it only for drift that matters (scripts/drift_report.py): a resource DELETED
+# reality. The refresh-only pass fails it only for drift that matters (drift mode of the shared destructive-guard action): a resource DELETED
 # outside OpenTofu, or any change to a DNS / edge / mail-identity / certificate / key resource. Other refresh-only drift
 # (provider-computed attributes: user_group_ids = [], tags = {}, security-group ingress that separate rule resources
 # added) is printed in the summary as informational. Reported nightly it was pure noise on runtime-dev, runtime-prod and
@@ -161,15 +161,17 @@ jobs:
           tofu plan -input=false -lock=false -no-color -detailed-exitcode 2>&1 | tee plan.txt
           echo "exitcode=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
 
-      # Only when the refresh-only pass found something: classify it (see scripts/drift_report.py).
+      # Only when the refresh-only pass found something: classify it. The classifier and the list of protected types live in
+      # quynhonsemiconductor/ci/actions/destructive-guard (mode: drift), the same list the plan guard uses.
+      # Output `class`: 2 matters, 3 informational, 0 none, 1 could not classify.
       - name: Classify external drift
         id: classify
         if: ${{ steps.refresh.outputs.exitcode == '2' }}
-        working-directory: live/${{ matrix.stack }}
-        run: |
-          set +e
-          tofu show -json refresh.tfplan | python3 "$GITHUB_WORKSPACE/scripts/drift_report.py"
-          echo "class=${PIPESTATUS[1]}" >> "$GITHUB_OUTPUT"
+        uses: quynhonsemiconductor/ci/actions/destructive-guard@v1
+        with:
+          mode: drift
+          plan-file: refresh.tfplan
+          working-directory: live/${{ matrix.stack }}
 
       # Exit codes: 0 = no changes, 1 = error, 2 = changes present.
       - name: Report
