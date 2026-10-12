@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Move observability's Grafana objects into observability-alerting's state.
 #
-# Runbook step 3.4b. Needs credentials, so it is a script a human runs rather than
+# Runbook: docs/runbooks/observability-state-migration.md. Needs credentials, so it is a script a human runs rather than
 # something CI does.
 #
 # ── WHY THIS EXISTS ─────────────────────────────────────────────────────────

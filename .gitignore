@@ -48,3 +48,6 @@ Thumbs.db
 # Python bytecode from running scripts/ locally
 __pycache__/
 *.pyc
+
+# Committed plan JSON (tofu show -json) carries the prior state, session ARNs and secrets: never commit it
+plan.json

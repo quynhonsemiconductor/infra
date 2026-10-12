@@ -83,7 +83,11 @@ jobs:
           AFTER: ${{ github.sha }}
         run: |
           set -euo pipefail
-          ALL='"bootstrap","security-baseline","runtime-dev","runtime-prod","edge","storage-dev","storage-prod","observability"'
+          # `observability` is NOT in this list: it cannot be planned (its state holds grafana_* objects whose provider alias the
+          # 2026-09-20 split removed, so every plan fails with "Provider configuration not present ... (orphan)"), and an all-stacks run
+          # that includes it is red every time. A change under live/observability/ still selects it below, so that remains visible.
+          # Put it back in this list with the state migration: docs/runbooks/observability-state-migration.md.
+          ALL='"bootstrap","security-baseline","runtime-dev","runtime-prod","edge","storage-dev","storage-prod"'
           # Manual dispatch or an unknown/zero base commit → apply everything.
           if [ -z "${BEFORE:-}" ] || [[ "$BEFORE" =~ ^0+$ ]] || ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
             echo "stacks=[$ALL]" >> "$GITHUB_OUTPUT"; exit 0
@@ -102,17 +106,13 @@ jobs:
           # ── STACKS THIS PIPELINE DOES NOT APPLY ───────────────────────────
           # Reported, NOT applied, and the distinction is deliberate.
           #
-          # The list above is hardcoded, and six stacks on disk were missing from
-          # it — cluster-dev, cluster-prod, data-dev, data-prod, kb-dev and
-          # `organization`, which predates the EKS work entirely. infra-plan.yml
-          # now derives its list from the filesystem so a stack cannot be silently
+          # The list above is hardcoded, and `organization` (applied out of band) is not in it.
+          # infra-plan.yml derives its list from the filesystem so a stack cannot be silently
           # unplanned. This job does NOT do the same, on purpose: adding a stack
-          # here starts APPLYING it on merge to main, and creating an EKS cluster
-          # is a decision with a bill attached, sequenced by the first-deploy
-          # runbook rather than by a workflow edit.
+          # here starts APPLYING it on merge to main, which should be a decision, not a side effect.
           #
           # So the gap is printed on every run instead of closed quietly. Silence
-          # would let "merged" read as "applied", which for these stacks it is not.
+          # would let "merged" read as "applied", which for such a stack it is not.
           UNMANAGED=""
           for d in $(find live -name '*.tf' -not -path '*/.terraform/*' -exec dirname {} \; \
                        | sed 's|^live/||' | sort -u); do
