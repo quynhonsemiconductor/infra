@@ -39,27 +39,20 @@ provider "aws" {
 # Shared edge governance — Cloudflare WAF + rate-limiting for the qnsc.vn zone.
 #
 # Zone-level (one zone fronts every product), so it lives in the platform layer
-# alongside runtime-*, not in any single product stack. The zone_id is read
-# from qnsc-infra bootstrap (single source of truth). Managed WAF is OFF by
+# alongside runtime-*, not in any single product stack. The zone_id is a VALIDATED VARIABLE
+# (var.cloudflare_zone_id; CI: vars.CLOUDFLARE_ZONE_ID). It used to be read from bootstrap's
+# remote state, where one apply that missed TF_VAR_cloudflare_zone_id exported "" and the next
+# edge apply destroyed every DNS record (docs/incidents/2026-10-09-edge-dns.md). Managed WAF is OFF by
 # default (Pro+ only); rate limiting is on with a conservative per-IP default.
 #
 # WAF ownership: if enable_managed_waf is turned on for prod, remove the AWS
 # `waf` module from runtime-prod — never run both.
 # =============================================================================
 
-data "terraform_remote_state" "bootstrap" {
-  backend = "s3"
-  config = {
-    bucket = "qnsc-tofu-state"
-    key    = "platform/bootstrap/terraform.tfstate"
-    region = "ap-southeast-1"
-  }
-}
-
 module "edge" {
   source = "git::https://github.com/quynhonsemiconductor/tf-modules.git//modules/cf-edge?ref=cf-edge-v1.0.0"
 
-  zone_id = data.terraform_remote_state.bootstrap.outputs.cloudflare_zone_id
+  zone_id = var.cloudflare_zone_id
 
   # Conservative per-IP rate limit on the product API surface. The free plan's
   # single included rate-limiting rule only permits a 10s counting period, a 10s
@@ -119,7 +112,7 @@ resource "cloudflare_record" "acm_validation" {
     }
   }
 
-  zone_id         = data.terraform_remote_state.bootstrap.outputs.cloudflare_zone_id
+  zone_id         = var.cloudflare_zone_id
   name            = trimsuffix(each.value.name, ".")
   type            = each.value.type
   content         = trimsuffix(each.value.content, ".")
@@ -127,6 +120,17 @@ resource "cloudflare_record" "acm_validation" {
   proxied         = false # validation CNAME — DNS-only, never orange-clouded
   comment         = "ACM DNS validation for *.${var.certificate_domain} (qnsc-infra/edge)"
   allow_overwrite = true
+
+  lifecycle {
+    # A DNS record whose zone_id changes is destroyed and re-created, and a failed re-create is an outage (2026-10-09).
+    # This stops the plan instead. To really replace it, delete this line in the same reviewed change.
+    prevent_destroy = true
+
+    precondition {
+      condition     = can(regex("^[0-9a-f]{32}$", var.cloudflare_zone_id))
+      error_message = "cloudflare_zone_id must be the 32-hex-character zone id of qnsc.vn: this resource's zone_id forces REPLACEMENT, so a null or empty value would destroy it."
+    }
+  }
 }
 
 resource "aws_acm_certificate_validation" "wildcard" {
@@ -164,6 +168,10 @@ resource "aws_sesv2_email_identity" "mail_domain" {
     # state or a secret for no gain here.
     next_signing_key_length = "RSA_2048_BIT"
   }
+
+  lifecycle {
+    prevent_destroy = true # losing it regenerates the DKIM tokens / unattaches the domain
+  }
 }
 
 /**
@@ -173,7 +181,7 @@ resource "aws_sesv2_email_identity" "mail_domain" {
 resource "cloudflare_record" "ses_dkim" {
   count = 3
 
-  zone_id = data.terraform_remote_state.bootstrap.outputs.cloudflare_zone_id
+  zone_id = var.cloudflare_zone_id
   name    = "${aws_sesv2_email_identity.mail_domain.dkim_signing_attributes[0].tokens[count.index]}._domainkey"
   type    = "CNAME"
   value   = "${aws_sesv2_email_identity.mail_domain.dkim_signing_attributes[0].tokens[count.index]}.dkim.amazonses.com"
@@ -183,6 +191,15 @@ resource "cloudflare_record" "ses_dkim" {
   ttl     = 300
 
   comment = "SES DKIM for ${var.mail_domain} (managed by qnsc-infra/edge)"
+
+  lifecycle {
+    prevent_destroy = true # see docs/incidents/2026-10-09-edge-dns.md
+
+    precondition {
+      condition     = can(regex("^[0-9a-f]{32}$", var.cloudflare_zone_id))
+      error_message = "cloudflare_zone_id must be the 32-hex-character zone id of qnsc.vn: this resource's zone_id forces REPLACEMENT, so a null or empty value would destroy it."
+    }
+  }
 }
 
 /**
@@ -214,17 +231,26 @@ resource "aws_sesv2_email_identity_mail_from_attributes" "mail_domain" {
  * receivers to send bounces, so a wrong region silently loses them.
  */
 resource "cloudflare_record" "ses_mail_from_mx" {
-  zone_id  = data.terraform_remote_state.bootstrap.outputs.cloudflare_zone_id
+  zone_id  = var.cloudflare_zone_id
   name     = "mail"
   type     = "MX"
   value    = "feedback-smtp.${var.mail_region}.amazonses.com"
   priority = 10
   ttl      = 300
   comment  = "SES custom MAIL FROM (bounce path) — managed by qnsc-infra/edge"
+
+  lifecycle {
+    prevent_destroy = true # see docs/incidents/2026-10-09-edge-dns.md
+
+    precondition {
+      condition     = can(regex("^[0-9a-f]{32}$", var.cloudflare_zone_id))
+      error_message = "cloudflare_zone_id must be the 32-hex-character zone id of qnsc.vn: this resource's zone_id forces REPLACEMENT, so a null or empty value would destroy it."
+    }
+  }
 }
 
 resource "cloudflare_record" "ses_mail_from_spf" {
-  zone_id = data.terraform_remote_state.bootstrap.outputs.cloudflare_zone_id
+  zone_id = var.cloudflare_zone_id
   name    = "mail"
   type    = "TXT"
   # `~all`, not `-all`: multiple products send from this subdomain and a softfail cannot turn a
@@ -232,6 +258,15 @@ resource "cloudflare_record" "ses_mail_from_spf" {
   value   = "v=spf1 include:amazonses.com ~all"
   ttl     = 300
   comment = "SES custom MAIL FROM SPF — managed by qnsc-infra/edge"
+
+  lifecycle {
+    prevent_destroy = true # see docs/incidents/2026-10-09-edge-dns.md
+
+    precondition {
+      condition     = can(regex("^[0-9a-f]{32}$", var.cloudflare_zone_id))
+      error_message = "cloudflare_zone_id must be the 32-hex-character zone id of qnsc.vn: this resource's zone_id forces REPLACEMENT, so a null or empty value would destroy it."
+    }
+  }
 }
 
 # =============================================================================
@@ -252,6 +287,10 @@ resource "cloudflare_pages_project" "landing" {
   account_id        = var.cloudflare_account_id
   name              = "qnsc-landing"
   production_branch = "main"
+
+  lifecycle {
+    prevent_destroy = true # losing it regenerates the DKIM tokens / unattaches the domain
+  }
 }
 
 # Custom domains — serve the site on the apex (qnsc.vn) and www. Two parts per
@@ -265,6 +304,10 @@ resource "cloudflare_pages_domain" "landing" {
   account_id   = var.cloudflare_account_id
   project_name = cloudflare_pages_project.landing.name
   domain       = each.value
+
+  lifecycle {
+    prevent_destroy = true # losing it regenerates the DKIM tokens / unattaches the domain
+  }
 }
 
 resource "cloudflare_record" "landing" {
@@ -273,7 +316,7 @@ resource "cloudflare_record" "landing" {
     ("www.${var.certificate_domain}") = "www"
   }
 
-  zone_id    = data.terraform_remote_state.bootstrap.outputs.cloudflare_zone_id
+  zone_id    = var.cloudflare_zone_id
   name       = each.value
   type       = "CNAME"
   content    = cloudflare_pages_project.landing.subdomain
@@ -281,6 +324,15 @@ resource "cloudflare_record" "landing" {
   proxied    = true
   comment    = "qnsc-landing Cloudflare Pages custom domain (qnsc-infra/edge)"
   depends_on = [cloudflare_pages_domain.landing]
+
+  lifecycle {
+    prevent_destroy = true # see docs/incidents/2026-10-09-edge-dns.md
+
+    precondition {
+      condition     = can(regex("^[0-9a-f]{32}$", var.cloudflare_zone_id))
+      error_message = "cloudflare_zone_id must be the 32-hex-character zone id of qnsc.vn: this resource's zone_id forces REPLACEMENT, so a null or empty value would destroy it."
+    }
+  }
 }
 
 # ── Turnstile — bot challenge for the qnsc-landing contact form ───────────────

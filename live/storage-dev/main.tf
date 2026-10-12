@@ -21,18 +21,6 @@ provider "cloudflare" {
   api_token = var.cloudflare_api_token != "" ? var.cloudflare_api_token : null
 }
 
-# The zone that owns qnsc.vn, for the public-assets custom domain below. Read from
-# bootstrap's state rather than a variable because CI only passes
-# TF_VAR_cloudflare_zone_id to live/bootstrap — the same pattern live/edge uses.
-data "terraform_remote_state" "bootstrap" {
-  backend = "s3"
-  config = {
-    bucket = "qnsc-tofu-state"
-    key    = "platform/bootstrap/terraform.tfstate"
-    region = "ap-southeast-1"
-  }
-}
-
 # =============================================================================
 # Shared object storage (develop) — Cloudflare R2 attachment buckets.
 #
@@ -154,7 +142,7 @@ module "rally_public_assets" {
   # world-readable-by-key is the intended property rather than a leak.
   custom_domain = {
     hostname = "rova-assets-dev.qnsc.vn"
-    zone_id  = data.terraform_remote_state.bootstrap.outputs.cloudflare_zone_id
+    zone_id  = var.cloudflare_zone_id
   }
 
   lifecycle_rules = [{

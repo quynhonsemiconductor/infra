@@ -35,7 +35,14 @@ output "artifacts_bucket_arn" {
 
 output "cloudflare_zone_id" {
   value       = var.cloudflare_zone_id
-  description = "Cloudflare Zone ID for qnsc.vn — products read this to manage their own DNS records via the shared dns-record module"
+  description = "Cloudflare Zone ID for qnsc.vn — the product repositories read this (through their _shared stacks) to manage their DNS records. Never empty: the variable is required and validated."
+
+  # Belt and braces with the variable's validation: an output that consumers turn into resource identity must never be
+  # written empty, whatever path produced the value.
+  precondition {
+    condition     = length(var.cloudflare_zone_id) == 32
+    error_message = "Refusing to export an empty or malformed cloudflare_zone_id: every stack that reads it would replace its DNS records."
+  }
 }
 
 output "cloudflare_ipv4" {

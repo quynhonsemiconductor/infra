@@ -5,10 +5,22 @@ variable "cloudflare_api_token" {
   description = <<-EOT
     Cloudflare API token with Zone:WAF + Zone:Rulesets + Zone:DNS edit scope on
     qnsc.vn (DNS:Edit is needed to write the ACM validation records). Supplied
-    via TF_VAR_cloudflare_api_token in CI. Leave empty to skip provider auth. The
-    zone ID is NOT an input — it is read from qnsc-infra bootstrap remote state
-    (one source of truth).
+    via TF_VAR_cloudflare_api_token in CI. Leave empty to skip provider auth.
   EOT
+}
+
+variable "cloudflare_zone_id" {
+  type        = string
+  description = <<-EOT
+    Cloudflare zone id of qnsc.vn: 32 hex characters, REQUIRED (no default). CI passes it as TF_VAR_cloudflare_zone_id
+    from the CLOUDFLARE_ZONE_ID organisation variable. It is the identity of every DNS record in this stack, so an
+    empty or malformed value must stop the plan: the records would otherwise be replaced.
+  EOT
+
+  validation {
+    condition     = can(regex("^[0-9a-f]{32}$", var.cloudflare_zone_id))
+    error_message = "cloudflare_zone_id must be the 32-hex-character Cloudflare zone id of qnsc.vn (CI: the CLOUDFLARE_ZONE_ID organisation variable)."
+  }
 }
 
 variable "certificate_domain" {

@@ -103,6 +103,8 @@ jobs:
       - name: Detect external drift (refresh-only)
         id: refresh
         working-directory: live/${{ matrix.stack }}
+        env:
+          TF_VAR_cloudflare_zone_id: ${{ vars.CLOUDFLARE_ZONE_ID }}   # required and validated by bootstrap, edge and storage-*
         run: |
           set +e
           tofu plan -refresh-only -input=false -lock=false -no-color -detailed-exitcode 2>&1 | tee refresh.txt
@@ -111,6 +113,8 @@ jobs:
       - name: Detect unapplied config
         id: plan
         working-directory: live/${{ matrix.stack }}
+        env:
+          TF_VAR_cloudflare_zone_id: ${{ vars.CLOUDFLARE_ZONE_ID }}   # required and validated by bootstrap, edge and storage-*
         run: |
           set +e
           tofu plan -input=false -lock=false -no-color -detailed-exitcode 2>&1 | tee plan.txt
