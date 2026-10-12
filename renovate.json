@@ -1,4 +1,33 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["local>quynhonsemiconductor/.github:renovate-config"]
+  "extends": ["local>quynhonsemiconductor/.github:renovate-config"],
+  "packageRules": [
+    {
+      "description": "Infrastructure dependencies are NEVER automerged and never merged without reading the plan. On 2026-10-09 a lock-file-only bump of the cloudflare provider (v4.52.9) was merged with a green check; the plan, printed in the PR, said '9 to destroy' and the merge applied it (docs/incidents/2026-10-09-edge-dns.md). An OpenTofu provider or module bump can change what a plan DOES with no line of this repository's own code changing, so the PR is a prompt to run and read the plan, not a change that can be judged by its diff.",
+      "matchManagers": ["terraform", "terraform-version", "tflint-plugin"],
+      "automerge": false,
+      "platformAutomerge": false,
+      "labels": ["dependencies", "iac", "read-the-plan"],
+      "prBodyNotes": ["**Do not merge until you have read the Plan comment(s) on this PR.** Merging applies the stack(s) it touches (push to main). Any `must be replaced` / `destroyed` on a DNS or identity resource turns the check red (see `allow-dns-destroy`); treat that as a signal to stop, not to add the label."]
+    },
+    {
+      "description": "Providers: let a release age a few days before it is proposed (the 4.52.9 and 5.27.0 releases were merged within hours of the lock bump).",
+      "matchDatasources": ["terraform-provider"],
+      "minimumReleaseAge": "3 days"
+    },
+    {
+      "description": "MAJORS are their own PR, opened only when someone asks for it from the dependency dashboard, so that a major bump comes with a deliberate plan. The org preset groups every tf-modules update under one groupName; groupName null takes majors out of that group (a major of one module must never ride in with the minor bumps of another).",
+      "matchManagers": ["terraform", "terraform-version", "tflint-plugin"],
+      "matchUpdateTypes": ["major"],
+      "groupName": null,
+      "dependencyDashboardApproval": true,
+      "labels": ["dependencies", "iac", "read-the-plan", "major"]
+    },
+    {
+      "description": "Lock-file maintenance is an update like any other: no automerge.",
+      "matchUpdateTypes": ["lockFileMaintenance"],
+      "matchManagers": ["terraform"],
+      "automerge": false
+    }
+  ]
 }
