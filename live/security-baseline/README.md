@@ -11,7 +11,7 @@ Account-wide audit & threat-detection baseline. Apply once per AWS account.
 | **GuardDuty** | detector | Continuous threat detection (+ S3 logs, EBS malware scan) |
 | **Access Analyzer** | account analyzer | Flags resources shared outside the account |
 | **Audit CMK** | `alias/qnsc-audit-logs` | Dedicated key for the log bucket (separate trust domain from the platform CMK) |
-| **Break-glass alerts** | EventBridge `qnsc-prod-breakglass-assumed` (AssumeRole, success or failure) and `qnsc-prod-breakglass-session` (SSM StartSession) → `qnsc-security-alerts` | Tell everyone when `qnsc-prod-breakglass` (the production database tunnel) is assumed or used (`breakglass-alert.tf`; the first needs `ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS` because AssumeRole is a read-only event) |
+| **Break-glass alerts** | EventBridge `qnsc-prod-breakglass-assumed` (AssumeRole: successes and denied attempts) and `qnsc-prod-breakglass-session` (SSM StartSession) → `qnsc-security-alerts` | Tell everyone when `qnsc-prod-breakglass` (the production database tunnel) is assumed or used (`breakglass-alert.tf`; the first needs `ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS` because AssumeRole is a read-only event) |
 
 ## Notes
 

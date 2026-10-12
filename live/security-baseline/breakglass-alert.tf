@@ -12,7 +12,13 @@
 # records them: cloudtrail.tf has read_write_type = "All".) Provider 5.100.0 accepts that state.
 #
 # TWO RULES, because one cannot be relied on alone:
-#   1. AssumeRole of the role  (this region's bus). Sees successes AND failures (errorCode is in the message).
+#   1. AssumeRole of the role (this region's bus): successes, AND denied attempts. A DENIED sts:AssumeRole is logged with
+#      requestParameters = null and resources = null (checked in a live CloudTrail record, 2026-10-12), so
+#      `requestParameters.roleArn` can never match it; the role ARN is only in `errorMessage` ("... is not authorized to
+#      perform: sts:AssumeRole on resource: <role arn>"). The pattern therefore matches EITHER the request parameter OR an
+#      errorMessage wildcard on the full role ARN (account included). The first version of this rule (#153) had only the
+#      first branch and so never matched a denied attempt. The pattern lives in breakglass-assumed.pattern.json.tftpl and
+#      is tested against fixtures with test-breakglass-pattern.sh (events:TestEventPattern).
 #   2. ssm:StartSession by a session issued from the role: the real USE of the role (a write event, so it is
 #      delivered whichever STS endpoint minted the credentials).
 #
@@ -27,17 +33,12 @@
 
 resource "aws_cloudwatch_event_rule" "prod_breakglass_assumed" {
   name        = "qnsc-prod-breakglass-assumed"
-  description = "AssumeRole of the production break-glass role was attempted (success or failure) (§10b)."
+  description = "AssumeRole of the production break-glass role: succeeded, or a denied attempt (§10b)."
   # AssumeRole is a read-only management event: this state is what makes EventBridge deliver it.
   state = "ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS"
 
-  event_pattern = jsonencode({
-    source        = ["aws.sts"]
-    "detail-type" = ["AWS API Call via CloudTrail"]
-    detail = {
-      eventName         = ["AssumeRole"]
-      requestParameters = { roleArn = [aws_iam_role.prod_breakglass.arn] }
-    }
+  event_pattern = templatefile("${path.module}/breakglass-assumed.pattern.json.tftpl", {
+    role_arn = aws_iam_role.prod_breakglass.arn
   })
 
   tags = { Layer = "platform", Purpose = "security-alerts" }
@@ -56,13 +57,16 @@ resource "aws_cloudwatch_event_target" "prod_breakglass_assumed" {
       ip      = "$.detail.sourceIPAddress"
       session = "$.detail.requestParameters.roleSessionName"
       error   = "$.detail.errorCode"
+      message = "$.detail.errorMessage"
     }
-    # An AssumeRole event is logged for failures too: do not say "assumed".
+    # An AssumeRole event is logged for failures too: do not say "assumed". The template cannot default a missing value,
+    # so the wording says what null means: a DENIED call has requestParameters = null, hence no session name.
     input_template = <<-EOT
       "BREAK-GLASS ROLE: AssumeRole call at <time>"
-      "by: <who>  session name: <session>  region: <region>"
-      "source ip: <ip>"
-      "error code: <error>   (empty or null = the call SUCCEEDED; AccessDenied etc. = it was refused)"
+      "by: <who>   source ip: <ip>   region: <region>"
+      "session name: <session>   (null = a DENIED call: CloudTrail records no request parameters for it)"
+      "error code: <error>   (null = the call SUCCEEDED; AccessDenied etc. = it was refused)"
+      "error message: <message>"
       ""
       "qnsc-prod-breakglass opens a network path to the production database. If this was not an"
       "incident you know about, treat it as one: check CloudTrail for the session and revoke it."
