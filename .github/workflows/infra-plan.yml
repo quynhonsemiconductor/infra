@@ -419,6 +419,18 @@ jobs:
             });
 
       # -detailed-exitcode: 0=no change, 2=changes (both OK for a PR), 1=error.
+      # Runs on EVERY stack whose plan did not error, including exit 0: the saved plan is read either way, so the job log
+      # shows 'no DNS or identity resource is deleted or replaced' for each stack (proof the guard ran, not an absence).
+      # After the comment, so the reviewer sees the plan whether or not this passes. A plan that deletes or replaces a DNS or
+      # identity resource fails the check until the PR carries the `allow-dns-destroy` label (read live: re-run this job
+      # after labelling). 2026-10-09: the plan below was green and showed nine replaced records.
+      - name: Refuse destructive DNS / identity changes
+        if: always() && steps.plan.outputs.exitcode != '1'
+        uses: ./.github/actions/destructive-guard
+        with:
+          working-directory: live/${{ matrix.stack }}
+          pr-number: ${{ github.event.pull_request.number }}
+
       - name: Fail if plan errored
         if: steps.plan.outputs.exitcode == '1'
         run: exit 1
@@ -451,10 +463,22 @@ jobs:
   # no paths filter and none of them carries an `if:`. If that ever changes, split
   # this into a strict gate over the unconditional jobs plus a lenient one over
   # `plan`, rather than leaving the leniency to cover everything.
+  # The destructive-change guard is itself part of the safety net; a regression in it must not merge silently.
+  script-tests:
+    name: Script tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: destructive_guard unit tests
+        run: python3 scripts/test_destructive_guard.py
+
   ci-required:
     name: Plan required
     if: always()
-    needs: [detect, fmt, tflint, plan]
+    needs: [detect, fmt, tflint, plan, script-tests]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
