@@ -2,7 +2,7 @@
 """Preview the ECR lifecycle policy on EVERY repository in the estate, as a DRY RUN, and
 write an artefact a human attaches to the task 0.7 PR before the policy is applied.
 
-WHY THIS EXISTS (§13, task 0.7 of the former implementation-plan.md, removed 2026-10-13). `tf-modules/modules/ecr` moved the
+WHY THIS EXISTS (§13; the open step is tracked in infra issue #175, carried over from the former implementation-plan.md task 0.7). `tf-modules/modules/ecr` moved the
 RELEASE keep rule from a COUNT (`keep_release_count`) to a TIME window
 (`release_retention_days = 180`) in ecr-v2.1.0. A time rule can delete images a count rule
 was keeping, and the DIRECTION depends on the current promotion rate — at a low promotion

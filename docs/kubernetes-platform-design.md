@@ -69,7 +69,7 @@ fourth pass — mostly deletions
       policy that matches the SLO numbers
 
 fifteenth pass
-§1 · §7c · §11c · §17b (and the former implementation-plan.md, removed 2026-10-13; see git history)
+§1 · §7c · §11c · §17b (and the former implementation-plan.md, removed 2026-10-13; see git history; its open ECS-estate items are infra issues #173, #174, #175)
       The `delivery` repository is renamed **`gitops`**. It reads as a business
       noun in a semiconductor company and needed explaining; `gitops` is
       self-documenting to anyone who has used ArgoCD, and names the pattern
@@ -4113,7 +4113,7 @@ platform you keep paying for and nobody maintains.
 
 ## 18. Readiness: what must be true before step 1
 
-**The executable form of this section was `implementation-plan.md` (removed 2026-10-13 with the EKS spike; see git history; the on-prem plan, HYBRID-INFRA-PLAN §15, replaces it).** It broke
+**The executable form of this section was `implementation-plan.md` (removed 2026-10-13 with the EKS spike; see git history; the owner's local HYBRID-INFRA-PLAN.md §15 replaces it, and the open ECS-estate items became infra issues #173, #174, #175).** It broke
 §17, §17b and this section into numbered tasks with owners, dependencies and acceptance tests, and
 it is the artefact to hand to whoever does the work. This section remains the argument for why the
 work is shaped that way.
