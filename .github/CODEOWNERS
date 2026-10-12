@@ -4,9 +4,7 @@ modules/                   @quynhonsemiconductor/platform-infra
 live/                      @quynhonsemiconductor/platform-infra
 .github/workflows/         @quynhonsemiconductor/platform-infra
 
-# The code that decides whether an apply may delete DNS or identity (2026-10-09), and the workflows and actions that run it.
+# The workflows that call the destructive-guard (2026-10-09). The guard itself is quynhonsemiconductor/ci/actions/destructive-guard@v1.
 # `*` already routes these to platform-infra; they are listed so that loosening the rule above cannot silently drop them.
 # Only enforced if branch protection on main has "Require review from Code Owners" on.
 .github/                                  @quynhonsemiconductor/platform-infra
-scripts/destructive_guard.py              @quynhonsemiconductor/platform-infra
-scripts/test_destructive_guard.py         @quynhonsemiconductor/platform-infra
