@@ -175,6 +175,14 @@ jobs:
           #                       remote state at all — a VPC depends on nothing —
           #                       which is exactly why they go first.
           #
+          #   observability       RE-TESTED 2026-10-12 (infra#161, plan with the list
+          #                       emptied of it): still fails, three times, with
+          #                       "Provider configuration not present ... To work with
+          #                       grafana_folder.alerts (orphan) ... provider[...].stack".
+          #                       So the nightly drift job cannot plan it either and
+          #                       excludes it for the same reason; both go back in
+          #                       together once the state migration below is done.
+          #
           #   observability       BACK IN THIS LIST, and for a DIFFERENT reason than
           #                       before. It briefly left on 2026-09-20 when the
           #                       stack was split; putting it back is the correction.
