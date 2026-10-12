@@ -272,6 +272,38 @@ resource "cloudflare_record" "ses_mail_from_spf" {
   }
 }
 
+# DMARC for qnsc.vn. It was set by hand in the Cloudflare dashboard (2026-10-13) and is IMPORTED here, not re-created: the import
+# block below adopts the existing record, so the first apply changes nothing about DNS. (Remove the import block after that apply.)
+#
+# p=none is deliberate for now: it only COLLECTS reports (rua) and rejects or quarantines nothing, so a sender we forgot about (Microsoft 365
+# for the staff mailboxes, SES for the products) cannot have its mail dropped while the reports are still unread.
+#
+# PLAN: read the aggregate reports for 2-4 weeks. When every legitimate source (Microsoft 365 via spf.protection.outlook.com, SES via
+# amazonses.com, with DKIM aligned) passes and only noise fails, move to p=quarantine, then to p=reject after another clean period.
+# Each step is its own PR so the change and the reports that justified it are reviewable together.
+resource "cloudflare_record" "dmarc" {
+  zone_id = var.cloudflare_zone_id
+  name    = "_dmarc"
+  type    = "TXT"
+  value   = "\"v=DMARC1; p=none; rua=mailto:devops@qnsc.vn\""
+  ttl     = 300
+  comment = "DMARC (report-only) — managed by qnsc-infra/edge"
+
+  lifecycle {
+    prevent_destroy = true # see docs/incidents/2026-10-09-edge-dns.md
+
+    precondition {
+      condition     = can(regex("^[0-9a-f]{32}$", var.cloudflare_zone_id))
+      error_message = "cloudflare_zone_id must be the 32-hex-character zone id of qnsc.vn: this resource's zone_id forces REPLACEMENT, so a null or empty value would destroy it."
+    }
+  }
+}
+
+import {
+  to = cloudflare_record.dmarc
+  id = "${var.cloudflare_zone_id}/dbd8907e1e797ff142ef0b5ac6e50a60"
+}
+
 # =============================================================================
 # Cloudflare Pages — static sites (qnsc-landing, …).
 #
