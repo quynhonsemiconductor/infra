@@ -7,13 +7,8 @@ nested.**
 live/
   bootstrap           organization        security-baseline
   observability       edge                          ← account-wide, no env
-  cluster-dev         cluster-prod
-  data-dev            data-prod
   runtime-dev         runtime-prod
   storage-dev         storage-prod                  ← platform, per env
-  kb-dev              kb-prod
-  opshub-dev          opshub-prod
-  rova-dev            rova-prod       …             ← products, per env
 ```
 
 ## Why the depth is fixed
@@ -47,16 +42,15 @@ join in the conformance tool — before it was cheaper to just flatten it.
 ## Platform or product is the STATE KEY, not the directory
 
 ```
-platform/<stack>/terraform.tfstate     bootstrap, cluster-prod, data-dev, …
-products/<stack>/terraform.tfstate     kb-dev, and every product after it
+platform/<stack>/terraform.tfstate     bootstrap, edge, runtime-dev, …
+products/<stack>/terraform.tfstate     none today (the EKS-era product stacks were removed 2026-10-13)
 ```
 
 That distinction belongs in the key because `tofu` can read a key and cannot read
 a directory tree. A `live/platform/` and `live/products/` split would express the
 same thing one level deeper, and buy back the problem above.
 
-Sorting does the grouping for free: `cluster-dev` sits beside `cluster-prod`, and
-`kb-dev` beside `kb-prod`.
+Sorting does the grouping for free: `runtime-dev` sits beside `runtime-prod`.
 
 ## Adding a stack
 

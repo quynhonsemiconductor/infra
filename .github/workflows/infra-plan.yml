@@ -55,10 +55,8 @@ jobs:
           echo "Changed files:"; echo "$CHANGED"
           # ── THE STACK LIST IS THE DISK, NOT A LITERAL ─────────────────────
           # It used to be a hardcoded list, written twice (here and in
-          # infra-apply.yml). SIX stacks on disk were absent from it — cluster-dev,
-          # cluster-prod, data-dev, data-prod, kb-dev and `organization`, the last
-          # of which predates the EKS work entirely — so a pull request touching
-          # only those produced `stacks=[]`, the plan job skipped, and `Plan
+          # infra-apply.yml). Stacks on disk were absent from it, so a pull request
+          # touching only those produced `stacks=[]`, the plan job skipped, and `Plan
           # required` went green with NO PLAN IN IT.
           #
           # That is the failure this workflow's own history names: a required gate
@@ -86,27 +84,6 @@ jobs:
           # Each entry names what must change to remove it. Every one of these was
           # ALREADY broken — they were simply never planned, so nothing said so.
           #
-          # The first two are an APPLY ORDER, not a defect, and reading them in
-          # order gives you the order:
-          #
-          #       cluster-prod  ->  cluster-dev  ->  rova-dev  ->  kb-dev
-          #
-          #   cluster-dev   reads cluster-prod's state for `argocd_role_arn`. §2
-          #                 makes ArgoCD hub-and-spoke — ONE instance, in prod,
-          #                 managing both clusters — so prod holds the role and dev
-          #                 grants it entry. cluster-prod plans cleanly today and
-          #                 has simply never been applied.
-          #
-          #   rova-dev      reads cluster-dev and data-dev. data-dev plans and
-          #   kb-dev        applies independently; cluster-dev is the one in the
-          #                 chain above. §17 migrates one product at a time, so
-          #                 this is expected, not broken.
-          #
-          #                 rova-dev is the FIRST product stack now, not kb-dev —
-          #                 §17's table had rova last ("the only product earning
-          #                 money") and that was reordered deliberately. Both
-          #                 stacks exist; only the order changed.
-          #
           #   observability-alerting
           #                 reads `observability`'s state for the Grafana INSTANCE
           #                 url and the stack service-account token that configure
@@ -114,7 +91,7 @@ jobs:
           #                 plans cleanly (its resources use only the default
           #                 provider, configured from var.grafana_cloud_api_key)
           #                 and has simply never been applied — the same
-          #                 cluster-prod -> cluster-dev shape.
+          #                 same read-the-sibling's-state shape.
           #
           #                 This REPLACES the old `observability` provider-alias
           #                 diagnosis: the single stack used to configure an
@@ -152,29 +129,6 @@ jobs:
           #                 the next person an afternoon — see observability above,
           #                 where exactly that happened.
           #
-          # ── THE NEW VPC CHANGED THIS LIST, 2026-09-20 ────────────────────
-          #
-          #   data-{dev,prod}     LEFT the plannable set. They used to read
-          #   cluster-{dev,prod}  `platform/runtime-{dev,prod}`, which is APPLIED,
-          #                       so they planned cleanly. They now read
-          #                       `platform/platform-{dev,prod}` — the estate's own
-          #                       new VPCs, created so the ECS estate can be
-          #                       DESTROYED rather than carved (§17b). Those states
-          #                       do not exist yet, so a remote-state read returns
-          #                       nothing and the plan fails on a subnet list that
-          #                       is null rather than empty.
-          #
-          #                       This is a DEPENDENCY, not a defect, and it is the
-          #                       same shape as cluster-dev needing cluster-prod.
-          #                       They become plannable the moment platform-prod
-          #                       and platform-dev are applied, which is the first
-          #                       step of the chain in
-          #                       infra/docs/runbook-first-deploy.md.
-          #
-          #   platform-{dev,prod} PLAN CLEANLY and are NOT excluded. They read no
-          #                       remote state at all — a VPC depends on nothing —
-          #                       which is exactly why they go first.
-          #
           #   observability       RE-TESTED 2026-10-12 (infra#161, plan with the list
           #                       emptied of it): still fails, three times, with
           #                       "Provider configuration not present ... To work with
@@ -210,7 +164,7 @@ jobs:
           #
           #                       The migration needs credentials, so it is written
           #                       up rather than performed — see
-          #                       infra/docs/runbook-first-deploy.md. Nothing is lost
+          #                       infra/docs/runbooks/observability-state-migration.md. Nothing is lost
           #                       meanwhile: the Grafana objects keep existing and
           #                       keep working, they are simply unmanaged until the
           #                       state moves.
@@ -218,7 +172,7 @@ jobs:
           # Keeping the exclusions named in code rather than dropping the
           # derivation: any NEW stack is planned by default, and each gap is named
           # here instead of being absent from a list nobody compared to anything.
-          NOT_PLANNABLE="rova-dev kb-dev data-dev data-prod cluster-dev cluster-prod observability observability-alerting organization"
+          NOT_PLANNABLE="observability observability-alerting organization"
 
           SKIPPED=""
           PLANNABLE=""

@@ -41,7 +41,7 @@
 # client is required for this resource". `observability-alerting` reads THIS
 # stack's outputs via `terraform_remote_state` and configures a single,
 # already-known provider from them — the same apply-order dependency
-# cluster-dev has on cluster-prod. Apply THIS stack first; then that one.
+# the sibling stack has on this one. Apply THIS stack first; then that one.
 # =============================================================================
 
 terraform {

@@ -15,8 +15,8 @@
 # the alias failed with "the Grafana client is required for this resource".
 # TF_VAR_grafana_cloud_api_key was never the problem — it was always passed.
 #
-# The fix is a two-stack apply order, identical in shape to cluster-dev reading
-# cluster-prod: `observability` is applied first and EXPORTS the instance url
+# The fix is a two-stack apply order: this stack reads
+# `observability`, which is applied first and EXPORTS the instance url
 # and the service-account token; this stack reads them back via
 # `terraform_remote_state` and configures ONE plain, non-aliased `grafana`
 # provider from already-known values. Once `observability` is applied, this
@@ -41,7 +41,7 @@ terraform {
 }
 
 # Reads the `observability` stack's outputs for this stack's provider config —
-# the same convention data-prod uses to read runtime-prod and bootstrap. The
+# the same convention the other stacks use to read bootstrap and runtime. The
 # url and token are resolved at plan time from an ALREADY-APPLIED state, so the
 # provider below configures from known values, unlike the old in-stack alias.
 data "terraform_remote_state" "observability" {

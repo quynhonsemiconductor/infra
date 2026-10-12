@@ -14,9 +14,6 @@
 | Shared runtime (`live/runtime-dev`, `live/runtime-prod`) | One VPC + fck-nat egress + security groups per environment, shared by every product. Dev also holds one shared Valkey node. Neither runs an ALB today (`enable_alb = false`) — products ingress via Cloudflare Tunnel sidecars |
 | Edge (`live/edge`) | Cloudflare zone governance for `qnsc.vn`: WAF, rate limiting, Turnstile, plus the wildcard ACM cert other stacks read |
 | Observability (`live/observability`) | Grafana Cloud stack every product pushes telemetry to |
-| EKS clusters (`live/cluster-dev`, `live/cluster-prod`) | Auto Mode clusters, IRSA trust and human access entries. ArgoCD is hub-and-spoke — one instance in prod managing both |
-| Shared data tier (`live/data-dev`, `live/data-prod`) | The shared Postgres, the preview Postgres and the one Valkey per environment (§5d) |
-| Product stacks (`live/<product>-<env>`) | Each product's database, roles, secrets, queues and IRSA roles, via one `product-profile` call. `live/kb-dev` is the first (§17 step 2) |
 | Object storage (`live/storage-dev`, `live/storage-prod`) | Cloudflare R2 buckets (per-product attachments, public assets, KB sources, ceo-suite backups). Provisioned here so the R2 admin token stays in one stack instead of every product's CI. Pins Cloudflare provider v5 |
 
 ## What belongs in **product** infra repos — being retired
