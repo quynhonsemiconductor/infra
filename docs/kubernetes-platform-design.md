@@ -69,7 +69,7 @@ fourth pass — mostly deletions
       policy that matches the SLO numbers
 
 fifteenth pass
-§1 · §7c · §11c · §17b and implementation-plan.md
+§1 · §7c · §11c · §17b (and the former implementation-plan.md, removed 2026-10-13; see git history)
       The `delivery` repository is renamed **`gitops`**. It reads as a business
       noun in a semiconductor company and needed explaining; `gitops` is
       self-documenting to anyone who has used ArgoCD, and names the pattern
@@ -712,7 +712,7 @@ type: cron     the scheduled shutdown §5b defers — built in, not a later proj
 
 ### `singleton` — found by building the chart, not by designing it
 
-Task 1.7 of `implementation-plan.md` wrote real values files for rova, opshub and
+Task 1.7 of the former `implementation-plan.md` (removed 2026-10-13; see git history) wrote real values files for rova, opshub and
 qnsc-kb against the eight axes. One product could not be expressed:
 
 > "max_count stays 1 while Celery beat rides in this task — **two replicas would double every
@@ -4113,7 +4113,7 @@ platform you keep paying for and nobody maintains.
 
 ## 18. Readiness: what must be true before step 1
 
-**The executable form of this section is `implementation-plan.md` in this directory.** It breaks
+**The executable form of this section was `implementation-plan.md` (removed 2026-10-13 with the EKS spike; see git history; the on-prem plan, HYBRID-INFRA-PLAN §15, replaces it).** It broke
 §17, §17b and this section into numbered tasks with owners, dependencies and acceptance tests, and
 it is the artefact to hand to whoever does the work. This section remains the argument for why the
 work is shaped that way.
