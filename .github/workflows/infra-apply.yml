@@ -41,6 +41,10 @@ on:
         description: "Also apply the production-tier stacks (runtime-prod, storage-prod). Still gated by the production environment reviewer."
         type: boolean
         default: false
+      allow_destructive:
+        description: "Allow this run to DELETE or REPLACE DNS / identity resources (Cloudflare records, SES identities, ACM certificates, ...). Read the plan first: see docs/incidents/2026-10-09-edge-dns.md."
+        type: boolean
+        default: false
 
 # Serialize applies on the same ref so two quick merges can't race the tofu
 # state lock. Never cancel a running apply mid-flight.
@@ -134,6 +138,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      pull-requests: read   # destructive-guard reads the PR labels
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -166,6 +171,16 @@ jobs:
         env:
           TF_VAR_cloudflare_zone_id: ${{ vars.CLOUDFLARE_ZONE_ID }}
 
+      # A provider bump, a lock-file change or an empty variable can turn a plan into "replace every DNS record" (2026-10-09).
+      # The plan is applied unreviewed here, so it is read first: deleting or replacing a DNS/identity resource needs the
+      # `allow-dns-destroy` label on the merged PR (or the allow_destructive dispatch input).
+      - name: Refuse destructive DNS / identity changes
+        if: steps.plan.outputs.exitcode == '2'
+        uses: ./.github/actions/destructive-guard
+        with:
+          working-directory: live/bootstrap
+          dispatch-allow: ${{ inputs.allow_destructive }}
+
       - name: tofu apply
         if: steps.plan.outputs.exitcode == '2'
         working-directory: live/bootstrap
@@ -181,6 +196,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      pull-requests: read   # destructive-guard reads the PR labels
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -208,6 +224,16 @@ jobs:
           echo "exitcode=$ec" >> "$GITHUB_OUTPUT"
           if [ "$ec" = "1" ]; then exit 1; fi
 
+      # A provider bump, a lock-file change or an empty variable can turn a plan into "replace every DNS record" (2026-10-09).
+      # The plan is applied unreviewed here, so it is read first: deleting or replacing a DNS/identity resource needs the
+      # `allow-dns-destroy` label on the merged PR (or the allow_destructive dispatch input).
+      - name: Refuse destructive DNS / identity changes
+        if: steps.plan.outputs.exitcode == '2'
+        uses: ./.github/actions/destructive-guard
+        with:
+          working-directory: live/security-baseline
+          dispatch-allow: ${{ inputs.allow_destructive }}
+
       - name: tofu apply
         if: steps.plan.outputs.exitcode == '2'
         working-directory: live/security-baseline
@@ -223,6 +249,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      pull-requests: read   # destructive-guard reads the PR labels
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -254,6 +281,16 @@ jobs:
           TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           TF_VAR_cloudflare_zone_id:    ${{ vars.CLOUDFLARE_ZONE_ID }}
 
+      # A provider bump, a lock-file change or an empty variable can turn a plan into "replace every DNS record" (2026-10-09).
+      # The plan is applied unreviewed here, so it is read first: deleting or replacing a DNS/identity resource needs the
+      # `allow-dns-destroy` label on the merged PR (or the allow_destructive dispatch input).
+      - name: Refuse destructive DNS / identity changes
+        if: steps.plan.outputs.exitcode == '2'
+        uses: ./.github/actions/destructive-guard
+        with:
+          working-directory: live/edge
+          dispatch-allow: ${{ inputs.allow_destructive }}
+
       - name: tofu apply
         if: steps.plan.outputs.exitcode == '2'
         working-directory: live/edge
@@ -272,6 +309,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      pull-requests: read   # destructive-guard reads the PR labels
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -299,6 +337,16 @@ jobs:
           echo "exitcode=$ec" >> "$GITHUB_OUTPUT"
           if [ "$ec" = "1" ]; then exit 1; fi
 
+      # A provider bump, a lock-file change or an empty variable can turn a plan into "replace every DNS record" (2026-10-09).
+      # The plan is applied unreviewed here, so it is read first: deleting or replacing a DNS/identity resource needs the
+      # `allow-dns-destroy` label on the merged PR (or the allow_destructive dispatch input).
+      - name: Refuse destructive DNS / identity changes
+        if: steps.plan.outputs.exitcode == '2'
+        uses: ./.github/actions/destructive-guard
+        with:
+          working-directory: live/runtime-dev
+          dispatch-allow: ${{ inputs.allow_destructive }}
+
       - name: tofu apply
         if: steps.plan.outputs.exitcode == '2'
         working-directory: live/runtime-dev
@@ -322,6 +370,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      pull-requests: read   # destructive-guard reads the PR labels
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -352,6 +401,16 @@ jobs:
           TF_VAR_grafana_cloud_api_key: ${{ secrets.GRAFANA_CLOUD_API_KEY }}
           TF_VAR_teams_webhook_url: ${{ secrets.TEAMS_ALERTS_WEBHOOK_URL }}
 
+      # A provider bump, a lock-file change or an empty variable can turn a plan into "replace every DNS record" (2026-10-09).
+      # The plan is applied unreviewed here, so it is read first: deleting or replacing a DNS/identity resource needs the
+      # `allow-dns-destroy` label on the merged PR (or the allow_destructive dispatch input).
+      - name: Refuse destructive DNS / identity changes
+        if: steps.plan.outputs.exitcode == '2'
+        uses: ./.github/actions/destructive-guard
+        with:
+          working-directory: live/observability
+          dispatch-allow: ${{ inputs.allow_destructive }}
+
       - name: tofu apply
         if: steps.plan.outputs.exitcode == '2'
         working-directory: live/observability
@@ -370,6 +429,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      pull-requests: read   # destructive-guard reads the PR labels
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -396,6 +456,16 @@ jobs:
           echo "tofu plan detailed exit code: $ec (0=no change, 2=changes, 1=error)"
           echo "exitcode=$ec" >> "$GITHUB_OUTPUT"
           if [ "$ec" = "1" ]; then exit 1; fi
+
+      # A provider bump, a lock-file change or an empty variable can turn a plan into "replace every DNS record" (2026-10-09).
+      # The plan is applied unreviewed here, so it is read first: deleting or replacing a DNS/identity resource needs the
+      # `allow-dns-destroy` label on the merged PR (or the allow_destructive dispatch input).
+      - name: Refuse destructive DNS / identity changes
+        if: steps.plan.outputs.exitcode == '2'
+        uses: ./.github/actions/destructive-guard
+        with:
+          working-directory: live/runtime-prod
+          dispatch-allow: ${{ inputs.allow_destructive }}
 
       - name: tofu apply
         if: steps.plan.outputs.exitcode == '2'
@@ -417,6 +487,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      pull-requests: read   # destructive-guard reads the PR labels
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -447,6 +518,16 @@ jobs:
           TF_VAR_cloudflare_api_token:  ${{ secrets.CLOUDFLARE_API_TOKEN }}
           TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           TF_VAR_cloudflare_zone_id:    ${{ vars.CLOUDFLARE_ZONE_ID }}
+
+      # A provider bump, a lock-file change or an empty variable can turn a plan into "replace every DNS record" (2026-10-09).
+      # The plan is applied unreviewed here, so it is read first: deleting or replacing a DNS/identity resource needs the
+      # `allow-dns-destroy` label on the merged PR (or the allow_destructive dispatch input).
+      - name: Refuse destructive DNS / identity changes
+        if: steps.plan.outputs.exitcode == '2'
+        uses: ./.github/actions/destructive-guard
+        with:
+          working-directory: live/storage-dev
+          dispatch-allow: ${{ inputs.allow_destructive }}
 
       - name: tofu apply
         if: steps.plan.outputs.exitcode == '2'
@@ -466,6 +547,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      pull-requests: read   # destructive-guard reads the PR labels
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -496,6 +578,16 @@ jobs:
           TF_VAR_cloudflare_api_token:  ${{ secrets.CLOUDFLARE_API_TOKEN }}
           TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           TF_VAR_cloudflare_zone_id:    ${{ vars.CLOUDFLARE_ZONE_ID }}
+
+      # A provider bump, a lock-file change or an empty variable can turn a plan into "replace every DNS record" (2026-10-09).
+      # The plan is applied unreviewed here, so it is read first: deleting or replacing a DNS/identity resource needs the
+      # `allow-dns-destroy` label on the merged PR (or the allow_destructive dispatch input).
+      - name: Refuse destructive DNS / identity changes
+        if: steps.plan.outputs.exitcode == '2'
+        uses: ./.github/actions/destructive-guard
+        with:
+          working-directory: live/storage-prod
+          dispatch-allow: ${{ inputs.allow_destructive }}
 
       - name: tofu apply
         if: steps.plan.outputs.exitcode == '2'
