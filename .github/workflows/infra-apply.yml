@@ -176,7 +176,7 @@ jobs:
       # `allow-dns-destroy` label on the merged PR (or the allow_destructive dispatch input).
       - name: Refuse destructive DNS / identity changes
         if: steps.plan.outputs.exitcode == '2'
-        uses: ./.github/actions/destructive-guard
+        uses: quynhonsemiconductor/ci/actions/destructive-guard@v1
         with:
           working-directory: live/bootstrap
           dispatch-allow: ${{ inputs.allow_destructive }}
@@ -229,7 +229,7 @@ jobs:
       # `allow-dns-destroy` label on the merged PR (or the allow_destructive dispatch input).
       - name: Refuse destructive DNS / identity changes
         if: steps.plan.outputs.exitcode == '2'
-        uses: ./.github/actions/destructive-guard
+        uses: quynhonsemiconductor/ci/actions/destructive-guard@v1
         with:
           working-directory: live/security-baseline
           dispatch-allow: ${{ inputs.allow_destructive }}
@@ -286,7 +286,7 @@ jobs:
       # `allow-dns-destroy` label on the merged PR (or the allow_destructive dispatch input).
       - name: Refuse destructive DNS / identity changes
         if: steps.plan.outputs.exitcode == '2'
-        uses: ./.github/actions/destructive-guard
+        uses: quynhonsemiconductor/ci/actions/destructive-guard@v1
         with:
           working-directory: live/edge
           dispatch-allow: ${{ inputs.allow_destructive }}
@@ -342,7 +342,7 @@ jobs:
       # `allow-dns-destroy` label on the merged PR (or the allow_destructive dispatch input).
       - name: Refuse destructive DNS / identity changes
         if: steps.plan.outputs.exitcode == '2'
-        uses: ./.github/actions/destructive-guard
+        uses: quynhonsemiconductor/ci/actions/destructive-guard@v1
         with:
           working-directory: live/runtime-dev
           dispatch-allow: ${{ inputs.allow_destructive }}
@@ -406,7 +406,7 @@ jobs:
       # `allow-dns-destroy` label on the merged PR (or the allow_destructive dispatch input).
       - name: Refuse destructive DNS / identity changes
         if: steps.plan.outputs.exitcode == '2'
-        uses: ./.github/actions/destructive-guard
+        uses: quynhonsemiconductor/ci/actions/destructive-guard@v1
         with:
           working-directory: live/observability
           dispatch-allow: ${{ inputs.allow_destructive }}
@@ -462,7 +462,7 @@ jobs:
       # `allow-dns-destroy` label on the merged PR (or the allow_destructive dispatch input).
       - name: Refuse destructive DNS / identity changes
         if: steps.plan.outputs.exitcode == '2'
-        uses: ./.github/actions/destructive-guard
+        uses: quynhonsemiconductor/ci/actions/destructive-guard@v1
         with:
           working-directory: live/runtime-prod
           dispatch-allow: ${{ inputs.allow_destructive }}
@@ -524,7 +524,7 @@ jobs:
       # `allow-dns-destroy` label on the merged PR (or the allow_destructive dispatch input).
       - name: Refuse destructive DNS / identity changes
         if: steps.plan.outputs.exitcode == '2'
-        uses: ./.github/actions/destructive-guard
+        uses: quynhonsemiconductor/ci/actions/destructive-guard@v1
         with:
           working-directory: live/storage-dev
           dispatch-allow: ${{ inputs.allow_destructive }}
@@ -584,7 +584,7 @@ jobs:
       # `allow-dns-destroy` label on the merged PR (or the allow_destructive dispatch input).
       - name: Refuse destructive DNS / identity changes
         if: steps.plan.outputs.exitcode == '2'
-        uses: ./.github/actions/destructive-guard
+        uses: quynhonsemiconductor/ci/actions/destructive-guard@v1
         with:
           working-directory: live/storage-prod
           dispatch-allow: ${{ inputs.allow_destructive }}

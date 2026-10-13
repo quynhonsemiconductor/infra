@@ -379,7 +379,7 @@ jobs:
       # after labelling). 2026-10-09: the plan below was green and showed nine replaced records.
       - name: Refuse destructive DNS / identity changes
         if: always() && steps.plan.outputs.exitcode != '1'
-        uses: ./.github/actions/destructive-guard
+        uses: quynhonsemiconductor/ci/actions/destructive-guard@v1
         with:
           working-directory: live/${{ matrix.stack }}
           pr-number: ${{ github.event.pull_request.number }}
@@ -416,22 +416,10 @@ jobs:
   # no paths filter and none of them carries an `if:`. If that ever changes, split
   # this into a strict gate over the unconditional jobs plus a lenient one over
   # `plan`, rather than leaving the leniency to cover everything.
-  # The destructive-change guard is itself part of the safety net; a regression in it must not merge silently.
-  script-tests:
-    name: Script tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-      - name: destructive_guard unit tests
-        run: python3 scripts/test_destructive_guard.py
-
   ci-required:
     name: Plan required
     if: always()
-    needs: [detect, fmt, tflint, plan, script-tests]
+    needs: [detect, fmt, tflint, plan]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
