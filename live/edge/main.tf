@@ -273,7 +273,7 @@ resource "cloudflare_record" "ses_mail_from_spf" {
 }
 
 # DMARC for qnsc.vn. It was set by hand in the Cloudflare dashboard (2026-10-13) and is IMPORTED here, not re-created: the import
-# block below adopts the existing record, so the first apply changes nothing about DNS. (Remove the import block after that apply.)
+# block adopted the existing record, so that apply changed nothing about DNS. (The import block was applied on 2026-10-13 and removed.)
 #
 # p=none is deliberate for now: it only COLLECTS reports (rua) and rejects or quarantines nothing, so a sender we forgot about (Microsoft 365
 # for the staff mailboxes, SES for the products) cannot have its mail dropped while the reports are still unread.
@@ -299,11 +299,6 @@ resource "cloudflare_record" "dmarc" {
       error_message = "cloudflare_zone_id must be the 32-hex-character zone id of qnsc.vn: this resource's zone_id forces REPLACEMENT, so a null or empty value would destroy it."
     }
   }
-}
-
-import {
-  to = cloudflare_record.dmarc
-  id = "${var.cloudflare_zone_id}/dbd8907e1e797ff142ef0b5ac6e50a60"
 }
 
 # =============================================================================
