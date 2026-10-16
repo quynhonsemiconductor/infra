@@ -37,6 +37,7 @@ on:
     paths:
       - 'live/security-baseline/**'
       - 'scripts/alerting_health.py'
+      - 'scripts/test_alerting_health.py'
       - '.github/workflows/alerting-health.yml'
 
 permissions:
@@ -68,13 +69,100 @@ jobs:
       - uses: quynhonsemiconductor/ci/actions/setup-aws-oidc@v1
         with:
           role-arn: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/qnsc-github-infra-plan
-          aws-region: ${{ env.AWS_REGION }}
+          # `region`, not `aws-region`: the action has no such input, so the old name was ignored with a warning.
+          region: ${{ env.AWS_REGION }}
 
       # The Grafana token is checked because its expiry on ~2026-09-11 went unnoticed for two
       # days and blocked every rova and opshub plan. The script treats a MISSING token as a
       # skipped check that fails the run in CI, so deleting this env block does not quietly
       # reduce coverage — it turns the job red instead.
+      # The checker's own tests first: a wrong comparison in it (the break-glass rule was reported DISABLED because its state is
+      # ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS) keeps this job red for a reason that is not true.
+      - name: Self-test
+        run: python3 -m unittest scripts/test_alerting_health.py
+
       - name: Check
         env:
           GRAFANA_ALERTS_TOKEN: ${{ secrets.GRAFANA_ALERTS_TOKEN }}
         run: python3 scripts/alerting_health.py
+
+  # A scheduled run that is red must reach a person who is not watching Actions: a red X on a cron only emails whoever last
+  # touched the cron line, and this job sat red every day from 2026-10-02 to 2026-10-16 (35 of 35 runs) without anyone acting.
+  # Same mechanism as drift-detection.yml: one open GitHub issue, updated on every red run and closed by the next green one, plus
+  # the platform Teams channel. Only for the schedule: a pull request already shows its own red check to its author.
+  alert:
+    name: Alert on alerting-health failure
+    needs: check
+    if: ${{ always() && github.event_name == 'schedule' && needs.check.result != 'success' && needs.check.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Open or update the alerting-health issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          gh label create alerting-health -R "$REPO" --color D93F0B --description "Daily alerting-health check did not pass" 2>/dev/null || true
+          body="Alerting health is failing: some alarm cannot reach a person, or the check could not run. The findings are in the run summary: ${RUN_URL}. This issue closes itself on the next green scheduled run."
+          n="$(gh issue list -R "$REPO" --label alerting-health --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$n" ]; then
+            gh issue comment "$n" -R "$REPO" --body "$body"
+          else
+            gh issue create -R "$REPO" --title "Alerting health is failing" --label alerting-health --body "$body"
+          fi
+
+      # TEAMS_ALERTS_WEBHOOK_URL is a Teams *Workflows* webhook: it answers 202 to any body and posts nothing unless the body is an
+      # Adaptive Card message (see drift-detection.yml). The GitHub issue above is the durable alert.
+      - name: Post to the platform Teams channel
+        env:
+          WEBHOOK: ${{ secrets.TEAMS_ALERTS_WEBHOOK_URL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "$WEBHOOK" ]; then echo "::warning::TEAMS_ALERTS_WEBHOOK_URL is not set; only the GitHub issue was raised"; exit 0; fi
+          payload="$(python3 - <<'PY'
+          import json, os
+          card = {
+              "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+              "type": "AdaptiveCard",
+              "version": "1.4",
+              "body": [
+                  {"type": "TextBlock", "size": "Medium", "weight": "Bolder", "wrap": True,
+                   "text": "Alerting health failed: qnsc infra"},
+                  {"type": "TextBlock", "wrap": True, "isSubtle": True,
+                   "text": "An alarm, budget, anomaly subscription or EventBridge rule cannot reach a person, or the check could not run."},
+              ],
+              "actions": [{"type": "Action.OpenUrl", "title": "Open the run", "url": os.environ["RUN_URL"]}],
+          }
+          print(json.dumps({"type": "message",
+                            "attachments": [{"contentType": "application/vnd.microsoft.card.adaptive",
+                                             "contentUrl": None, "content": card}]}))
+          PY
+          )"
+          curl -fsS --max-time 20 -H 'Content-Type: application/json' -d "$payload" "$WEBHOOK" >/dev/null \
+            || echo "::warning::Teams post failed; see the GitHub issue"
+
+  resolve:
+    name: Close the alerting-health issue
+    needs: check
+    if: ${{ always() && github.event_name == 'schedule' && needs.check.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Close open alerting-health issues
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          for n in $(gh issue list -R "$REPO" --label alerting-health --state open --json number --jq '.[].number'); do
+            gh issue close "$n" -R "$REPO" --comment "Every delivery path passed in ${RUN_URL}. Closing; it reopens as a new issue if one breaks."
+          done

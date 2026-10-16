@@ -321,6 +321,13 @@ def check_cost_anomaly() -> tuple[list, list]:
     return fails, []
 
 
+# `ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS` is an ENABLED rule that is also delivered read-only management events.
+# `qnsc-prod-breakglass-assumed` needs it (sts:AssumeRole is read-only; breakglass-alert.tf), and comparing against the plain
+# string "ENABLED" reported that rule as DISABLED on every run from 2026-10-12, which kept this job red for a reason that
+# was not true and hid whether anything else was.
+ENABLED_RULE_STATES = ("ENABLED", "ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS")
+
+
 def check_eventbridge_delivery() -> tuple[list, list]:
     """SNS topics that EventBridge rules target.
 
@@ -339,7 +346,7 @@ def check_eventbridge_delivery() -> tuple[list, list]:
         name = rule.get("Name")
         if not name:
             continue
-        if rule.get("State") != "ENABLED":
+        if rule.get("State") not in ENABLED_RULE_STATES:
             fails.append((f"`{name}`", "EventBridge rule is DISABLED — it matches nothing"))
             continue
         targets = (aws("events", "list-targets-by-rule", "--rule", name) or {}).get("Targets", [])
