@@ -51,3 +51,11 @@ __pycache__/
 
 # Committed plan JSON (tofu show -json) carries the prior state, session ARNs and secrets: never commit it
 plan.json
+
+# Entra app-registration audit output (scripts/entra-audit): tenant data. The scripts write it OUTSIDE the repo
+# (default ~/entra-audit-<date>/) and refuse a directory inside one; these patterns catch an accidental copy.
+entra-audit-*/
+entra-audit-report.md
+entra-audit-report.json
+**/graph.json
+**/exchange.json

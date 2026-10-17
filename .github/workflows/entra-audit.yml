@@ -1,0 +1,59 @@
+# =============================================================================
+# Entra audit · Tests — the read-only Entra app-registration audit in scripts/entra-audit.
+#
+# The audit is run by a person in their own terminal against the real tenant; CI never touches a tenant.
+# What CI guards is that the tooling stays correct and READ-ONLY:
+#   * check-readonly.sh   fails on any HTTP verb other than GET, a second `az rest` call site, an `az` sub-command that
+#                         is not `rest`/`account show`, or a PowerShell cmdlet whose verb is not read-only;
+#   * shellcheck          on both shell scripts;
+#   * PSScriptAnalyzer    on the Exchange script;
+#   * unittest            the report rules on recorded fixtures (fabricated ids), the collector against a fake `az`,
+#                         the Exchange script against stand-in cmdlets.
+# =============================================================================
+name: Entra audit · Tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/entra-audit/**'
+      - '.github/workflows/entra-audit.yml'
+  pull_request:
+    # No `branches:` filter on purpose (see security.yml): a stacked PR must run its checks too.
+    paths:
+      - 'scripts/entra-audit/**'
+      - '.github/workflows/entra-audit.yml'
+
+concurrency:
+  group: entra-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Read-only guard, lint and tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Read-only guard
+        run: bash scripts/entra-audit/check-readonly.sh
+
+      - name: shellcheck
+        run: shellcheck -x scripts/entra-audit/entra-audit.sh scripts/entra-audit/check-readonly.sh
+
+      - name: PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Install-Module PSScriptAnalyzer -RequiredVersion 1.24.0 -Scope CurrentUser -Force
+          $findings = Invoke-ScriptAnalyzer -Path scripts/entra-audit/exchange-rbac-audit.ps1 -Severity Warning, Error
+          $findings | Format-Table RuleName, Severity, Line, Message -AutoSize -Wrap
+          if ($findings) { exit 1 }
+
+      - name: Tests
+        run: python3 -m unittest scripts/entra-audit/test_entra_audit.py -v
