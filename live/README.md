@@ -5,7 +5,7 @@ nested.**
 
 ```
 live/
-  bootstrap           organization        security-baseline
+  bootstrap           organization (RETIRED, do not apply)    security-baseline
   observability       edge                          ← account-wide, no env
   runtime-dev         runtime-prod
   storage-dev         storage-prod                  ← platform, per env
