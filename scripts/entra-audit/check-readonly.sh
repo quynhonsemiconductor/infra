@@ -26,13 +26,17 @@ for file in "$@"; do
       if grep -nE -e '(^|[^[:alnum:]_-])(curl|wget)([^[:alnum:]_-]|$)' <<<"$code" >/dev/null; then fail "$file" "curl/wget; use graph_get"; fi
       if grep -nEi -e '-X[ ]*(POST|PUT|PATCH|DELETE)|--request' <<<"$code" >/dev/null; then fail "$file" "an explicit HTTP verb"; fi
       if grep -nE -e '--body|--headers|--data' <<<"$code" >/dev/null; then fail "$file" "a request body or header option"; fi
+      # short flags of az rest: -m (method) and -b (body), on any line that calls az rest
+      if grep -E -e '(^|[^[:alnum:]_-])az[[:space:]]+rest' <<<"$code" | grep -E -e '(^|[[:space:]])-[mb]([[:space:]=]|$)' >/dev/null; then fail "$file" "az rest with a short -m/-b flag"; fi
       rest_lines="$(grep -cE -e '(^|[^[:alnum:]_-])az[[:space:]]+rest' <<<"$code" || true)"
       if [[ "$rest_lines" -gt 1 ]]; then fail "$file" "az rest appears $rest_lines times; the only call site must be graph_get()"; fi
       if [[ "$rest_lines" -eq 1 ]] && ! grep -E -e 'az[[:space:]]+rest[[:space:]]+--method[[:space:]]+get([[:space:]]|$)' <<<"$code" >/dev/null; then
         fail "$file" "az rest must be called as: az rest --method get ..."
       fi
-      # any other az sub-command (az ad, az role, az account set, az login ...) is not part of the collection
-      if grep -nE -e '(^|[^[:alnum:]_-])az[[:space:]]+([a-z-]+)' <<<"$code" | grep -vE 'az[[:space:]]+(rest|account[[:space:]]+show)([[:space:]]|$)' | grep -E 'az[[:space:]]+[a-z]' | grep -vE '^[0-9]+:[[:space:]]*(echo|die|usage)' >/dev/null; then
+      # any other az sub-command (az ad, az role, az account set, az login ...) is not part of the collection. Quoted text is
+      # removed first so a hint such as "run 'az login'" in a message is not mistaken for a command.
+      unquoted="$(sed -E "s/\"[^\"]*\"//g; s/'[^']*'//g" <<<"$code")"
+      if grep -E -e '(^|[;&|(`]|\$\()[[:space:]]*az[[:space:]]+[a-z]' <<<"$unquoted" | grep -vE 'az[[:space:]]+(rest|account[[:space:]]+show)([[:space:]]|$)' | grep -E 'az' >/dev/null; then
         fail "$file" "an az sub-command other than 'rest' / 'account show'"
       fi
       ;;
@@ -42,6 +46,7 @@ for file in "$@"; do
       hits="$(grep -noE -e '\b(New|Set|Remove|Add|Enable|Disable|Update|Invoke|Start|Stop|Grant|Revoke|Install|Uninstall|Clear|Reset|Move|Rename|Restore|Resume|Suspend|Publish|Register|Unregister|Send|Copy|Out|Save|Sync|Mount|Dismount|Initialize)-[A-Za-z]+' <<<"$code" | grep -vE ':(Set-StrictMode|Out-File|Out-Null|Out-String)$' || true)"
       if [[ -n "$hits" ]]; then fail "$file" "cmdlet(s) that are not read-only: $(tr '\n' ' ' <<<"$hits")"; fi
       if grep -nEi -e 'Invoke-(Rest|Web)|\[System\.Net|curl|wget' <<<"$code" >/dev/null; then fail "$file" "a direct web call"; fi
+      if grep -nEi -e '::(Delete|Move|Copy|Replace|WriteAll|AppendAll)|\.Delete\(|\bcmd(\.exe)?\b|\bbash\b' <<<"$code" >/dev/null; then fail "$file" "a .NET file operation or a shell-out"; fi
       ;;
     *) fail "$file" "unknown file type" ;;
   esac

@@ -567,5 +567,49 @@
         }
       ]
     }
-  }
+  },
+  "externalPrincipals": [
+    {
+      "id": "40001000-0000-4000-8000-000000000000",
+      "appId": "50001000-0000-4000-8000-000000000000",
+      "displayName": "Contoso Mailer",
+      "servicePrincipalType": "Application",
+      "appOwnerOrganizationId": "dddddddd-0000-4000-8000-00000000000d",
+      "accountEnabled": true,
+      "appRoleAssignments": [
+        {
+          "resourceId": "aaaaaaaa-0000-4000-8000-00000000000a",
+          "appRoleId": "f0000000-0000-4000-8000-000000000001"
+        }
+      ]
+    },
+    {
+      "id": "40002000-0000-4000-8000-000000000000",
+      "appId": "50002000-0000-4000-8000-000000000000",
+      "displayName": "batch-runner-identity",
+      "servicePrincipalType": "ManagedIdentity",
+      "appOwnerOrganizationId": "eeeeeeee-0000-4000-8000-00000000000e",
+      "accountEnabled": true,
+      "appRoleAssignments": [
+        {
+          "resourceId": "aaaaaaaa-0000-4000-8000-00000000000a",
+          "appRoleId": "f0000000-0000-4000-8000-000000000004"
+        }
+      ]
+    },
+    {
+      "id": "40003000-0000-4000-8000-000000000000",
+      "appId": "50003000-0000-4000-8000-000000000000",
+      "displayName": "Example First-Party Connector",
+      "servicePrincipalType": "Application",
+      "appOwnerOrganizationId": "f8cdef31-a31e-4b4a-93e4-5f571e91255a",
+      "accountEnabled": true,
+      "appRoleAssignments": [
+        {
+          "resourceId": "aaaaaaaa-0000-4000-8000-00000000000a",
+          "appRoleId": "f0000000-0000-4000-8000-000000000003"
+        }
+      ]
+    }
+  ]
 }

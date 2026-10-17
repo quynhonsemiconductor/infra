@@ -11,8 +11,8 @@
   Only Get-* cmdlets are used (plus Connect/Disconnect). check-readonly.sh enforces that in CI.
 
 .PARAMETER OutDir
-  Where exchange.json is written. Default: ~/entra-audit-<date>/ (the same default as entra-audit.sh).
-  Keep it outside any git repository: the file names your mailboxes and apps.
+  Where exchange.json is written: the SAME directory entra-audit.sh used (it must already hold graph.json). Default:
+  ~/entra-audit-<date>/. A directory inside a git repository is refused: the file names your mailboxes and apps.
 
 .PARAMETER NoConnect
   Skip Connect-ExchangeOnline. For the tests, which define stand-ins for the Get-* cmdlets.
@@ -23,7 +23,6 @@
   No write role is needed or used.
 
 .EXAMPLE
-  pwsh ./exchange-rbac-audit.ps1
   pwsh ./exchange-rbac-audit.ps1 ~/entra-audit-2026-10-18
 #>
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '', Justification = 'Interactive console report for the person running the audit.')]
@@ -57,6 +56,25 @@ function Select-Field {
     return $record
 }
 
+function Test-InsideGitRepository {
+    # The nearest existing ancestor decides: the directory may not exist yet.
+    param([string]$Path)
+    $dir = [System.IO.Path]::GetFullPath($Path)
+    while ($dir -and -not (Test-Path -LiteralPath $dir)) { $dir = Split-Path -Parent $dir }
+    while ($dir) {
+        if (Test-Path -LiteralPath (Join-Path $dir '.git')) { return $true }
+        $dir = Split-Path -Parent $dir
+    }
+    return $false
+}
+
+if (Test-InsideGitRepository $OutDir) {
+    throw "$OutDir is inside a git repository; choose a directory outside it. The output names your apps and mailboxes."
+}
+if (-not (Test-Path -LiteralPath (Join-Path $OutDir 'graph.json'))) {
+    throw "No graph.json in $OutDir. Run entra-audit.sh first with the SAME output directory; it creates the directory and the report this file completes."
+}
+
 if (-not $NoConnect) {
     if (-not (Get-Module -ListAvailable -Name ExchangeOnlineManagement)) {
         throw 'The ExchangeOnlineManagement module is not installed; see the README prerequisites.'
@@ -72,7 +90,15 @@ try {
     Write-Host 'Reading role assignments of service principals...'
     $assignmentFields = @('Name', 'Role', 'RoleAssignee', 'RoleAssigneeName', 'RoleAssigneeType', 'CustomResourceScope',
         'CustomRecipientWriteScope', 'RecipientWriteScope', 'RecipientReadScope', 'ConfigWriteScope', 'Enabled')
-    $roleAssignments = @(Get-ManagementRoleAssignment -RoleAssigneeType ServicePrincipal | ForEach-Object { Select-Field $_ $assignmentFields })
+    try {
+        $rawAssignments = @(Get-ManagementRoleAssignment -RoleAssigneeType ServicePrincipal)
+    }
+    catch {
+        # Not every Exchange build accepts ServicePrincipal as a RoleAssigneeType value; filter client-side instead.
+        Write-Warning "Get-ManagementRoleAssignment -RoleAssigneeType ServicePrincipal failed ($($_.Exception.Message)); filtering client-side."
+        $rawAssignments = @(Get-ManagementRoleAssignment | Where-Object { "$($_.RoleAssigneeType)" -eq 'ServicePrincipal' })
+    }
+    $roleAssignments = @($rawAssignments | ForEach-Object { Select-Field $_ $assignmentFields })
 
     Write-Host 'Reading management scopes...'
     $managementScopes = @(Get-ManagementScope | ForEach-Object { Select-Field $_ @('Name', 'ScopeRestrictionType', 'RecipientRoot', 'RecipientFilter', 'Exclusive') })
@@ -91,6 +117,10 @@ $model = [ordered]@{
 [System.IO.Directory]::CreateDirectory($OutDir) | Out-Null
 $path = Join-Path $OutDir 'exchange.json'
 $model | ConvertTo-Json -Depth 6 | Out-File -FilePath $path -Encoding utf8
+if (-not $IsWindows) {
+    # Owner-only, like entra-audit.sh (umask 077): the file names mailboxes and apps.
+    [System.IO.File]::SetUnixFileMode($path, [System.IO.UnixFileMode]'UserRead, UserWrite')
+}
 
 # --- console summary ---
 $names = @{}

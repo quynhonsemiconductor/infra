@@ -35,6 +35,7 @@ import json
 import pathlib
 import re
 import sys
+import urllib.parse
 from typing import Any, Optional
 
 PASS, FAIL, NA, SKIP = "PASS", "FAIL", "N/A", "SKIP"
@@ -55,9 +56,12 @@ ENVIRONMENTS = {
 
 SIGNIN_DELEGATED = {"openid", "profile", "email", "offline_access", "User.Read"}
 EXPIRY_WARNING_DAYS = 30
-SECRET_MAX_DAYS = 183  # "6 months or less"
+SECRET_MAX_DAYS = 184  # "6 months or less": the longest calendar half-year (1 Jul - 31 Dec)
 MAIL_APP_PERMISSION = re.compile(r"^Mail\.", re.I)
 SITES_UNSCOPED = re.compile(r"^Sites\.(Read|ReadWrite|FullControl|Manage)\.All$")
+# Microsoft Services tenant: service principals owned by it are Microsoft first-party apps (a public constant).
+MICROSOFT_TENANT = "f8cdef31-a31e-4b4a-93e4-5f571e91255a"
+LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 EXCHANGE_MAIL_ROLE = re.compile(r"^Application Mail\.", re.I)
 
 
@@ -101,15 +105,16 @@ RULES = {
     "redirect-uris": "HTTPS redirect URIs only (http://localhost only on Dev)",
     "credential-expiry": "No credential expired or expiring within 30 days",
     "signin-delegated-only": "Sign-in app: only openid/profile/email/offline_access/User.Read",
-    "signin-secret-lifetime": "Sign-in app: client secrets of 6 months or less",
+    "signin-secret-lifetime": "Sign-in app: client secrets of 6 months or less (184 days)",
     "signin-assignment-required": "Sign-in app: enterprise app assignment required",
     "signin-no-mail-rbac": "Sign-in app: no Exchange Application Mail role",
     "service-no-secret": "Service app: no client secret",
+    "service-no-delegated": "Service app: no delegated permissions",
     "service-mail-rbac-scoped": "Service app: Exchange Application Mail.* role only with a custom resource scope",
 }
 APPLIES = {
     "signin": {"signin-delegated-only", "signin-secret-lifetime", "signin-assignment-required", "signin-no-mail-rbac"},
-    "service": {"service-no-secret", "service-mail-rbac-scoped"},
+    "service": {"service-no-secret", "service-no-delegated", "service-mail-rbac-scoped"},
 }
 
 
@@ -120,7 +125,8 @@ def parse_time(value: Optional[str]) -> Optional[dt.datetime]:
     if not value:
         return None
     text = value.strip().replace("Z", "+00:00")
-    text = re.sub(r"(\.\d{6})\d+", r"\1", text)  # Graph can print 7 fractional digits
+    # Graph prints 1 to 7 fractional digits; datetime.fromisoformat (before Python 3.11) accepts only 3 or 6.
+    text = re.sub(r"\.(\d+)", lambda m: "." + m.group(1)[:6].ljust(6, "0"), text, count=1)
     try:
         parsed = dt.datetime.fromisoformat(text)
     except ValueError:
@@ -268,11 +274,19 @@ def check_app(app: dict, by_object: dict, by_app: dict, exchange: Optional[dict]
     ]
     bad = []
     for where, uri in uris:
-        if uri.lower().startswith("https://") and "*" not in uri:
+        host = (urllib.parse.urlsplit(uri).hostname or "").lower()
+        scheme = urllib.parse.urlsplit(uri).scheme.lower()
+        loopback = host in LOOPBACK_HOSTS
+        if "*" in uri:
+            bad.append(f"{uri} ({where}, wildcard)")
+        elif loopback and env != "Dev":
+            bad.append(f"{uri} ({where}, localhost on a non-Dev app)")
+        elif scheme == "https":
             continue
-        if env == "Dev" and re.match(r"^http://localhost(:\d+)?(/|$)", uri, re.I):
+        elif scheme == "http" and loopback and env == "Dev":
             continue
-        bad.append(f"{uri} ({where})")
+        else:
+            bad.append(f"{uri} ({where}, not https)")
     add("redirect-uris", not bad, "; ".join(bad),
         "Remove or replace with exact HTTPS URIs: " + ", ".join(b.split(" (")[0] for b in bad) + (
             "" if env == "Dev" else " (http://localhost is allowed only on Dev apps)"))
@@ -282,6 +296,8 @@ def check_app(app: dict, by_object: dict, by_app: dict, exchange: Optional[dict]
     for ctype, cred in all_credentials(app):
         end = parse_time(cred.get("endDateTime"))
         if end is None:
+            problems.append(f"{cred_label(ctype, cred)} has an unreadable end date {cred.get('endDateTime')!r}")
+            fixes.append(f"check the {ctype} {cred.get('keyId', '?')} by hand")
             continue
         days = (end - now).days
         if end < now:
@@ -323,8 +339,12 @@ def check_app(app: dict, by_object: dict, by_app: dict, exchange: Optional[dict]
         secrets = app.get("passwordCredentials") or []
         add("service-no-secret", not secrets, "client secret(s): " + ", ".join(cred_label("secret", c) for c in secrets),
             "Remove the client secret(s); use a certificate (or a federated credential on k3s)")
+        delegated = sorted(perms["delegated"]["consented"] | perms["delegated"]["declared"])
+        add("service-no-delegated", not delegated, "delegated permissions: " + ", ".join(short(p) for p in delegated),
+            "Remove " + ", ".join(short(p) for p in delegated) + " (a Service app is a worker; new registrations get delegated User.Read by default)")
     else:
         results.append(Result("service-no-secret", NA))
+        results.append(Result("service-no-delegated", NA))
 
     # Exchange RBAC (needs exchange.json) -------------------------------------------------------------------
     mine = exchange_assignments(app, exchange) if exchange else None
@@ -360,21 +380,28 @@ def check_app(app: dict, by_object: dict, by_app: dict, exchange: Optional[dict]
     )
 
 
+def _values(item: dict, fields: tuple[str, ...]) -> set[str]:
+    """Lower-cased non-empty field values; None, "" and "none" must never be a match key (two unrelated blanks would match)."""
+    out = set()
+    for field in fields:
+        value = item.get(field)
+        if value is None:
+            continue
+        text = str(value).strip().lower()
+        if text and text not in ("none", "null"):
+            out.add(text)
+    return out
+
+
 def exchange_assignments(app: dict, exchange: dict) -> list[dict]:
     """Role assignments whose assignee is this app's service principal (matched on object id, app id or name)."""
-    keys = {k.lower() for k in (app.get("appId"), (app.get("servicePrincipal") or {}).get("id"), app.get("displayName")) if k}
-    ids = set()
+    keys = _values({"a": app.get("appId"), "b": (app.get("servicePrincipal") or {}).get("id"), "c": app.get("displayName")}, ("a", "b", "c"))
+    ids = set(keys)
     for sp in exchange.get("servicePrincipals") or []:
-        values = {str(sp.get(f, "")).lower() for f in ("AppId", "ObjectId", "Identity", "DisplayName", "Name")}
+        values = _values(sp, ("AppId", "ObjectId", "Identity", "DisplayName", "Name"))
         if keys & values:
             ids |= values
-    ids |= keys
-    out = []
-    for assignment in exchange.get("roleAssignments") or []:
-        assignee = {str(assignment.get(f, "")).lower() for f in ("RoleAssignee", "RoleAssigneeName")}
-        if assignee & ids:
-            out.append(assignment)
-    return out
+    return [a for a in exchange.get("roleAssignments") or [] if _values(a, ("RoleAssignee", "RoleAssigneeName")) & ids]
 
 
 def scope_filter(assignment: dict, exchange: dict) -> str:
@@ -385,6 +412,37 @@ def scope_filter(assignment: dict, exchange: dict) -> str:
         if scope.get("Name") == name:
             return (scope.get("RecipientFilter") or "").strip()
     return ""
+
+
+def check_external(sp: dict, by_object: dict) -> dict:
+    """A service principal that holds Graph / Exchange application roles but has no app registration in this tenant:
+    a third-party or multi-tenant app, or a managed identity. Microsoft first-party apps are shown, not graded."""
+    owner = (sp.get("appOwnerOrganizationId") or "").lower()
+    if owner == MICROSOFT_TENANT:
+        kind = "microsoft"
+    elif sp.get("servicePrincipalType") == "ManagedIdentity":
+        kind = "managed-identity"
+    else:
+        kind = "third-party"
+    perms = set()
+    for assignment in sp.get("appRoleAssignments") or []:
+        resource = by_object.get(assignment.get("resourceId"))
+        perms.add(f"{(resource or {}).get('displayName') or 'resource'}: {role_name(resource, assignment.get('appRoleId', ''))}")
+    results: list[Result] = []
+    if kind != "microsoft":
+        mail = sorted(p for p in perms if MAIL_APP_PERMISSION.match(short(p)) or short(p) == "full_access_as_app")
+        sites = sorted(p for p in perms if SITES_UNSCOPED.match(short(p)))
+        fix_tail = "Remove the app role assignment (Enterprise applications > this app > Permissions), or delete the service principal if nothing uses it"
+        results.append(Result("mail-app-permission", FAIL if mail else PASS, ", ".join(short(p) for p in mail),
+                              f"{fix_tail}: {', '.join(short(p) for p in mail)}" if mail else ""))
+        results.append(Result("sites-scope", FAIL if sites else PASS, ", ".join(short(p) for p in sites),
+                              f"{fix_tail}: {', '.join(short(p) for p in sites)} (Sites.Selected is the scoped form)" if sites else ""))
+    return {
+        "name": sp.get("displayName") or "(no name)", "app_id": sp.get("appId", ""), "object_id": sp.get("id", ""), "kind": kind,
+        "ownerTenant": owner, "accountEnabled": sp.get("accountEnabled"), "app_permissions": sorted(perms),
+        "results": [dataclasses.asdict(r) for r in results],
+        "failCount": sum(1 for r in results if r.status == FAIL),
+    }
 
 
 # ── report ───────────────────────────────────────────────────────────────────────────────────────────────
@@ -408,17 +466,24 @@ def build(graph: dict, exchange: Optional[dict], products: list[str], now: dt.da
         claimed = {id(a) for app in graph.get("applications") or [] for a in exchange_assignments(app, exchange)}
         unmatched = [a for a in exchange.get("roleAssignments") or [] if id(a) not in claimed and EXCHANGE_MAIL_ROLE.match(a.get("Role") or "")]
 
+    external = sorted((check_external(p, by_object) for p in graph.get("externalPrincipals") or []),
+                      key=lambda e: (e["kind"] == "microsoft", e["kind"], e["name"]))
+
     return {
         "generatedAt": now.isoformat(),
         "exchangeCollected": exchange is not None,
         "collectionNotes": graph.get("collectionNotes") or [],
         "apps": [dataclasses.asdict(r) | {"failCount": len(r.fails)} for r in reports],
+        "externalPrincipals": external,
         "missingApps": missing,
         "unmatchedExchangeMailAssignments": unmatched,
         "summary": {
             "apps": len(reports),
             "appsWithFailures": sum(1 for r in reports if r.fails),
-            "failures": sum(len(r.fails) for r in reports),
+            "failures": sum(len(r.fails) for r in reports) + sum(e["failCount"] for e in external),
+            "externalPrincipals": sum(1 for e in external if e["kind"] != "microsoft"),
+            "externalFailures": sum(e["failCount"] for e in external),
+            "microsoftFirstParty": sum(1 for e in external if e["kind"] == "microsoft"),
             "unknownApps": sum(1 for r in reports if r.kind == "unknown"),
         },
     }
@@ -431,11 +496,13 @@ def md_cell(text: str) -> str:
 def render_markdown(report: dict) -> str:
     out = ["# Entra app registration audit", ""]
     summary = report["summary"]
+    summary.setdefault("externalPrincipals", 0)
     out.append(f"Generated {report['generatedAt']}. Read-only. Standard: HYBRID-INFRA-PLAN section 7.4 (decided 2026-10-18).")
     out.append("")
     out.append(
         f"**{summary['apps']} app(s), {summary['appsWithFailures']} with failures, {summary['failures']} failing rule(s)**; "
-        f"{summary['unknownApps']} app(s) do not follow the naming and are listed separately."
+        f"{summary['unknownApps']} app(s) do not follow the naming and are listed separately. "
+        f"{summary['externalPrincipals']} service principal(s) without an app registration here ({summary['externalFailures']} failing rule(s))."
     )
     for note in report.get("collectionNotes", []):
         out += ["", f"> Collection note: {note}"]
@@ -468,6 +535,30 @@ def render_markdown(report: dict) -> str:
         out.append("Nothing to fix.")
         out.append("")
 
+    third = [e for e in report.get("externalPrincipals", []) if e["kind"] != "microsoft"]
+    first = [e for e in report.get("externalPrincipals", []) if e["kind"] == "microsoft"]
+    out.append("## Service principals with no app registration in this tenant")
+    out.append("")
+    out.append("Third-party / multi-tenant apps and managed identities that hold Graph or Exchange application permissions "
+               "(from `appRoleAssignedTo` on those two resources; other resources are not scanned).")
+    out.append("")
+    if third:
+        out += ["| Name | Kind | Owner tenant | Application permissions | Failing rules |", "| :--- | :--- | :--- | :--- | :--- |"]
+        for e in third:
+            failing = ", ".join(r["rule"] for r in e["results"] if r["status"] == FAIL) or "none"
+            out.append(f"| {md_cell(e['name'])} | {e['kind']} | {e['ownerTenant'] or '-'} | {md_cell(', '.join(e['app_permissions']))} | {failing} |")
+        for e in third:
+            for r in e["results"]:
+                if r["status"] == FAIL:
+                    out.append(f"\n**{e['name']}** `{r['rule']}`: {r['fix']}")
+    else:
+        out.append("None.")
+    out.append("")
+    out.append("### Microsoft first-party (information only, not graded)")
+    out.append("")
+    out += [f"- {md_cell(e['name'])}: {md_cell(', '.join(e['app_permissions']))}" for e in first] or ["None."]
+    out.append("")
+
     out.append("## Per app")
     for app in report["apps"]:
         out += ["", f"### {app['name']}", ""]
@@ -499,6 +590,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--products", default=",".join(DEFAULT_PRODUCTS), help="product names that prefix the app display names")
     ap.add_argument("--now", help="ISO time to judge expiry at (default: now; for tests)")
     args = ap.parse_args(argv)
+    if sys.version_info < (3, 10):
+        print(f"Python 3.10 or newer is required (this is {sys.version.split()[0]}). On macOS: brew install python, then run python3.13 or similar.", file=sys.stderr)
+        return 2
 
     base = pathlib.Path(args.dir) if args.dir else None
     graph_path = pathlib.Path(args.graph) if args.graph else (base / "graph.json" if base else None)
