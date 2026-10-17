@@ -175,6 +175,28 @@ class Rules(unittest.TestCase):
         self.assertEqual(result["status"], er.FAIL)
         self.assertIn("unreadable end date", result["detail"])
 
+    def test_loopback_is_allowed_on_public_client_uris_of_any_env_but_not_on_web_or_spa(self):
+        for uri in ["http://localhost", "http://localhost:51234", "http://127.0.0.1:51234", "http://[::1]:51234", "https://localhost:8443"]:
+            def public(app, uri=uri):
+                app["publicClient"]["redirectUris"] = [uri]
+            def web(app, uri=uri):
+                app["web"]["redirectUris"] = [uri]
+            def spa(app, uri=uri):
+                app["spa"]["redirectUris"] = [uri]
+            for name in ("Rova Prod", "Rova Dev", "Rova Prod Service"):
+                self.assertEqual(status(app_report(name, modified(name, public)), "redirect-uris"), er.PASS, f"{name} publicClient {uri}")
+            self.assertEqual(status(app_report("Rova Prod", modified("Rova Prod", web)), "redirect-uris"), er.FAIL, f"web {uri}")
+            self.assertEqual(status(app_report("Rova Prod", modified("Rova Prod", spa)), "redirect-uris"), er.FAIL, f"spa {uri}")
+
+    def test_public_client_uris_that_are_not_loopback_still_need_https(self):
+        for uri in ["http://app.example.invalid", "msal2000://auth", "http://localhost.evil.invalid/cb", "https://*.example.invalid"]:
+            def public(app, uri=uri):
+                app["publicClient"]["redirectUris"] = [uri]
+            self.assertEqual(status(app_report("Rova Prod", modified("Rova Prod", public)), "redirect-uris"), er.FAIL, uri)
+        def https_public(app):
+            app["publicClient"]["redirectUris"] = ["https://native.example.invalid/cb"]
+        self.assertEqual(status(app_report("Rova Prod", modified("Rova Prod", https_public)), "redirect-uris"), er.PASS)
+
     def test_http_localhost_is_allowed_on_dev_only(self):
         def add(app):
             app["web"]["redirectUris"] = ["http://localhost:3000/cb"]
@@ -263,6 +285,59 @@ class Rules(unittest.TestCase):
         for scope in exchange["managementScopes"]:
             scope["RecipientFilter"] = None
         self.assertEqual(status(app_report("Rova Prod Service", exchange=exchange), "service-mail-rbac-scoped"), er.FAIL)
+
+    def test_owners_zero_passes_and_any_unexpected_owner_fails(self):
+        def with_owners(*owners):
+            def change(app):
+                app["owners"] = list(owners)
+            return modified("Rova Prod", change)
+
+        user = {"id": "u1", "type": "user", "displayName": "Some Person", "userPrincipalName": "some@example.invalid"}
+        sp = {"id": "s1", "type": "servicePrincipal", "displayName": "Some Automation", "userPrincipalName": None}
+        self.assertEqual(status(app_report("Rova Prod", with_owners()), "owners"), er.PASS)  # none is the goal
+        for owners in ([user], [sp], [user, sp]):
+            app = app_report("Rova Prod", with_owners(*owners))
+            result = next(r for r in app["results"] if r["rule"] == "owners")
+            self.assertEqual(result["status"], er.FAIL, owners)
+            self.assertIn("manage through admin roles", result["fix"])
+            self.assertTrue(result["fix"].startswith("Remove the owner"))
+        two = app_report("Rova Prod", with_owners(user, sp))
+        self.assertEqual(two["owners"], ["some@example.invalid (user)", "Some Automation (servicePrincipal)"])  # shown as information
+
+    def test_an_owner_on_the_expected_list_passes(self):
+        user = {"id": "u1", "type": "user", "displayName": "Some Person", "userPrincipalName": "some@example.invalid"}
+        stranger = {"id": "u2", "type": "user", "displayName": "Other", "userPrincipalName": "other@example.invalid"}
+        def with_owners(*owners):
+            def change(app):
+                app["owners"] = list(owners)
+            return modified("Rova Prod", change)
+
+        def result(owners, expected):
+            r = er.build(with_owners(*owners), EXCHANGE, PRODUCTS, NOW, frozenset(expected))
+            return next(a for a in r["apps"] if a["name"] == "Rova Prod")
+
+        self.assertEqual(status(result([user], {"some@example.invalid"}), "owners"), er.PASS)
+        self.assertEqual(status(result([user], {"SOME PERSON"}), "owners"), er.PASS)  # display name, case-insensitive
+        self.assertEqual(status(result([user], {"u1"}), "owners"), er.PASS)  # object id
+        self.assertEqual(status(result([user, stranger], {"some@example.invalid"}), "owners"), er.FAIL)
+
+    def test_owners_are_listed_per_app_in_the_markdown(self):
+        md = er.render_markdown(report())
+        self.assertIn("Owners (information): none", md)
+        self.assertIn("Owners (information): owner1@example.invalid (user)", md)
+
+    def test_expected_owners_flows_through_the_cli(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for expected, fails in (("", True), ("Owner 1", False)):
+                graph = copy.deepcopy(GRAPH)
+                graph["applications"] = [a for a in graph["applications"] if a["displayName"] == "OpsHub Prod Service"]
+                graph["externalPrincipals"] = []
+                (pathlib.Path(tmp) / "graph.json").write_text(json.dumps(graph))
+                subprocess.run([sys.executable, str(HERE / "entra_report.py"), tmp, "--expected-owners", expected, "--now", "2026-10-18T00:00:00Z"],
+                               capture_output=True, text=True)
+                data = json.loads((pathlib.Path(tmp) / "entra-audit-report.json").read_text())
+                rule = next(r for r in data["apps"][0]["results"] if r["rule"] == "owners")
+                self.assertEqual(rule["status"], er.FAIL if fails else er.PASS, expected)
 
     def test_a_service_app_with_a_delegated_permission_fails(self):
         def add(app):
@@ -477,7 +552,7 @@ class Collector(unittest.TestCase):
         by_name = {a["displayName"]: a for a in graph["applications"]}
         self.assertIsNone(by_name["Rova Dev"]["servicePrincipal"])  # 404 became null
         self.assertEqual(len(by_name["Rova Prod"]["owners"]), 2)
-        self.assertEqual(by_name["Rova Prod"]["owners"][0], {"type": "user", "displayName": "Owner 1", "userPrincipalName": "o1@example.invalid"})
+        self.assertEqual(by_name["Rova Prod"]["owners"][0], {"id": "90000001", "type": "user", "displayName": "Owner 1", "userPrincipalName": "o1@example.invalid"})
         self.assertEqual(by_name["Rova Prod Service"]["federatedCredentials"], [{"name": "k3s", "issuer": "https://oidc.example.invalid"}])
         self.assertEqual(by_name["Rova Prod Service"]["servicePrincipal"]["appRoleAssignments"][0]["appRoleId"], "f0000000-0000-4000-8000-000000000001")
         resource = next(iter(graph["resources"].values()))
@@ -580,6 +655,14 @@ class Collector(unittest.TestCase):
         subprocess.run(["git", "init", "-q", str(repo)], check=True)
         (repo / "graph.json").write_text("{}")
         self.assertEqual(self.run_script("--report-only", str(repo)).returncode, 2)
+
+    def test_expected_owners_option_reaches_the_report(self):
+        done = self.run_script(str(self.out), "--expected-owners", "Owner 1,Owner 2")
+        report = json.loads((self.out / "entra-audit-report.json").read_text())
+        self.assertTrue(all(r["status"] != "FAIL" for a in report["apps"] for r in a["results"] if r["rule"] == "owners"), done.stderr)
+        self.run_script("--report-only", str(self.out))
+        report = json.loads((self.out / "entra-audit-report.json").read_text())
+        self.assertTrue(any(r["status"] == "FAIL" for a in report["apps"] for r in a["results"] if r["rule"] == "owners"))  # default: every owner flagged
 
     def test_an_old_python_is_refused_with_a_clear_message(self):
         self.run_script(str(self.out), "--no-report")
