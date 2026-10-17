@@ -9,7 +9,7 @@
 | GitHub OIDC provider | AWS allows only **one** per account — all products share it |
 | S3 state bucket (`qnsc-tofu-state`) | Single source of truth for all Tofu state |
 | DynamoDB lock table (`qnsc-tofu-locks`) | Prevents concurrent applies across all product repos |
-| AWS Organizations + SCPs + Identity Center (`live/organization`) | Org root, OUs, baseline guardrails, SSO permission sets — the **identity foundation** (see that stack's README) |
+| Human access (`live/security-baseline/human-access.tf`) | An IAM user per person that holds **no permissions of its own** and exists to carry an MFA device. People assume `qnsc-admin` or `qnsc-developer` **with MFA**, for one hour at a time, and every assumption is in CloudTrail. There is no Identity Center and no standing privilege — see [Human access](#human-access) |
 | Security baseline (`live/security-baseline`) | CloudTrail + Config + GuardDuty + Access Analyzer — SOC 2 detective controls |
 | Shared runtime (`live/runtime-dev`, `live/runtime-prod`) | One VPC + fck-nat egress + security groups per environment, shared by every product. Dev also holds one shared Valkey node. Neither runs an ALB today (`enable_alb = false`) — products ingress via Cloudflare Tunnel sidecars |
 | Edge (`live/edge`) | Cloudflare zone governance for `qnsc.vn`: WAF, rate limiting, Turnstile, plus the wildcard ACM cert other stacks read |
@@ -44,6 +44,24 @@ consolidation path — is superseded rather than next.
 Shared **internal tooling** that is not a product also lives outside this repo, for the same
 reason: it needs an application deploy pipeline (image, migrations, rollout verification),
 not just a Tofu one. See `shared-services` (feature flags and future internal tenants).
+
+## Human access
+
+How **people** reach AWS (machines never use this: GitHub Actions authenticate through the OIDC provider in `iam-oidc`).
+
+- Each person has an IAM user from `human_users` in `live/security-baseline`. It holds **no permissions** apart from
+  managing its own MFA device and assuming the two roles below. Its access keys are worthless on their own.
+- `qnsc-admin` is AdministratorAccess; `qnsc-developer` is read-only plus an SSM session to reach the develop database.
+  Both require `aws:MultiFactorAuthPresent`, last one hour and are logged in CloudTrail.
+- The root user stays the break-glass path (MFA, no access keys). A separate production break-glass role (the production
+  database tunnel) raises an alert every time it is assumed.
+- **Leavers:** delete the person's IAM user in this repo (there is no central directory to remove them from).
+- **Why not Identity Center:** `live/organization` created an AWS Organization and Identity Center, and was **retired on
+  2026-08-18** when the organization was deleted so the account could join a partner's organization. A member account
+  cannot enable Identity Center, so `aws sso login` no longer exists for this account. The honest gap is the missing
+  central directory; the stated exit is to federate the existing Entra tenant to IAM as a SAML provider once the team
+  outgrows per-person users. `live/organization` is kept as the route back to a governed baseline if the account ever
+  leaves that organization — its README has the revival sequence.
 
 ## First-time bootstrap (one-time, run manually)
 
@@ -82,7 +100,7 @@ oidc_provider_arn = data.terraform_remote_state.platform.outputs.oidc_provider_a
 ```
 qnsc-tofu-state/
   platform/bootstrap/terraform.tfstate     ← this repo (state backend, OIDC, KMS, artifacts)
-  platform/organization/terraform.tfstate  ← this repo (Organizations, OUs, SCPs, Identity Center)
+  platform/organization/terraform.tfstate  ← RETIRED 2026-08-18, state orphaned on purpose: do not apply or destroy
   platform/security-baseline/terraform.tfstate ← this repo (CloudTrail, Config, GuardDuty)
   platform/runtime-dev/terraform.tfstate   ← this repo (shared develop VPC + shared cache)
   platform/runtime-prod/terraform.tfstate  ← this repo (shared production VPC)
