@@ -5,6 +5,7 @@
 #
 #   az login --tenant <tenant>.onmicrosoft.com --allow-no-subscriptions   # Global Reader is enough; no write role
 #   ./entra-audit.sh [OUTDIR]             # default: ~/entra-audit-<date>/
+#   ./entra-audit.sh --expected-owners "a@x.com,b@x.com"   # owners that are NOT flagged (default: every owner is flagged)
 #   ./entra-audit.sh --report-only OUTDIR # re-run the report on files already collected (e.g. after exchange.json)
 #
 # Only GET requests are made: every call goes through graph_get(), the only place `az rest` appears, and
@@ -21,6 +22,7 @@ GRAPH_APP_ID="00000003-0000-0000-c000-000000000000"
 EXCHANGE_APP_ID="00000002-0000-0ff1-ce00-000000000000"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PRODUCTS="Rova,OpsHub,KB,LMS"
+EXPECTED_OWNERS=""
 RUN_REPORT=1
 REPORT_ONLY=0
 OUT=""
@@ -33,6 +35,7 @@ while [[ $# -gt 0 ]]; do
     -h | --help) usage; exit 0 ;;
     --no-report) RUN_REPORT=0 ;;
     --report-only) REPORT_ONLY=1 ;;
+    --expected-owners) shift; [[ $# -gt 0 ]] || die "--expected-owners needs a value"; EXPECTED_OWNERS="$1" ;;
     --products) shift; [[ $# -gt 0 ]] || die "--products needs a value"; PRODUCTS="$1" ;;
     -*) die "unknown option $1" ;;
     *) [[ -z "$OUT" ]] || die "one output directory only"; OUT="$1" ;;
@@ -56,7 +59,7 @@ run_report() {
   python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' ||
     die "Python 3.10+ is needed for the report; $(python3 -V 2>&1) found. On macOS: brew install python (collected files are in $OUT, re-run with --report-only)"
   local rc=0
-  python3 "$HERE/entra_report.py" "$OUT" --products "$PRODUCTS" || rc=$?
+  python3 "$HERE/entra_report.py" "$OUT" --products "$PRODUCTS" --expected-owners "$EXPECTED_OWNERS" || rc=$?
   return "$rc"
 }
 
@@ -177,7 +180,7 @@ while IFS= read -r app; do
           keyCredentials: [(.keyCredentials // [])[] | {keyId, displayName, startDateTime, endDateTime, type, usage}]}' <<<"$app" >"$TMP/apps/base.json"
 
   graph_get_all "$GRAPH/applications/$object_id/owners"'?$select=id,displayName,userPrincipalName' |
-    jq -c '[.[] | {type: (."@odata.type" // "" | sub("#microsoft.graph."; "")), displayName, userPrincipalName}]' >"$TMP/apps/owners.json"
+    jq -c '[.[] | {id, type: (."@odata.type" // "" | sub("#microsoft.graph."; "")), displayName, userPrincipalName}]' >"$TMP/apps/owners.json"
   graph_get_all "$GRAPH/applications/$object_id/federatedIdentityCredentials" |
     jq -c '[.[] | {name, issuer}]' >"$TMP/apps/federated.json"
 

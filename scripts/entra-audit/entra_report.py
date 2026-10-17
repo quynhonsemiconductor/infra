@@ -14,8 +14,8 @@ The standard (HYBRID-INFRA-PLAN section 7.4, decided 2026-10-18):
     sign-in   "<Product> <Env>"           delegated only (openid, profile, email, offline_access, User.Read); single tenant
     service   "<Product> <Env> Service"   worker only; certificate only; application permissions; mail through Exchange
                                           RBAC for Applications (Application Mail.Send, scoped to the product mailbox)
-  every app    no Mail.* application permission in Entra, no full_access_as_app, Sites.Selected not Sites.*.All, two owners,
-               app instance property lock, notes, no implicit grant, https redirect URIs (http://localhost only on Dev apps),
+  every app    no Mail.* application permission in Entra, no full_access_as_app, Sites.Selected not Sites.*.All, no unexpected owner,
+               app instance property lock, notes, no implicit grant, https redirect URIs (loopback only on Dev apps, or on publicClient URIs),
                signInAudience AzureADMyOrg, nothing expiring within 30 days
   service app  no client secret
   sign-in app  secrets of 6 months or less; enterprise app "assignment required"; no application permissions
@@ -87,6 +87,7 @@ class AppReport:
     results: list[Result]
     app_permissions: list[str]
     delegated_permissions: list[str]
+    owners: list[str] = dataclasses.field(default_factory=list)
 
     @property
     def fails(self) -> list[Result]:
@@ -98,11 +99,11 @@ RULES = {
     "mail-app-permission": "No Mail.* / full_access_as_app application permission in Entra",
     "sites-scope": "Sites.Selected, not Sites.*.All",
     "unscoped-app-permission-only-on-service": "Application permissions only on Service apps",
-    "owners": "At least 2 owners",
+    "owners": "No unexpected owner (an owner can add credentials)",
     "lock": "App instance property lock enabled",
     "notes": "Notes set",
     "implicit-grant": "No implicit grant",
-    "redirect-uris": "HTTPS redirect URIs only (http://localhost only on Dev)",
+    "redirect-uris": "HTTPS redirect URIs only (loopback: Dev web/SPA, or any public-client app)",
     "credential-expiry": "No credential expired or expiring within 30 days",
     "signin-delegated-only": "Sign-in app: only openid/profile/email/offline_access/User.Read",
     "signin-secret-lifetime": "Sign-in app: client secrets of 6 months or less (184 days)",
@@ -196,6 +197,20 @@ def permissions_of(app: dict, by_object: dict, by_app: dict) -> dict[str, dict[s
     return out
 
 
+def owner_name(owner: dict) -> str:
+    return owner.get("userPrincipalName") or owner.get("displayName") or owner.get("id") or "(unnamed owner)"
+
+
+def owner_label(owner: dict) -> str:
+    return f"{owner_name(owner)} ({owner.get('type') or 'owner'})"
+
+
+def owner_expected(owner: dict, expected: frozenset[str]) -> bool:
+    """An owner is expected when its UPN, display name or object id is on the allow-list (--expected-owners)."""
+    keys = {str(owner.get(f)).strip().lower() for f in ("userPrincipalName", "displayName", "id") if owner.get(f)}
+    return bool(keys & expected)
+
+
 def short(permission: str) -> str:
     return permission.split(": ", 1)[-1]
 
@@ -213,7 +228,8 @@ def cred_label(kind: str, cred: dict) -> str:
 # ── rules ────────────────────────────────────────────────────────────────────────────────────────────────
 
 
-def check_app(app: dict, by_object: dict, by_app: dict, exchange: Optional[dict], products: list[str], now: dt.datetime) -> AppReport:
+def check_app(app: dict, by_object: dict, by_app: dict, exchange: Optional[dict], products: list[str], now: dt.datetime,
+              expected_owners: frozenset[str] = frozenset()) -> AppReport:
     name = app.get("displayName") or "(no name)"
     kind, product, env = classify(name, products)
     perms = permissions_of(app, by_object, by_app)
@@ -253,7 +269,9 @@ def check_app(app: dict, by_object: dict, by_app: dict, exchange: Optional[dict]
             "Move " + ", ".join(short(p) for p in every) + " to the matching '<Product> <Env> Service' app and remove them here")
 
     owners = app.get("owners") or []
-    add("owners", len(owners) >= 2, f"{len(owners)} owner(s)", "Add a second owner (Owners blade); prefer two people, not a group or a service principal")
+    unexpected = [o for o in owners if not owner_expected(o, expected_owners)]
+    add("owners", not unexpected, "; ".join(f"{owner_label(o)}" for o in unexpected),
+        "Remove the owner " + ", ".join(owner_name(o) for o in unexpected) + "; manage through admin roles (an app owner can add credentials, a privilege path)")
 
     lock = app.get("servicePrincipalLockConfiguration") or {}
     detail = "servicePrincipalLockConfiguration is not enabled"
@@ -279,6 +297,8 @@ def check_app(app: dict, by_object: dict, by_app: dict, exchange: Optional[dict]
         loopback = host in LOOPBACK_HOSTS
         if "*" in uri:
             bad.append(f"{uri} ({where}, wildcard)")
+        elif loopback and where == "public client" and scheme in ("http", "https"):
+            continue  # RFC 8252: a native app listens on a loopback port; any environment
         elif loopback and env != "Dev":
             bad.append(f"{uri} ({where}, localhost on a non-Dev app)")
         elif scheme == "https":
@@ -289,7 +309,7 @@ def check_app(app: dict, by_object: dict, by_app: dict, exchange: Optional[dict]
             bad.append(f"{uri} ({where}, not https)")
     add("redirect-uris", not bad, "; ".join(bad),
         "Remove or replace with exact HTTPS URIs: " + ", ".join(b.split(" (")[0] for b in bad) + (
-            "" if env == "Dev" else " (http://localhost is allowed only on Dev apps)"))
+            "" if env == "Dev" else " (loopback is allowed on web/SPA URIs of Dev apps only; on publicClient URIs of any app)"))
 
     problems = []
     fixes = []
@@ -377,6 +397,7 @@ def check_app(app: dict, by_object: dict, by_app: dict, exchange: Optional[dict]
     return AppReport(
         name=name, app_id=app.get("appId", ""), object_id=app.get("id", ""), kind=kind, product=product, env=env, results=results,
         app_permissions=sorted(app_perms), delegated_permissions=sorted(perms["delegated"]["consented"] | perms["delegated"]["declared"]),
+        owners=[owner_label(o) for o in owners],
     )
 
 
@@ -448,9 +469,10 @@ def check_external(sp: dict, by_object: dict) -> dict:
 # ── report ───────────────────────────────────────────────────────────────────────────────────────────────
 
 
-def build(graph: dict, exchange: Optional[dict], products: list[str], now: dt.datetime) -> dict:
+def build(graph: dict, exchange: Optional[dict], products: list[str], now: dt.datetime, expected_owners: frozenset[str] = frozenset()) -> dict:
     by_object, by_app = index_resources(graph.get("resources") or {})
-    reports = [check_app(a, by_object, by_app, exchange, products, now) for a in graph.get("applications") or []]
+    expected_owners = frozenset(str(o).strip().lower() for o in expected_owners)
+    reports = [check_app(a, by_object, by_app, exchange, products, now, expected_owners) for a in graph.get("applications") or []]
     reports.sort(key=lambda r: (r.kind == "unknown", r.product, r.env, r.kind != "signin", r.name))
 
     # Expected pair per (product, env): the other half is missing
@@ -567,6 +589,7 @@ def render_markdown(report: dict) -> str:
             out.append(f"\nApplication permissions: {', '.join(app['app_permissions'])}")
         if app["delegated_permissions"]:
             out.append(f"\nDelegated permissions: {', '.join(app['delegated_permissions'])}")
+        out.append(f"\nOwners (information): {', '.join(app['owners']) if app['owners'] else 'none'}")
         out += ["", "| Rule | Result | Detail |", "| :--- | :--- | :--- |"]
         for r in app["results"]:
             out.append(f"| {RULES[r['rule']]} | **{r['status']}** | {md_cell(r['detail'])} |")
@@ -588,6 +611,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--exchange")
     ap.add_argument("--out", help="where to write the report (default: the directory)")
     ap.add_argument("--products", default=",".join(DEFAULT_PRODUCTS), help="product names that prefix the app display names")
+    ap.add_argument("--expected-owners", default="", help="comma-separated UPNs, display names or object ids that may own an app (default: none)")
     ap.add_argument("--now", help="ISO time to judge expiry at (default: now; for tests)")
     args = ap.parse_args(argv)
     if sys.version_info < (3, 10):
@@ -614,7 +638,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         print("--now is not an ISO time", file=sys.stderr)
         return 2
 
-    report = build(graph, exchange, [p.strip() for p in args.products.split(",") if p.strip()], now)
+    expected = frozenset(o.strip().lower() for o in args.expected_owners.split(",") if o.strip())
+    report = build(graph, exchange, [p.strip() for p in args.products.split(",") if p.strip()], now, expected)
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "entra-audit-report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     markdown = render_markdown(report)

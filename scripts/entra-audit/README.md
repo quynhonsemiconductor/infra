@@ -17,11 +17,11 @@ follow the naming is reported as UNKNOWN and gets only the rules that hold for e
 | `mail-app-permission` | all | any `Mail.*` or `full_access_as_app` **application** permission is consented **or declared** |
 | `sites-scope` | all | `Sites.Read.All`, `ReadWrite.All`, `FullControl.All` or `Manage.All` (use `Sites.Selected`) |
 | `unscoped-app-permission-only-on-service` | sign-in and UNKNOWN apps | any application permission at all |
-| `owners` | all | fewer than 2 owners |
+| `owners` | all | **any** owner (user or service principal) that is not on the expected list. An app owner can add credentials, which is a privilege path: manage through admin roles. 0 owners passes; owners are listed per app as information |
 | `lock` | all | `servicePrincipalLockConfiguration.isEnabled` is not true |
 | `notes` | all | Notes is empty |
 | `implicit-grant` | all | ID-token or access-token implicit grant is on |
-| `redirect-uris` | all | a redirect URI (web, SPA, public client) is a wildcard or not `https://`; `localhost`, `127.0.0.1` and `[::1]` fail in **any** scheme on a non-Dev app, and on a Dev app only `https` or `http` loopback pass |
+| `redirect-uris` | all | a redirect URI (web, SPA, public client) is a wildcard or not `https://`. Loopback (`localhost`, `127.0.0.1`, `[::1]`, http or https) is allowed on **publicClient** URIs of any app (RFC 8252 native apps), and on web/SPA URIs of Dev apps only (https, or http loopback); it fails on web/SPA URIs of every other app |
 | `credential-expiry` | all | a secret or certificate is expired, expires within 30 days, or has an unreadable end date |
 | `signin-delegated-only` | sign-in | a delegated permission other than openid, profile, email, offline_access, User.Read |
 | `signin-secret-lifetime` | sign-in | a client secret valid for more than 6 calendar months (184 days) |
@@ -71,6 +71,7 @@ OUT=~/entra-audit-$(date +%F)
 
 az login --tenant <tenant>.onmicrosoft.com --allow-no-subscriptions   # --allow-no-subscriptions: this account may have none
 scripts/entra-audit/entra-audit.sh "$OUT"                    # 1. Graph data + first report (prints the user and tenant it reads as)
+#   add --expected-owners "a@example.com,b@example.com" to NOT flag those owners (UPN, display name or object id; default: none)
 pwsh scripts/entra-audit/exchange-rbac-audit.ps1 "$OUT"      # 2. Exchange RBAC (signs in to Exchange Online interactively)
 scripts/entra-audit/entra-audit.sh --report-only "$OUT"      # 3. final report, now with the mail-RBAC rules
 ```

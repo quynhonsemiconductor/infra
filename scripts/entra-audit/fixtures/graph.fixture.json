@@ -62,18 +62,7 @@
         "isEnabled": true,
         "allProperties": true
       },
-      "owners": [
-        {
-          "type": "user",
-          "displayName": "Owner 1",
-          "userPrincipalName": "owner1@example.invalid"
-        },
-        {
-          "type": "user",
-          "displayName": "Owner 2",
-          "userPrincipalName": "owner2@example.invalid"
-        }
-      ],
+      "owners": [],
       "federatedCredentials": [],
       "servicePrincipal": {
         "id": "3000a000-0000-4000-8000-000000000000",
@@ -133,18 +122,7 @@
         "isEnabled": true,
         "allProperties": true
       },
-      "owners": [
-        {
-          "type": "user",
-          "displayName": "Owner 1",
-          "userPrincipalName": "owner1@example.invalid"
-        },
-        {
-          "type": "user",
-          "displayName": "Owner 2",
-          "userPrincipalName": "owner2@example.invalid"
-        }
-      ],
+      "owners": [],
       "federatedCredentials": [],
       "servicePrincipal": {
         "id": "3000bb00-0000-4000-8000-000000000000",
@@ -194,18 +172,7 @@
         "isEnabled": true,
         "allProperties": true
       },
-      "owners": [
-        {
-          "type": "user",
-          "displayName": "Owner 1",
-          "userPrincipalName": "owner1@example.invalid"
-        },
-        {
-          "type": "user",
-          "displayName": "Owner 2",
-          "userPrincipalName": "owner2@example.invalid"
-        }
-      ],
+      "owners": [],
       "federatedCredentials": [],
       "servicePrincipal": {
         "id": "3000a200-0000-4000-8000-000000000000",
@@ -281,7 +248,8 @@
         {
           "type": "user",
           "displayName": "Owner 1",
-          "userPrincipalName": "owner1@example.invalid"
+          "userPrincipalName": "owner1@example.invalid",
+          "id": "90000001"
         }
       ],
       "federatedCredentials": [],
@@ -369,7 +337,8 @@
         {
           "type": "user",
           "displayName": "Owner 1",
-          "userPrincipalName": "owner1@example.invalid"
+          "userPrincipalName": "owner1@example.invalid",
+          "id": "90000001"
         }
       ],
       "federatedCredentials": [],
@@ -423,18 +392,7 @@
         "isEnabled": true,
         "allProperties": true
       },
-      "owners": [
-        {
-          "type": "user",
-          "displayName": "Owner 1",
-          "userPrincipalName": "owner1@example.invalid"
-        },
-        {
-          "type": "user",
-          "displayName": "Owner 2",
-          "userPrincipalName": "owner2@example.invalid"
-        }
-      ],
+      "owners": [],
       "federatedCredentials": [],
       "servicePrincipal": {
         "id": "3000dd00-0000-4000-8000-000000000000",
@@ -476,18 +434,7 @@
         "isEnabled": true,
         "allProperties": true
       },
-      "owners": [
-        {
-          "type": "user",
-          "displayName": "Owner 1",
-          "userPrincipalName": "owner1@example.invalid"
-        },
-        {
-          "type": "user",
-          "displayName": "Owner 2",
-          "userPrincipalName": "owner2@example.invalid"
-        }
-      ],
+      "owners": [],
       "federatedCredentials": [],
       "servicePrincipal": {
         "id": "3000a600-0000-4000-8000-000000000000",
