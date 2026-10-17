@@ -1,0 +1,571 @@
+{
+  "collectedAt": "2026-10-18T00:00:00Z",
+  "applications": [
+    {
+      "id": "10000100-0000-4000-8000-000000000000",
+      "appId": "20000100-0000-4000-8000-000000000000",
+      "displayName": "Rova Prod",
+      "signInAudience": "AzureADMyOrg",
+      "notes": "https://example.invalid/org/repo",
+      "web": {
+        "redirectUris": [
+          "https://app.example.invalid/auth/callback"
+        ],
+        "implicitGrantSettings": {
+          "enableIdTokenIssuance": false,
+          "enableAccessTokenIssuance": false
+        }
+      },
+      "spa": {
+        "redirectUris": []
+      },
+      "publicClient": {
+        "redirectUris": []
+      },
+      "requiredResourceAccess": [
+        {
+          "resourceAppId": "00000003-0000-0000-c000-000000000000",
+          "resourceAccess": [
+            {
+              "id": "e0000000-0000-4000-8000-000000000001",
+              "type": "Scope"
+            },
+            {
+              "id": "e0000000-0000-4000-8000-000000000002",
+              "type": "Scope"
+            },
+            {
+              "id": "e0000000-0000-4000-8000-000000000003",
+              "type": "Scope"
+            },
+            {
+              "id": "e0000000-0000-4000-8000-000000000004",
+              "type": "Scope"
+            },
+            {
+              "id": "e0000000-0000-4000-8000-000000000005",
+              "type": "Scope"
+            }
+          ]
+        }
+      ],
+      "passwordCredentials": [
+        {
+          "keyId": "c0000000-0000-4000-8000-000000000001",
+          "displayName": "web secret",
+          "startDateTime": "2026-09-01T00:00:00Z",
+          "endDateTime": "2027-01-31T00:00:00Z"
+        }
+      ],
+      "keyCredentials": [],
+      "servicePrincipalLockConfiguration": {
+        "isEnabled": true,
+        "allProperties": true
+      },
+      "owners": [
+        {
+          "type": "user",
+          "displayName": "Owner 1",
+          "userPrincipalName": "owner1@example.invalid"
+        },
+        {
+          "type": "user",
+          "displayName": "Owner 2",
+          "userPrincipalName": "owner2@example.invalid"
+        }
+      ],
+      "federatedCredentials": [],
+      "servicePrincipal": {
+        "id": "3000a000-0000-4000-8000-000000000000",
+        "appRoleAssignmentRequired": true,
+        "appRoleAssignments": [],
+        "oauth2PermissionGrants": [
+          {
+            "resourceId": "aaaaaaaa-0000-4000-8000-00000000000a",
+            "consentType": "AllPrincipals",
+            "scope": "openid profile email offline_access User.Read"
+          }
+        ]
+      }
+    },
+    {
+      "id": "10000200-0000-4000-8000-000000000000",
+      "appId": "20000200-0000-4000-8000-000000000000",
+      "displayName": "Rova Prod Service",
+      "signInAudience": "AzureADMyOrg",
+      "notes": "https://example.invalid/org/repo",
+      "web": {
+        "redirectUris": [
+          "https://app.example.invalid/auth/callback"
+        ],
+        "implicitGrantSettings": {
+          "enableIdTokenIssuance": false,
+          "enableAccessTokenIssuance": false
+        }
+      },
+      "spa": {
+        "redirectUris": []
+      },
+      "publicClient": {
+        "redirectUris": []
+      },
+      "requiredResourceAccess": [
+        {
+          "resourceAppId": "00000003-0000-0000-c000-000000000000",
+          "resourceAccess": [
+            {
+              "id": "f0000000-0000-4000-8000-000000000002",
+              "type": "Role"
+            }
+          ]
+        }
+      ],
+      "passwordCredentials": [],
+      "keyCredentials": [
+        {
+          "keyId": "c0000000-0000-4000-8000-000000000002",
+          "displayName": "worker cert",
+          "startDateTime": "2026-08-01T00:00:00Z",
+          "endDateTime": "2027-08-01T00:00:00Z"
+        }
+      ],
+      "servicePrincipalLockConfiguration": {
+        "isEnabled": true,
+        "allProperties": true
+      },
+      "owners": [
+        {
+          "type": "user",
+          "displayName": "Owner 1",
+          "userPrincipalName": "owner1@example.invalid"
+        },
+        {
+          "type": "user",
+          "displayName": "Owner 2",
+          "userPrincipalName": "owner2@example.invalid"
+        }
+      ],
+      "federatedCredentials": [],
+      "servicePrincipal": {
+        "id": "3000bb00-0000-4000-8000-000000000000",
+        "appRoleAssignmentRequired": false,
+        "appRoleAssignments": [
+          {
+            "resourceId": "aaaaaaaa-0000-4000-8000-00000000000a",
+            "appRoleId": "f0000000-0000-4000-8000-000000000002"
+          }
+        ],
+        "oauth2PermissionGrants": []
+      }
+    },
+    {
+      "id": "10000300-0000-4000-8000-000000000000",
+      "appId": "20000300-0000-4000-8000-000000000000",
+      "displayName": "Rova Dev",
+      "signInAudience": "AzureADMyOrg",
+      "notes": "https://example.invalid/org/repo",
+      "web": {
+        "redirectUris": [
+          "https://dev.example.invalid/cb",
+          "http://localhost:3000/cb"
+        ],
+        "implicitGrantSettings": {
+          "enableIdTokenIssuance": false,
+          "enableAccessTokenIssuance": false
+        }
+      },
+      "spa": {
+        "redirectUris": []
+      },
+      "publicClient": {
+        "redirectUris": []
+      },
+      "requiredResourceAccess": [],
+      "passwordCredentials": [
+        {
+          "keyId": "c0000000-0000-4000-8000-000000000003",
+          "displayName": "dev secret",
+          "startDateTime": "2026-09-01T00:00:00Z",
+          "endDateTime": "2027-01-01T00:00:00Z"
+        }
+      ],
+      "keyCredentials": [],
+      "servicePrincipalLockConfiguration": {
+        "isEnabled": true,
+        "allProperties": true
+      },
+      "owners": [
+        {
+          "type": "user",
+          "displayName": "Owner 1",
+          "userPrincipalName": "owner1@example.invalid"
+        },
+        {
+          "type": "user",
+          "displayName": "Owner 2",
+          "userPrincipalName": "owner2@example.invalid"
+        }
+      ],
+      "federatedCredentials": [],
+      "servicePrincipal": {
+        "id": "3000a200-0000-4000-8000-000000000000",
+        "appRoleAssignmentRequired": true,
+        "appRoleAssignments": [],
+        "oauth2PermissionGrants": [
+          {
+            "resourceId": "aaaaaaaa-0000-4000-8000-00000000000a",
+            "consentType": "AllPrincipals",
+            "scope": "openid profile email offline_access User.Read"
+          }
+        ]
+      }
+    },
+    {
+      "id": "10000400-0000-4000-8000-000000000000",
+      "appId": "20000400-0000-4000-8000-000000000000",
+      "displayName": "OpsHub Prod",
+      "signInAudience": "AzureADMultipleOrgs",
+      "notes": "",
+      "web": {
+        "redirectUris": [
+          "https://ops.example.invalid/cb",
+          "http://localhost:3000/cb"
+        ],
+        "implicitGrantSettings": {
+          "enableIdTokenIssuance": true,
+          "enableAccessTokenIssuance": false
+        }
+      },
+      "spa": {
+        "redirectUris": []
+      },
+      "publicClient": {
+        "redirectUris": []
+      },
+      "requiredResourceAccess": [
+        {
+          "resourceAppId": "00000003-0000-0000-c000-000000000000",
+          "resourceAccess": [
+            {
+              "id": "e0000000-0000-4000-8000-000000000001",
+              "type": "Scope"
+            },
+            {
+              "id": "e0000000-0000-4000-8000-000000000005",
+              "type": "Scope"
+            },
+            {
+              "id": "e0000000-0000-4000-8000-000000000006",
+              "type": "Scope"
+            },
+            {
+              "id": "f0000000-0000-4000-8000-000000000003",
+              "type": "Role"
+            }
+          ]
+        }
+      ],
+      "passwordCredentials": [
+        {
+          "keyId": "c0000000-0000-4000-8000-000000000004",
+          "displayName": "long secret",
+          "startDateTime": "2026-01-01T00:00:00Z",
+          "endDateTime": "2027-03-01T00:00:00Z"
+        }
+      ],
+      "keyCredentials": [],
+      "servicePrincipalLockConfiguration": {
+        "isEnabled": false
+      },
+      "owners": [
+        {
+          "type": "user",
+          "displayName": "Owner 1",
+          "userPrincipalName": "owner1@example.invalid"
+        }
+      ],
+      "federatedCredentials": [],
+      "servicePrincipal": {
+        "id": "3000a300-0000-4000-8000-000000000000",
+        "appRoleAssignmentRequired": false,
+        "appRoleAssignments": [
+          {
+            "resourceId": "aaaaaaaa-0000-4000-8000-00000000000a",
+            "appRoleId": "f0000000-0000-4000-8000-000000000003"
+          }
+        ],
+        "oauth2PermissionGrants": [
+          {
+            "resourceId": "aaaaaaaa-0000-4000-8000-00000000000a",
+            "consentType": "AllPrincipals",
+            "scope": "openid User.Read Mail.ReadWrite"
+          }
+        ]
+      }
+    },
+    {
+      "id": "10000500-0000-4000-8000-000000000000",
+      "appId": "20000500-0000-4000-8000-000000000000",
+      "displayName": "OpsHub Prod Service",
+      "signInAudience": "AzureADMyOrg",
+      "notes": "https://example.invalid/org/repo",
+      "web": {
+        "redirectUris": [
+          "https://app.example.invalid/auth/callback"
+        ],
+        "implicitGrantSettings": {
+          "enableIdTokenIssuance": false,
+          "enableAccessTokenIssuance": false
+        }
+      },
+      "spa": {
+        "redirectUris": []
+      },
+      "publicClient": {
+        "redirectUris": []
+      },
+      "requiredResourceAccess": [
+        {
+          "resourceAppId": "00000003-0000-0000-c000-000000000000",
+          "resourceAccess": [
+            {
+              "id": "f0000000-0000-4000-8000-000000000001",
+              "type": "Role"
+            },
+            {
+              "id": "f0000000-0000-4000-8000-000000000004",
+              "type": "Role"
+            }
+          ]
+        }
+      ],
+      "passwordCredentials": [
+        {
+          "keyId": "c0000000-0000-4000-8000-000000000005",
+          "displayName": "graph secret",
+          "startDateTime": "2026-05-01T00:00:00Z",
+          "endDateTime": "2026-12-01T00:00:00Z"
+        }
+      ],
+      "keyCredentials": [
+        {
+          "keyId": "c0000000-0000-4000-8000-000000000006",
+          "displayName": "cert expiring",
+          "startDateTime": "2025-10-25T00:00:00Z",
+          "endDateTime": "2026-10-28T00:00:00Z"
+        },
+        {
+          "keyId": "c0000000-0000-4000-8000-000000000007",
+          "displayName": "cert expired",
+          "startDateTime": "2025-01-01T00:00:00Z",
+          "endDateTime": "2026-09-30T00:00:00Z"
+        }
+      ],
+      "servicePrincipalLockConfiguration": {
+        "isEnabled": true,
+        "allProperties": true
+      },
+      "owners": [
+        {
+          "type": "user",
+          "displayName": "Owner 1",
+          "userPrincipalName": "owner1@example.invalid"
+        }
+      ],
+      "federatedCredentials": [],
+      "servicePrincipal": {
+        "id": "3000cc00-0000-4000-8000-000000000000",
+        "appRoleAssignmentRequired": false,
+        "appRoleAssignments": [
+          {
+            "resourceId": "aaaaaaaa-0000-4000-8000-00000000000a",
+            "appRoleId": "f0000000-0000-4000-8000-000000000001"
+          }
+        ],
+        "oauth2PermissionGrants": []
+      }
+    },
+    {
+      "id": "10000600-0000-4000-8000-000000000000",
+      "appId": "20000600-0000-4000-8000-000000000000",
+      "displayName": "QNSC KB SSO",
+      "signInAudience": "AzureADMyOrg",
+      "notes": "https://example.invalid/org/repo",
+      "web": {
+        "redirectUris": [
+          "https://app.example.invalid/auth/callback"
+        ],
+        "implicitGrantSettings": {
+          "enableIdTokenIssuance": false,
+          "enableAccessTokenIssuance": false
+        }
+      },
+      "spa": {
+        "redirectUris": []
+      },
+      "publicClient": {
+        "redirectUris": []
+      },
+      "requiredResourceAccess": [
+        {
+          "resourceAppId": "00000003-0000-0000-c000-000000000000",
+          "resourceAccess": [
+            {
+              "id": "f0000000-0000-4000-8000-000000000001",
+              "type": "Role"
+            }
+          ]
+        }
+      ],
+      "passwordCredentials": [],
+      "keyCredentials": [],
+      "servicePrincipalLockConfiguration": {
+        "isEnabled": true,
+        "allProperties": true
+      },
+      "owners": [
+        {
+          "type": "user",
+          "displayName": "Owner 1",
+          "userPrincipalName": "owner1@example.invalid"
+        },
+        {
+          "type": "user",
+          "displayName": "Owner 2",
+          "userPrincipalName": "owner2@example.invalid"
+        }
+      ],
+      "federatedCredentials": [],
+      "servicePrincipal": {
+        "id": "3000dd00-0000-4000-8000-000000000000",
+        "appRoleAssignmentRequired": false,
+        "appRoleAssignments": [
+          {
+            "resourceId": "aaaaaaaa-0000-4000-8000-00000000000a",
+            "appRoleId": "f0000000-0000-4000-8000-000000000001"
+          }
+        ],
+        "oauth2PermissionGrants": []
+      }
+    },
+    {
+      "id": "10000700-0000-4000-8000-000000000000",
+      "appId": "20000700-0000-4000-8000-000000000000",
+      "displayName": "KB Prod",
+      "signInAudience": "AzureADMyOrg",
+      "notes": "https://example.invalid/org/repo",
+      "web": {
+        "redirectUris": [
+          "https://app.example.invalid/auth/callback"
+        ],
+        "implicitGrantSettings": {
+          "enableIdTokenIssuance": false,
+          "enableAccessTokenIssuance": false
+        }
+      },
+      "spa": {
+        "redirectUris": []
+      },
+      "publicClient": {
+        "redirectUris": []
+      },
+      "requiredResourceAccess": [],
+      "passwordCredentials": [],
+      "keyCredentials": [],
+      "servicePrincipalLockConfiguration": {
+        "isEnabled": true,
+        "allProperties": true
+      },
+      "owners": [
+        {
+          "type": "user",
+          "displayName": "Owner 1",
+          "userPrincipalName": "owner1@example.invalid"
+        },
+        {
+          "type": "user",
+          "displayName": "Owner 2",
+          "userPrincipalName": "owner2@example.invalid"
+        }
+      ],
+      "federatedCredentials": [],
+      "servicePrincipal": {
+        "id": "3000a600-0000-4000-8000-000000000000",
+        "appRoleAssignmentRequired": true,
+        "appRoleAssignments": [],
+        "oauth2PermissionGrants": [
+          {
+            "resourceId": "aaaaaaaa-0000-4000-8000-00000000000a",
+            "consentType": "AllPrincipals",
+            "scope": "openid profile email offline_access User.Read"
+          }
+        ]
+      }
+    }
+  ],
+  "resources": {
+    "aaaaaaaa-0000-4000-8000-00000000000a": {
+      "appId": "00000003-0000-0000-c000-000000000000",
+      "displayName": "Microsoft Graph",
+      "appRoles": [
+        {
+          "id": "f0000000-0000-4000-8000-000000000001",
+          "value": "Mail.Send",
+          "displayName": "Mail.Send"
+        },
+        {
+          "id": "f0000000-0000-4000-8000-000000000002",
+          "value": "User.Invite.All",
+          "displayName": "User.Invite.All"
+        },
+        {
+          "id": "f0000000-0000-4000-8000-000000000003",
+          "value": "User.Read.All",
+          "displayName": "User.Read.All"
+        },
+        {
+          "id": "f0000000-0000-4000-8000-000000000004",
+          "value": "Sites.ReadWrite.All",
+          "displayName": "Sites.ReadWrite.All"
+        },
+        {
+          "id": "f0000000-0000-4000-8000-000000000005",
+          "value": "Sites.Selected",
+          "displayName": "Sites.Selected"
+        }
+      ],
+      "oauth2PermissionScopes": [
+        {
+          "id": "e0000000-0000-4000-8000-000000000001",
+          "value": "openid",
+          "displayName": "openid"
+        },
+        {
+          "id": "e0000000-0000-4000-8000-000000000002",
+          "value": "profile",
+          "displayName": "profile"
+        },
+        {
+          "id": "e0000000-0000-4000-8000-000000000003",
+          "value": "email",
+          "displayName": "email"
+        },
+        {
+          "id": "e0000000-0000-4000-8000-000000000004",
+          "value": "offline_access",
+          "displayName": "offline_access"
+        },
+        {
+          "id": "e0000000-0000-4000-8000-000000000005",
+          "value": "User.Read",
+          "displayName": "User.Read"
+        },
+        {
+          "id": "e0000000-0000-4000-8000-000000000006",
+          "value": "Mail.ReadWrite",
+          "displayName": "Mail.ReadWrite"
+        }
+      ]
+    }
+  }
+}

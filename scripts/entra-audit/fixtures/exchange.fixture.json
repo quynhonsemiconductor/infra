@@ -1,0 +1,62 @@
+{
+  "collectedAt": "2026-10-18T00:00:00Z",
+  "servicePrincipals": [
+    {
+      "AppId": "20000200-0000-4000-8000-000000000000",
+      "ObjectId": "3000bb00-0000-4000-8000-000000000000",
+      "DisplayName": "Rova Prod Service"
+    },
+    {
+      "AppId": "20000500-0000-4000-8000-000000000000",
+      "ObjectId": "3000cc00-0000-4000-8000-000000000000",
+      "DisplayName": "OpsHub Prod Service"
+    },
+    {
+      "AppId": "20000400-0000-4000-8000-000000000000",
+      "ObjectId": "3000a300-0000-4000-8000-000000000000",
+      "DisplayName": "OpsHub Prod"
+    }
+  ],
+  "roleAssignments": [
+    {
+      "Name": "rova-mail",
+      "Role": "Application Mail.Send",
+      "RoleAssignee": "3000bb00-0000-4000-8000-000000000000",
+      "RoleAssigneeName": "3000bb00-0000-4000-8000-000000000000",
+      "CustomResourceScope": "rova-mailbox"
+    },
+    {
+      "Name": "ops-mail",
+      "Role": "Application Mail.Send",
+      "RoleAssignee": "3000cc00-0000-4000-8000-000000000000",
+      "RoleAssigneeName": "3000cc00-0000-4000-8000-000000000000",
+      "CustomResourceScope": null
+    },
+    {
+      "Name": "ops-signin-mail",
+      "Role": "Application Mail.Send",
+      "RoleAssignee": "3000a300-0000-4000-8000-000000000000",
+      "RoleAssigneeName": "3000a300-0000-4000-8000-000000000000",
+      "CustomResourceScope": "ops-mailbox"
+    },
+    {
+      "Name": "stray",
+      "Role": "Application Mail.Send",
+      "RoleAssignee": "someone-else",
+      "RoleAssigneeName": "someone-else",
+      "CustomResourceScope": null
+    }
+  ],
+  "managementScopes": [
+    {
+      "Name": "rova-mailbox",
+      "ScopeRestrictionType": "RecipientScope",
+      "RecipientFilter": "PrimarySmtpAddress -eq 'noreply-rova@example.invalid'"
+    },
+    {
+      "Name": "ops-mailbox",
+      "ScopeRestrictionType": "RecipientScope",
+      "RecipientFilter": "PrimarySmtpAddress -eq 'noreply-opshub@example.invalid'"
+    }
+  ]
+}
