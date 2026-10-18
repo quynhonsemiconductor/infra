@@ -1,80 +1,94 @@
 # Entra sign-in app hygiene (owner runbook)
 
-Fixes the four findings of the 2026-10-18 audit (`scripts/entra-audit`) for the sign-in apps:
+Fixes the audit findings (`scripts/entra-audit`, 2026-10-18) for the sign-in apps:
 
-1. **Assignment required**: only people in the right groups can sign in (`appRoleAssignmentRequired = true`). OpsHub and KB only; Rova is excluded, see "Why Rova is not on assignment".
-2. **Secret lifetime ≤ 180 days**: rotate each client secret with no downtime.
-3. **Notes**: the repo link on every known app. **Lock** on "Claude for Outlook".
+1. **Assignment required** for OpsHub and KB: only people in the right groups can sign in.
+2. **Secret lifetime ≤ 180 days**: rotate each client secret with no downtime, for every sign-in app.
+3. **Notes** (repo link) on the known apps, and the **instance lock** on "Claude for Outlook".
 
-`hygiene.py` does the work. You run it in your own terminal. It makes Entra calls with your `az` login (an Entra admin)
-and AWS calls with `--profile qnsc-admin`. It never prints a secret value, takes secrets only from memory or stdin, and
-asks `y` before every write. Nothing here runs in CI.
+Rova is not on assignment: see "Why Rova is not on assignment". Rova gets rotation and Notes only.
 
-This folder is in a **public repository**, so it holds no tenant, app or object IDs. Keep any output directory outside
-the repo.
+`hygiene.py` does the work, in your own terminal. Entra calls use your `az` login (an Entra admin). AWS calls use
+`--profile qnsc-admin`. Secret values stay in memory and on stdin: never printed, never on a command line, never on disk.
+Every write prints its plan and asks `y`. Production writes also ask you to type the app name. Nothing runs in CI.
+
+This folder is in a **public repository**: no tenant, app or object IDs here. Keep any output directory outside the repo.
 
 ## Before you start (once)
 
-1. Python 3.10 or newer: `python3 -V`. Install with `brew install python` if older.
-2. Azure CLI and AWS CLI v2: `brew install azure-cli awscli`.
-3. Check the AWS profile works: `aws sts get-caller-identity --profile qnsc-admin` must print account `608983206583`.
-4. Sign in to Entra with an admin account that can write apps and groups (Application Administrator and Groups
-   Administrator, or Global Administrator). Sign-in logs need Reports Reader or Global Reader too:
+1. Python 3.10 or newer (`python3 -V`; `brew install python` if older), Azure CLI and AWS CLI v2
+   (`brew install azure-cli awscli`).
+2. Check AWS: `aws sts get-caller-identity --profile qnsc-admin` must print account `608983206583`.
+3. Sign in to Entra with an admin account that can write apps and groups, and that can read the sign-in log
+   (Reports Reader or Global Reader):
    ```bash
    az login --tenant <your-tenant>.onmicrosoft.com --allow-no-subscriptions
    ```
-5. Run the tests once (no tenant needed):
+4. Run the tests (no tenant needed):
    ```bash
-   cd <your clone of infra>
    python3 -m unittest scripts/owner/entra-hygiene/test_hygiene.py -v
    ```
-6. Check the license. Dynamic groups (`opshub-users`, `kb-users`) need **Microsoft Entra ID P1** or better.
-   If the tenant does not have it, tell the architect before running `setup`; the fallback is an assigned group filled by
-   hand (see the decisions list below).
+5. **Entra ID P1** is needed for the dynamic groups (`opshub-users`, `kb-users`). `setup` checks for an assigned P1 plan
+   and stops if it finds none. The check is a proxy: it looks for an assigned AAD_PREMIUM plan, not your exact license.
 
-Every command below takes `--product` and `--env`. The known products are `rova` (dev, prod), `opshub` (dev), `kb` (dev). For `rova`, only `rotate` and `notes` apply.
+Commands take `--product` and `--env`. Environments are `develop` and `production` (the names in the bundles and the
+infra stacks). Products: `rova` (develop, production), `opshub` (develop), `kb` (develop). For production add `--prod`.
 
-## Track 1: assignment required (OpsHub and KB, dev first)
+## Track 1: assignment required (OpsHub and KB, develop first)
 
-Rova is not in this track. See "Why Rova is not on assignment" below. Each product gets two groups: `<product>-users` (dynamic: every licensed internal Member) and `<product>-guests` (assigned: filled by hand).
+Each product gets two groups:
 
-For each product, in this order. Prod (`--env prod`) is a separate decision, do it only after the owner's "go".
+- `<product>-users`: **dynamic**, every internal Member with an enabled account (`user.userType -eq "Member"` and
+  `user.accountEnabled -eq true`).
+- `<product>-guests`: **assigned**, filled by hand with the people outside that rule.
+
+### OpsHub only: the App Role `employee` (one-time owner step)
+
+OpsHub's staff sign-in maps Entra App Roles to its own roles. The role `employee` is the ordinary staff role: it grants no
+permission, and a user with no App Role gets exactly the same role. So the groups are assigned to the App Role
+`employee`, and everyone else keeps any direct assignment they have.
+
+```bash
+python3 scripts/owner/entra-hygiene/hygiene.py add-role --product opshub --env develop
+```
+It adds the role if missing and reads it back. It keeps any App Roles already on the app.
+
+### Steps
 
 1. **Read the current state (read-only):**
    ```bash
-   python3 scripts/owner/entra-hygiene/hygiene.py status --product kb --env dev
+   python3 scripts/owner/entra-hygiene/hygiene.py status --product kb --env develop
    ```
-2. **Create the groups and assign them to the app.** Asks `y` once. Re-running is safe.
+2. **Create the groups and assign them.** Re-running is safe. A group that exists with other settings stops the run.
    ```bash
-   python3 scripts/owner/entra-hygiene/hygiene.py setup --product kb --env dev
+   python3 scripts/owner/entra-hygiene/hygiene.py setup --product kb --env develop
    ```
-   If it stops with "defines app roles", the app has its own roles. Stop and tell the architect; this helper assigns
-   default access only.
-3. **Add the people who need access but are outside the dynamic rule**, usually external guests. One command per
-   person, into the assigned `<product>-guests` group:
+3. **Add anyone outside the dynamic rule** (usually external guests) to the assigned group. If there are none, skip this.
    ```bash
-   python3 scripts/owner/entra-hygiene/hygiene.py add-member --product kb --env dev --group kb-guests --upn guest@example.com
+   python3 scripts/owner/entra-hygiene/hygiene.py add-member --product kb --env develop --group kb-guests --upn guest@example.com
    ```
-   If there are none, skip this step.
+   The lookup also finds guests by their mail address (their UPN is a `#EXT#` address).
 4. **Check who would lose access (read-only).** It lists everyone who signed in to the app in the last 30 days and is in
-   neither a group nor a direct assignment. Wait a few minutes after `setup` so dynamic groups fill in, then:
+   neither the allowed set. The allowed set is only the app's own assignments: direct user assignments, and members of
+   the product groups that are assigned to the app. A group that exists but is not assigned allows nobody.
    ```bash
-   python3 scripts/owner/entra-hygiene/hygiene.py check --product kb --env dev
+   python3 scripts/owner/entra-hygiene/hygiene.py check --product kb --env develop
    ```
-   Every `WOULD LOSE ACCESS` line must be either added (step 3) or an account that should go. The check reads 30 days of
-   sign-ins. A user who has not signed in for longer is not listed: ask the product owner for the list of people who
-   should keep access, and add them by hand.
+   Every `WOULD LOSE ACCESS` line must be added (step 3) or be an account that should go. A user who has not signed in
+   for 30 days is not listed: ask the product owner for the list of people who should keep access.
 5. **Require assignment.** It runs the check again and refuses if anyone is listed.
    ```bash
-   python3 scripts/owner/entra-hygiene/hygiene.py enforce --product kb --env dev
+   python3 scripts/owner/entra-hygiene/hygiene.py enforce --product kb --env develop
    ```
-6. **Test it:** sign in to the dev product as a staff member, and as a guest in `kb-guests`. Both must work. Sign in as a
-   tenant user who is in no group; that user must be refused.
+6. **Test:** sign in to the develop product as a staff member and as a guest in the guests group. Both must work. A tenant
+   user in no group must be refused.
 
-**Rollback (one line, takes effect at once):**
+**Rollback (one line, at once):**
 ```bash
-python3 scripts/owner/entra-hygiene/hygiene.py rollback --product kb --env dev
+python3 scripts/owner/entra-hygiene/hygiene.py rollback --product kb --env develop
 ```
+
+Then OpsHub the same way (`--product opshub`), after `add-role`.
 
 ## Why Rova is not on assignment
 
@@ -87,42 +101,53 @@ finding "any tenant user can sign in" is accepted for those two apps.
 - Turning assignment on would need the worker to add each invited guest to a group automatically (rova#732). That needs
   `GroupMember.ReadWrite.All` or `AppRoleAssignment.ReadWrite.All`. Both reach every group or every app in the tenant:
   far more reach than the gain. Rejected.
-- Rova is therefore excluded here: `setup`, `add-member`, `check`, `enforce` and `rollback` refuse for `rova`.
-  `status`, `rotate` and `notes` still apply to Rova Dev and Rova Prod.
-- rova#732 is closed with this rationale.
+- So `setup`, `add-role`, `add-member`, `check`, `enforce` and `rollback` refuse for `rova`. `status`, `rotate` and `notes`
+  still apply. rova#732 is closed with this rationale.
 
-## Track 2: secret rotation (dev first)
+## Track 2: secret rotation (every sign-in app, develop first)
 
-Each sign-in app holds one client secret, read by the product's API and worker from the bundle key
-`entra-client-secret`. The rotation adds a second secret, writes it to the bundle, restarts the services, verifies
-sign-in, and only then removes the old secret. The old secret stays valid until the last step, so there is no downtime.
+Each sign-in app's client secret is read by its product from one key in the product's bundle:
 
-Run it once per app (`Rova Dev`, `OpsHub Dev`, `KB Dev`, then `Rova Prod` after the go). You need the ECS cluster and the
-service names that read the bundle. Ask the architect if you do not have them, and check them first:
+| Product | Sign-in app | Bundle (Secrets Manager) | Key |
+| :--- | :--- | :--- | :--- |
+| rova | Rova Dev / Rova Prod | `rova/develop/app` / `rova/production/app` | `entra-client-secret` |
+| opshub | OpsHub Dev | `opshub/develop/app` | `entra-client-secret` |
+| kb | KB Dev | `qnsc-kb/develop/app` | `microsoft-client-secret` (KB reads it for sign-in and the SharePoint connector) |
+
+Find the ECS services that read the bundle first. The command finds them too, and refuses if you miss one:
 ```bash
 aws ecs list-services --cluster <cluster> --profile qnsc-admin --region ap-southeast-1
 ```
 
 ```bash
-python3 scripts/owner/entra-hygiene/hygiene.py rotate --product rova --env dev \
-  --cluster <cluster> --services <api-service>,<worker-service> \
-  --out-dir ~/entra-hygiene-out
+python3 scripts/owner/entra-hygiene/hygiene.py rotate --product rova --env develop \
+  --cluster <cluster> --services <api-service>,<worker-service> --out-dir ~/entra-hygiene-out
 ```
 
-The command asks, in order:
+Before anything is written, the command:
 
-1. Add the new secret (180 days) and write it to the bundle. The new value goes straight from Entra to the bundle
-   through stdin. It is never shown.
-2. Restart the services (rolling). Old tasks keep the old secret until replaced.
-3. Sign in to the dev product **now** in a browser. Then answer `y` to "Did sign-in work?". The command looks for a
-   successful sign-in in the log for up to 5 minutes.
-4. Remove the old secret. Only after step 3 passes.
+- reads the bundle and refuses if the key is missing or not a string;
+- finds the one Entra secret whose hint matches the bundle's current value (refuses if there is not exactly one);
+- scans every service in the cluster and refuses if one reads the bundle but is not in `--services`.
 
-If the sign-in does not show up, the command **rolls back**: it restores the previous bundle value, restarts the
-services, and removes the new secret. The old secret is untouched.
+Then it runs, asking `y` at each step:
 
-It writes a calendar file `rotate-<app>.ics` into `--out-dir`. The event is on the day the next rotation is due: 30 days
-before the new expiry. Open the file to add it to your calendar. Do the same for each app.
+1. Adds a new secret (180 days) and writes it into the bundle key. It reads the bundle back and refuses unless only that key
+   changed. A failed write puts the previous value back and removes the new secret.
+2. Restarts the services (rolling). Old tasks keep the old secret until replaced.
+3. Checks every consumer: exactly one PRIMARY deployment, created after the bundle write, with running equal to desired.
+4. Asks you to sign in to the app **in a private window**, as yourself. It then looks for your successful sign-in in the
+   log (up to about 5 minutes).
+5. Removes only the old secret (the one the bundle held). Other secrets are listed and not touched.
+
+If any check fails, it **rolls back**: restores the previous bundle value, restarts the services, and removes the new
+secret. The old secret stays valid until step 5.
+
+For production, add `--env production --prod`. It also asks you to type the app name (`Rova Prod`), before anything is
+written.
+
+It writes `rotate-<app>.ics` into `--out-dir`: an event on the day the next rotation is due, 30 days before the new expiry.
+Add it to your calendar.
 
 ## Track 3: Notes and the Claude for Outlook lock
 
@@ -131,25 +156,32 @@ Notes (repo link on every known app; existing text is kept unless `--force`):
 python3 scripts/owner/entra-hygiene/hygiene.py notes
 ```
 
-The instance property lock on "Claude for Outlook" (it reads the app back to confirm):
+Instance property lock on "Claude for Outlook" (reads the app back to confirm):
 ```bash
 python3 scripts/owner/entra-hygiene/hygiene.py lock-app --name "Claude for Outlook"
 ```
-If the app is registered in another tenant, this fails with "no application named". That is expected: the lock can only
-be set in the tenant that owns the registration. Tell the architect in that case.
+If it fails with "no application named", the app is registered in another tenant, and the lock can only be set there.
+Tell the architect.
 
 ## Decisions the owner must confirm
 
-- **Who keeps access.** `opshub-users` and `kb-users` default to every licensed internal Member. Confirm
-  this for KB: the KB user population was not known when this was written.
-- **Guests of OpsHub and KB**: who goes into `<product>-guests`, before enforcing.
-- **Claude for Outlook**: its repo for the Notes field, and whether it is in this tenant.
-- **Prod.** Track 1 and Track 2 for `--env prod` only after the owner's "go" and a green dev run.
+- **Who keeps access.** `opshub-users` and `kb-users` default to every enabled internal Member. Confirm for KB: the KB
+  user population was not known when this was written.
+- **Guests** of OpsHub and KB: who goes into `<product>-guests`, before enforcing.
+- **OpsHub:** the App Role `employee` (step above).
+- **Claude for Outlook:** its repo for the Notes field, and whether it is in this tenant.
+- **Production.** Track 1 and Track 2 for production only after the owner's "go" and a green develop run.
 
 ## What was not verified
 
-- Nothing here has run against the real tenant. The tests use a fake Graph and a fake AWS, so the Graph paths and
-  payloads (for example the instance-lock body, `servicePrincipalLockConfiguration`) are from Microsoft's documented
-  schema and must be checked by reading the result of `status` and `lock-app`.
+- Nothing has run against the real tenant, AWS or ECS. The tests use fake Graph, AWS and ECS. Graph payloads, the lock
+  body (`servicePrincipalLockConfiguration`), the sign-in log filters and the ECS output shapes follow the documented
+  schemas. Check each by reading the output of `status`, `check`, `lock-app` and the rotation's own checks.
+- **OpsHub `employee` mapping** was verified by reading the code only (`staff-sign-in.handler.ts`,
+  `authz-admin.service.ts` `syncUserRolesByKeys`, `db/seed.ts`): `employee` is a system role with no permissions, and the
+  sign-in falls back to it when no claim matches, so a token with `employee` and a token with no role give the same
+  roles. The opshub test suite was not run for this.
 - Sign-in logs keep 30 days on P1/P2 and 7 days on the free tier. Check can miss a user who signed in longer ago.
-- The ECS names and the KB user population are not in this repo; the owner supplies them.
+- Other consumers of the sign-in secret outside the ECS services (for example a CI job or a Pages function) are not
+  scanned. Confirm none before rotating.
+- ECS cluster and service names, and the KB user population, are owner inputs.
