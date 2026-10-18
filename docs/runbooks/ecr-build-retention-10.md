@@ -115,14 +115,14 @@ would expire (rule 1 untagged, 2 release, 3 builds, 4 candidate):
 | untagged child of a kept list | per-architecture images and buildx provenance/SBOM manifests of a list the policy keeps | none, by design: ECR does not expire an image a list references |
 | untagged child of an EXPIRING list | the same, once the list goes | rule 1, a day after the list goes |
 | untagged orphan | no list references it | rule 1 after 1 day |
-| referrer artifact (OCI subject) | a signature/attestation pushed with a `subject` (GitHub's `push-to-registry`) | ECR itself: expired within 24 h of its subject's deletion |
+| referrer artifact (OCI subject) | a signature/attestation pushed with an OCI `subject` (possibly what `attest-image` with `push-to-registry` produces; the breakdown shows whether it does) | ECR itself: expired within 24 h of its subject's deletion |
 | referrer-by-tag `sha256-<digest>[.sig/.att/.sbom]` | tag-schema signatures/attestations: ordinary tagged images | **no rule today** |
 | other tagged | everything else (`buildcache`, `pr-N`, ...); the distinct tag shapes are listed | none |
 
 Expected shape, to compare with: a multi-arch build with provenance and SBOM is **5 images** (the list, two architectures, two
-attestation manifests; `build-push-ecr` sets `provenance: mode=max` and `sbom: true`). 28 builds is therefore 140 of rova-api's
-184 images before any release is counted, which is the "85% is not `sha-` tagged" seen: the children of kept lists, which leave
-with their list and are not an accumulation.
+attestation manifests; `build-push-ecr` sets `provenance: mode=max` and `sbom: true`). 28 builds would therefore be 140 of rova-api's 184 images before any release is counted, which is consistent with "85% is not `sha-`
+tagged": the children of kept lists, which leave with their list and are not an accumulation. That is a prediction until the corrected
+run's breakdown confirms it (it prints the children by kind).
 
 The line **Rule 3 (keep the newest N)** ranks the `sha-*` images newest first as ECR does and accounts for each one beyond N:
 `expires by rule 3`, or `KEPT: also tagged v*` (governed by rule 2), or **`NOT SELECTED and unexplained`**. If you ever see the
