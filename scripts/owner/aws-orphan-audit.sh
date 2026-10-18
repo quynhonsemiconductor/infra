@@ -14,6 +14,7 @@
 # Needs: aws CLI v2 and jq. Written for the macOS /bin/bash (3.2): no associative arrays, no mapfile.
 set -euo pipefail
 umask 077
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 PROFILE=qnsc-admin
 REGION=ap-southeast-1
@@ -47,7 +48,8 @@ A() {
     describe-* | list-* | get-*) ;;
     *) die "refusing a call that is not a read: $svc $op" ;;
   esac
-  aws "$svc" "$op" --profile "$PROFILE" --region "$REGION" "$@"
+  # TZ=UTC makes the CLI print UTC timestamps as well; the jq ep helper handles any offset that still arrives.
+  TZ=UTC aws "$svc" "$op" --profile "$PROFILE" --region "$REGION" "$@"
 }
 
 OUT="${1:-$HOME/aws-orphan-audit-$(date +%F)}"
@@ -75,9 +77,8 @@ bytes_to_gb() { awk -v b="$1" 'BEGIN { printf "%.3f", b / 1073741824 }'; }
 CUTOFF="$(date -u -v-"$STALE_DAYS"d +%s 2>/dev/null || date -u -d "$STALE_DAYS days ago" +%s)"
 ago() { date -u -v-"$1"d +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "$1 days ago" +%Y-%m-%dT%H:%M:%SZ; }
 
-# jq helpers: ep parses AWS ISO timestamps to epoch seconds; eks is true when a resource carries an EKS or Karpenter tag.
-JQ_LIB='def ep: sub("\\+00:00$"; "Z") | sub("\\.[0-9]+"; "") | fromdateiso8601;
-def eks: ([.Tags[]?.Key] | join(" ")) | test("kubernetes.io/cluster|karpenter.sh|eks:"; "i");'
+# jq helpers (ep, eks) live in aws-audit-lib.jq so the tests can run the same definitions.
+JQ_LIB="$(cat "$HERE/aws-audit-lib.jq")"
 
 SEC=""
 ROWS=0
@@ -278,7 +279,7 @@ INSTANCES="$(A ec2 describe-instances --output json)"
 jq '[.Reservations[]?.Instances[]?.ImageId] | unique' <<<"$INSTANCES" >"$T/amis-in-use.json"
 AMI_ROWS="$(jq -r --argjson cutoff "$CUTOFF" --slurpfile used "$T/amis-in-use.json" "$JQ_LIB"'
   .Images[]? | select((.CreationDate | ep) < $cutoff) | select([.ImageId] | inside($used[0]) | not)
-  | [.ImageId, .Name, .CreationDate[0:10], ([.BlockDeviceMappings[]?.Ebs.VolumeSize // 0] | add | tostring)] | @tsv' <<<"$AMIS")"
+  | [.ImageId, .Name, (.CreationDate | ep | todate[0:10]),([.BlockDeviceMappings[]?.Ebs.VolumeSize // 0] | add | tostring)] | @tsv' <<<"$AMIS")"
 while IFS=$'\t' read -r id name created gib; do
   [[ -n "$id" ]] || continue
   row "$id ($name)" "AMI created $created, older than $STALE_DAYS days; no instance in this region uses it" "$(gb_cost "$gib" "$RATE_SNAP_GB")"
@@ -289,7 +290,7 @@ SNAPS_EC2="$(A ec2 describe-snapshots --owner-ids "$ACCOUNT" --output json)"
 jq '[.Images[]?.BlockDeviceMappings[]?.Ebs.SnapshotId // empty] | unique' <<<"$AMIS" >"$T/ami-snaps.json"
 SNAP_EC2_ROWS="$(jq -r --argjson cutoff "$CUTOFF" --slurpfile amisnaps "$T/ami-snaps.json" "$JQ_LIB"'
   .Snapshots[]? | select((.StartTime | ep) < $cutoff) | select([.SnapshotId] | inside($amisnaps[0]) | not)
-  | [.SnapshotId, (.StartTime[0:10]), (.VolumeSize | tostring), (.Description // "-")] | @tsv' <<<"$SNAPS_EC2")"
+  | [.SnapshotId, (.StartTime | ep | todate[0:10]),(.VolumeSize | tostring), (.Description // "-")] | @tsv' <<<"$SNAPS_EC2")"
 while IFS=$'\t' read -r id created gib desc; do
   [[ -n "$id" ]] || continue
   row "$id" "EBS snapshot created $created, older than $STALE_DAYS days; not referenced by a listed AMI; \"$desc\"" "$(gb_cost "$gib" "$RATE_SNAP_GB")"
