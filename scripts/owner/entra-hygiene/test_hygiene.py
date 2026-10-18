@@ -17,6 +17,7 @@ NOW = dt.datetime(2026, 10, 18, 9, 0, tzinfo=dt.timezone.utc)
 SECRET = "S3cret-VALUE-must-never-print"
 OLD_SECRET = "previous-VALUE-must-never-print"
 ROVA_DEV = PRODUCTS[("rova", "dev")]
+KB_DEV = PRODUCTS[("kb", "dev")]
 
 
 def decoded(url):
@@ -26,11 +27,11 @@ def decoded(url):
 class FakeTenant:
     """Answers the Graph calls hygiene.py makes, from a small state dict, and records every write."""
 
-    def __init__(self):
+    def __init__(self, app_name="Rova Dev"):
         self.app = {
             "id": "app-obj",
             "appId": "app-id",
-            "displayName": "Rova Dev",
+            "displayName": app_name,
             "notes": "",
             "appRoles": [],
             "passwordCredentials": [{"keyId": "old-key", "endDateTime": "2026-12-01T00:00:00Z"}],
@@ -38,8 +39,8 @@ class FakeTenant:
         }
         self.sp = {"id": "sp-obj", "appId": "app-id", "appRoleAssignmentRequired": False}
         self.groups = {
-            "rova-users": {"id": "g-users", "members": ["u-staff"]},
-            "vendors-rova": {"id": "g-vendors", "members": ["u-guest-ok"]},
+            "kb-users": {"id": "g-users", "members": ["u-staff"]},
+            "kb-guests": {"id": "g-guests", "members": ["u-guest-ok"]},
         }
         self.assignments = []
         self.signins = []
@@ -124,7 +125,7 @@ class FakeAws:
 
 
 def make(tenant=None, aws=None, answers=None, out=None):
-    tenant = tenant or FakeTenant()
+    tenant = tenant if tenant is not None else FakeTenant()
     aws = aws or FakeAws({"entra-client-secret": OLD_SECRET, "other": "x"})
     replies = answers or {}
     lines = out if out is not None else []
@@ -141,52 +142,71 @@ def make(tenant=None, aws=None, answers=None, out=None):
 
 class CheckTests(unittest.TestCase):
     def test_lists_signed_in_user_outside_every_group_and_only_them(self):
-        tenant = FakeTenant()
+        tenant = FakeTenant(app_name="KB Dev")
         tenant.signins = [
             {"userId": "u-staff", "userPrincipalName": "staff@example.invalid", "status": {"errorCode": 0}},
             {"userId": "u-guest-ok", "userPrincipalName": "ok@example.invalid", "status": {"errorCode": 0}},
             {"userId": "u-stranger", "userPrincipalName": "stranger@example.invalid", "status": {"errorCode": 0}},
         ]
         h, _, _, lines = make(tenant)
-        self.assertEqual(h.lost_access(ROVA_DEV), ["stranger@example.invalid"])
+        self.assertEqual(h.lost_access(KB_DEV), ["stranger@example.invalid"])
         self.assertTrue(any("WOULD LOSE ACCESS: stranger@example.invalid" in line for line in lines))
 
     def test_failed_sign_ins_do_not_count_as_users(self):
-        tenant = FakeTenant()
+        tenant = FakeTenant(app_name="KB Dev")
         tenant.signins = [{"userId": "u-stranger", "userPrincipalName": "x@example.invalid", "status": {"errorCode": 50105}}]
         h, _, _, _ = make(tenant)
-        self.assertEqual(h.lost_access(ROVA_DEV), [])
+        self.assertEqual(h.lost_access(KB_DEV), [])
 
     def test_direct_user_assignment_counts_as_allowed(self):
-        tenant = FakeTenant()
+        tenant = FakeTenant(app_name="KB Dev")
         tenant.assignments = [{"principalId": "u-stranger", "principalType": "User", "appRoleId": hygiene.DEFAULT_ROLE_ID}]
         tenant.signins = [{"userId": "u-stranger", "userPrincipalName": "x@example.invalid", "status": {"errorCode": 0}}]
         h, _, _, _ = make(tenant)
-        self.assertEqual(h.lost_access(ROVA_DEV), [])
+        self.assertEqual(h.lost_access(KB_DEV), [])
 
 
 class EnforceTests(unittest.TestCase):
     def test_refuses_to_require_assignment_while_someone_would_lose_access(self):
-        tenant = FakeTenant()
+        tenant = FakeTenant(app_name="KB Dev")
         tenant.signins = [{"userId": "u-stranger", "userPrincipalName": "x@example.invalid", "status": {"errorCode": 0}}]
         h, _, _, _ = make(tenant)
         with self.assertRaises(GraphError):
-            h.enforce(ROVA_DEV, True)
+            h.enforce(KB_DEV, True)
         self.assertFalse(tenant.sp["appRoleAssignmentRequired"])
         self.assertFalse(any(w[0] == "PATCH" for w in tenant.writes))
 
     def test_sets_required_when_nobody_would_lose_access(self):
-        h, tenant, _, _ = make()
-        h.enforce(ROVA_DEV, True)
+        h, tenant, _, _ = make(FakeTenant(app_name="KB Dev"))
+        h.enforce(KB_DEV, True)
         self.assertTrue(tenant.sp["appRoleAssignmentRequired"])
 
     def test_rollback_turns_requirement_off_without_checking(self):
-        tenant = FakeTenant()
+        tenant = FakeTenant(app_name="KB Dev")
         tenant.sp["appRoleAssignmentRequired"] = True
         tenant.signins = [{"userId": "u-stranger", "userPrincipalName": "x@example.invalid", "status": {"errorCode": 0}}]
         h, _, _, _ = make(tenant)
-        h.enforce(ROVA_DEV, False)
+        h.enforce(KB_DEV, False)
         self.assertFalse(tenant.sp["appRoleAssignmentRequired"])
+
+    def test_rova_is_never_put_on_assignment(self):
+        for flag in (True, False):
+            tenant = FakeTenant()
+            h, _, _, _ = make(tenant)
+            with self.assertRaises(GraphError):
+                h.enforce(ROVA_DEV, flag)
+            self.assertFalse(any(w[0] == "PATCH" for w in tenant.writes))
+
+    def test_rova_has_no_setup_check_or_guest_add(self):
+        tenant = FakeTenant()
+        h, _, _, _ = make(tenant)
+        with self.assertRaises(GraphError):
+            h.setup(ROVA_DEV)
+        with self.assertRaises(GraphError):
+            h.lost_access(ROVA_DEV)
+        with self.assertRaises(GraphError):
+            h.add_member(ROVA_DEV, "kb-guests", "a@example.invalid")
+        self.assertEqual(tenant.writes, [])
 
 
 class RotateTests(unittest.TestCase):
@@ -290,13 +310,13 @@ class NotesAndGroupTests(unittest.TestCase):
         self.assertFalse(any(w[0] == "PATCH" for w in tenant.writes))
 
     def test_dynamic_group_cannot_take_manual_members(self):
-        h, _, _, _ = make()
+        h, _, _, _ = make(FakeTenant(app_name="KB Dev"))
         with self.assertRaises(GraphError):
-            h.add_member(ROVA_DEV, "rova-users", "a@example.invalid")
+            h.add_member(KB_DEV, "kb-users", "a@example.invalid")
 
     def test_dynamic_group_is_created_with_member_rule(self):
-        h, tenant, _, _ = make()
-        group = next(g for g in ROVA_DEV.groups if g.dynamic)
+        h, tenant, _, _ = make(FakeTenant(app_name="KB Dev"))
+        group = next(g for g in KB_DEV.groups if g.dynamic)
         tenant.groups.pop(group.name)
         h.ensure_group(group)
         body = [w[2] for w in tenant.writes if w[1].endswith("/groups")][0]

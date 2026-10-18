@@ -2,7 +2,7 @@
 
 Fixes the four findings of the 2026-10-18 audit (`scripts/entra-audit`) for the sign-in apps:
 
-1. **Assignment required**: only people in the right groups can sign in (`appRoleAssignmentRequired = true`).
+1. **Assignment required**: only people in the right groups can sign in (`appRoleAssignmentRequired = true`). OpsHub and KB only; Rova is excluded, see "Why Rova is not on assignment".
 2. **Secret lifetime ≤ 180 days**: rotate each client secret with no downtime.
 3. **Notes**: the repo link on every known app. **Lock** on "Claude for Outlook".
 
@@ -28,58 +28,68 @@ the repo.
    cd <your clone of infra>
    python3 -m unittest scripts/owner/entra-hygiene/test_hygiene.py -v
    ```
-6. Check the license. Dynamic groups (`rova-users`, `opshub-users`, `kb-users`) need **Microsoft Entra ID P1** or better.
+6. Check the license. Dynamic groups (`opshub-users`, `kb-users`) need **Microsoft Entra ID P1** or better.
    If the tenant does not have it, tell the architect before running `setup`; the fallback is an assigned group filled by
    hand (see the decisions list below).
 
-Every command below takes `--product` and `--env`. The known products are `rova` (dev, prod), `opshub` (dev), `kb` (dev).
+Every command below takes `--product` and `--env`. The known products are `rova` (dev, prod), `opshub` (dev), `kb` (dev). For `rova`, only `rotate` and `notes` apply.
 
-## Track 1: assignment required (dev first)
+## Track 1: assignment required (OpsHub and KB, dev first)
+
+Rova is not in this track. See "Why Rova is not on assignment" below. Each product gets two groups: `<product>-users` (dynamic: every licensed internal Member) and `<product>-guests` (assigned: filled by hand).
 
 For each product, in this order. Prod (`--env prod`) is a separate decision, do it only after the owner's "go".
 
 1. **Read the current state (read-only):**
    ```bash
-   python3 scripts/owner/entra-hygiene/hygiene.py status --product rova --env dev
+   python3 scripts/owner/entra-hygiene/hygiene.py status --product kb --env dev
    ```
 2. **Create the groups and assign them to the app.** Asks `y` once. Re-running is safe.
    ```bash
-   python3 scripts/owner/entra-hygiene/hygiene.py setup --product rova --env dev
+   python3 scripts/owner/entra-hygiene/hygiene.py setup --product kb --env dev
    ```
    If it stops with "defines app roles", the app has its own roles. Stop and tell the architect; this helper assigns
    default access only.
-3. **Add the people who need access but are not in a group.** Vendor guests of rova are the main case. One command per
-   person:
+3. **Add the people who need access but are outside the dynamic rule**, usually external guests. One command per
+   person, into the assigned `<product>-guests` group:
    ```bash
-   python3 scripts/owner/entra-hygiene/hygiene.py add-member --product rova --env dev --group vendors-rova --upn guest@example.com
+   python3 scripts/owner/entra-hygiene/hygiene.py add-member --product kb --env dev --group kb-guests --upn guest@example.com
    ```
+   If there are none, skip this step.
 4. **Check who would lose access (read-only).** It lists everyone who signed in to the app in the last 30 days and is in
    neither a group nor a direct assignment. Wait a few minutes after `setup` so dynamic groups fill in, then:
    ```bash
-   python3 scripts/owner/entra-hygiene/hygiene.py check --product rova --env dev
+   python3 scripts/owner/entra-hygiene/hygiene.py check --product kb --env dev
    ```
    Every `WOULD LOSE ACCESS` line must be either added (step 3) or an account that should go. The check reads 30 days of
    sign-ins. A user who has not signed in for longer is not listed: ask the product owner for the list of people who
    should keep access, and add them by hand.
 5. **Require assignment.** It runs the check again and refuses if anyone is listed.
    ```bash
-   python3 scripts/owner/entra-hygiene/hygiene.py enforce --product rova --env dev
+   python3 scripts/owner/entra-hygiene/hygiene.py enforce --product kb --env dev
    ```
-6. **Test it:** sign in to the dev product as a staff member, and as a vendor guest. Both must work. Sign in as a
+6. **Test it:** sign in to the dev product as a staff member, and as a guest in `kb-guests`. Both must work. Sign in as a
    tenant user who is in no group; that user must be refused.
 
 **Rollback (one line, takes effect at once):**
 ```bash
-python3 scripts/owner/entra-hygiene/hygiene.py rollback --product rova --env dev
+python3 scripts/owner/entra-hygiene/hygiene.py rollback --product kb --env dev
 ```
 
-### Rova guests: a code gap to close before prod
+## Why Rova is not on assignment
 
-Rova admits external guests by invitation. The invite creates the Entra guest in `entra-guest-invite.client.ts`, and
-nothing puts that guest in a group. Once assignment is required, a new guest is refused at sign-in until someone adds
-them to `vendors-rova` by hand. This is tracked as rova issue #732. Until that is fixed, add each
-new guest with `add-member`. Prod rova does not provision guests today (`ENTRA_GUEST_INVITE_ENABLED` is off in prod), so
-prod is not affected by this gap yet.
+Decision of the owner, 2026-10-18. `appRoleAssignmentRequired` stays **false** on Rova Dev and Rova Prod, and the audit
+finding "any tenant user can sign in" is accepted for those two apps.
+
+- Rova admits its own users. Staff come in through the staff email domain. External users come in only through a live
+  invitation or a held home-workspace seat (identity v8), and the app checks that on every sign-in. Entra assignment would
+  be a second gate that adds nothing the app does not already enforce.
+- Turning assignment on would need the worker to add each invited guest to a group automatically (rova#732). That needs
+  `GroupMember.ReadWrite.All` or `AppRoleAssignment.ReadWrite.All`. Both reach every group or every app in the tenant:
+  far more reach than the gain. Rejected.
+- Rova is therefore excluded here: `setup`, `add-member`, `check`, `enforce` and `rollback` refuse for `rova`.
+  `status`, `rotate` and `notes` still apply to Rova Dev and Rova Prod.
+- rova#732 is closed with this rationale.
 
 ## Track 2: secret rotation (dev first)
 
@@ -130,9 +140,9 @@ be set in the tenant that owns the registration. Tell the architect in that case
 
 ## Decisions the owner must confirm
 
-- **Who keeps access.** `rova-users`, `opshub-users` and `kb-users` default to every licensed internal Member. Confirm
+- **Who keeps access.** `opshub-users` and `kb-users` default to every licensed internal Member. Confirm
   this for KB: the KB user population was not known when this was written.
-- **Vendor guests of rova** (and any guests of other products): the list to add to `vendors-rova` before enforcing.
+- **Guests of OpsHub and KB**: who goes into `<product>-guests`, before enforcing.
 - **Claude for Outlook**: its repo for the Notes field, and whether it is in this tenant.
 - **Prod.** Track 1 and Track 2 for `--env prod` only after the owner's "go" and a green dev run.
 

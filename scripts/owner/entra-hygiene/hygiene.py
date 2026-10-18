@@ -57,14 +57,18 @@ class Product:
     sign_in_app: str  # display name of the sign-in app in Entra
     bundle: str  # Secrets Manager id of the product/env bundle
     groups: tuple[Group, ...]
+    # False: the product admits its own users (rova: staff domain, invitation, held seat). Entra assignment is not used,
+    # so setup, check, enforce and rollback refuse. Rotation and Notes still apply.
+    assignment_admission: bool = True
 
 
-USERS_DYNAMIC = Group("rova-users", dynamic=True)
 PRODUCTS: dict[tuple[str, str], Product] = {
-    ("rova", "dev"): Product("Rova Dev", "rova/dev/app", (USERS_DYNAMIC, Group("vendors-rova", dynamic=False))),
-    ("rova", "prod"): Product("Rova Prod", "rova/prod/app", (USERS_DYNAMIC, Group("vendors-rova", dynamic=False))),
-    ("opshub", "dev"): Product("OpsHub Dev", "opshub/dev/app", (Group("opshub-users", dynamic=True),)),
-    ("kb", "dev"): Product("KB Dev", "qnsc-kb/dev/app", (Group("kb-users", dynamic=True),)),
+    ("rova", "dev"): Product("Rova Dev", "rova/dev/app", (), assignment_admission=False),
+    ("rova", "prod"): Product("Rova Prod", "rova/prod/app", (), assignment_admission=False),
+    ("opshub", "dev"): Product(
+        "OpsHub Dev", "opshub/dev/app", (Group("opshub-users", dynamic=True), Group("opshub-guests", dynamic=False))
+    ),
+    ("kb", "dev"): Product("KB Dev", "qnsc-kb/dev/app", (Group("kb-users", dynamic=True), Group("kb-guests", dynamic=False))),
 }
 
 # Notes field values. Display names only: this file is in a public repository, so no tenant, app or object ids here.
@@ -86,6 +90,14 @@ class GraphError(RuntimeError):
 
 class AwsError(RuntimeError):
     pass
+
+
+def require_assignment(product: Product) -> None:
+    if not product.assignment_admission:
+        raise GraphError(
+            f"{product.sign_in_app} is admitted by rova itself (staff domain, invitation, held seat), not by app assignment: "
+            "this command does not apply. rotate and notes still do. See README: why Rova is not on assignment."
+        )
 
 
 class GraphClient:
@@ -246,6 +258,7 @@ class Hygiene:
         return self.graph.call("POST", f"{GRAPH}/groups", body)["id"]
 
     def setup(self, product: Product) -> None:
+        require_assignment(product)
         app = self.require_app(product.sign_in_app)
         sp = self.require_sp(app)
         if app.get("appRoles"):
@@ -271,6 +284,7 @@ class Hygiene:
             self.out(f"  {group.name}: assigned")
 
     def add_member(self, product: Product, group_name: str, upn: str) -> None:
+        require_assignment(product)
         if group_name not in {g.name for g in product.groups if not g.dynamic}:
             raise GraphError(f"{group_name!r} is not an assigned group of this product (dynamic groups fill themselves)")
         group = self.find_group(group_name)
@@ -290,6 +304,7 @@ class Hygiene:
     # ── assignment required: check, enforce, roll back ────────────────────────────────────────────────
     def lost_access(self, product: Product) -> list[str]:
         """UPNs that signed in to the app in the window and would be refused once assignment is required."""
+        require_assignment(product)
         app = self.require_app(product.sign_in_app)
         sp = self.require_sp(app)
         allowed: set[str] = set()
@@ -310,6 +325,7 @@ class Hygiene:
         return lost
 
     def enforce(self, product: Product, flag: bool) -> None:
+        require_assignment(product)
         app = self.require_app(product.sign_in_app)
         sp = self.require_sp(app)
         if not flag:
