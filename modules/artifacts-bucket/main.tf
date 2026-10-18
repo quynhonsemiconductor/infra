@@ -10,7 +10,7 @@
 # as the S3 target when s3-upload: 'true' is set.
 terraform {
   required_providers {
-    aws = { source = "hashicorp/aws", version = "~> 5.0" }
+    aws = { source = "hashicorp/aws", version = "~> 6.0" }
   }
 }
 
