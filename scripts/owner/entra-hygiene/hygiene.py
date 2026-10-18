@@ -61,7 +61,7 @@ class Product:
     sign_in_app: str  # display name of the sign-in app in Entra
     env: str  # "develop" or "production": as in the bundle name and the infra live stacks
     bundle: str  # Secrets Manager id of the product/env bundle
-    secret_key: str  # the bundle key the product's API reads its Entra client secret from
+    bundle_field: str  # the bundle key the product's API reads its Entra client secret from
     groups: tuple[Group, ...]
     # App Role value every group is assigned to. None: default access (the app must define no app roles).
     role_value: str | None = None
@@ -346,9 +346,9 @@ class Hygiene:
         self.out(f"{app['displayName']} ({product.env}): appRoleAssignmentRequired={sp['appRoleAssignmentRequired']}")
         self.out(f"  notes set: {bool(app.get('notes'))}; app roles defined: {len(app.get('appRoles') or [])}")
         self.out(f"  instance lock: {(app.get('servicePrincipalLockConfiguration') or {}).get('isEnabled')}")
-        self.out(f"  bundle {product.bundle} key {product.secret_key} (value never read here)")
-        for cred in app.get("passwordCredentials") or []:
-            self.out(f"  secret keyId={cred['keyId']} hint={cred.get('hint')} ends={cred.get('endDateTime')}")
+        self.out(f"  bundle {product.bundle} key {product.bundle_field} (value never read here)")
+        for credential_meta in app.get("passwordCredentials") or []:
+            self.out(f"  credential keyId={credential_meta['keyId']} name={credential_meta.get('displayName')} ends={credential_meta.get('endDateTime')}")
         for group in product.groups:
             found = self.find_group(group.name)
             self.out(f"  group {group.name}: {'missing' if found is None else 'exists'}")
@@ -535,15 +535,16 @@ class Hygiene:
         upn = self.operator_upn()
         app = self.require_app(product.sign_in_app)
         bundle = self.read_bundle(product)
-        previous = bundle.get(product.secret_key)
+        previous = bundle.get(product.bundle_field)
         if not isinstance(previous, str) or not previous:
-            raise GraphError(f"bundle {product.bundle} key {product.secret_key} is missing or not a string: nothing changed")
-        hint = previous[:3]
+            raise GraphError(f"bundle {product.bundle} key {product.bundle_field} is missing or not a string: nothing changed")
+        hint = previous[:3]  # matching only: never printed
         matches = [c for c in app.get("passwordCredentials") or [] if c.get("hint") == hint]
         if len(matches) != 1:
-            listing = ", ".join(f"keyId={c['keyId']} hint={c.get('hint')}" for c in app.get("passwordCredentials") or [])
-            raise GraphError(f"{len(matches)} Entra secret(s) match the bundle's current value by hint: {listing}. Nothing changed.")
-        old_id = matches[0]["keyId"]
+            listing = ", ".join(f"keyId={c['keyId']} name={c.get('displayName')} ends={c.get('endDateTime')}" for c in app.get("passwordCredentials") or [])
+            raise GraphError(f"{len(matches)} Entra credential(s) match the bundle's current value: {listing}. Nothing changed.")
+        old_meta = matches[0]
+        old_id = old_meta["keyId"]
         unknown = sorted(set(services) - set(self.cluster_services(cluster)))
         if unknown:
             raise GraphError(f"not services of cluster {cluster}: {', '.join(unknown)}. Nothing changed.")
@@ -553,11 +554,11 @@ class Hygiene:
         missing = sorted(consumers - set(services))
         if missing:
             raise GraphError(f"services that read the bundle but are not in --services: {', '.join(missing)}. Nothing changed.")
-        self.out(f"{app['displayName']} ({product.env}): old secret keyId {old_id} (hint {hint}), kept until verified")
-        self.out(f"  bundle {product.bundle} key {product.secret_key}; consumers in {cluster}: {', '.join(sorted(consumers))}")
-        for c in app.get("passwordCredentials") or []:
-            if c["keyId"] != old_id:
-                self.out(f"  other secret keyId={c['keyId']} hint={c.get('hint')}: not touched")
+        self.out(f"{app['displayName']} ({product.env}): old credential keyId {old_id} (name {old_meta.get('displayName')}, ends {old_meta.get('endDateTime')}), kept until verified")
+        self.out(f"  bundle {product.bundle} key {product.bundle_field}; consumers in {cluster}: {', '.join(sorted(consumers))}")
+        for other in app.get("passwordCredentials") or []:
+            if other["keyId"] != old_id:
+                self.out(f"  other credential keyId={other['keyId']} name={other.get('displayName')}: not touched")
         self.production_gate(product)
         if not self.confirm(f"Add a new client secret (180 days) and write it to the bundle ({product.env})?"):
             return 1
@@ -576,7 +577,7 @@ class Hygiene:
         self.write_bundle(product, app, previous, secret, new_id)
         del secret
         written_at = self.now()
-        self.out(f"  bundle written and read back: key {product.secret_key} changed, other keys unchanged")
+        self.out(f"  bundle written and read back: key {product.bundle_field} changed, other keys unchanged")
 
         if not self.confirm(f"Restart {', '.join(services)} in {cluster} now (rolling)?"):
             self.out("Stopped before restart. Both secrets are valid; nothing removed. Restart later, then verify.")
@@ -601,7 +602,7 @@ class Hygiene:
                      f"--env {product.env} --key-id {old_id}")
             return 1
 
-        if self.confirm(f"Remove the old secret keyId {old_id} (hint {hint}) now?"):
+        if self.confirm(f"Remove the old credential keyId {old_id} (ends {old_meta.get('endDateTime')}) now?"):
             self.remove_secret(app, old_id)
         due = parse_time(ends) - dt.timedelta(days=ROTATE_BEFORE_EXPIRY_DAYS)
         path = write_calendar(out_dir, app["displayName"], due, ends)
@@ -620,13 +621,13 @@ class Hygiene:
     def write_bundle(self, product: Product, app: dict, previous: str, secret: str, new_id: str) -> None:
         before = self.read_bundle(product)
         updated = dict(before)
-        updated[product.secret_key] = secret
+        updated[product.bundle_field] = secret
         try:
             self.aws.put_secret(product.bundle, json.dumps(updated))
             after = json.loads(self.aws.get_secret(product.bundle))
             same_keys = set(after) == set(before)
-            only_key_changed = all(after[k] == before[k] for k in before if k != product.secret_key)
-            if not (same_keys and only_key_changed and after[product.secret_key] == secret):
+            only_key_changed = all(after[k] == before[k] for k in before if k != product.bundle_field)
+            if not (same_keys and only_key_changed and after[product.bundle_field] == secret):
                 raise AwsError("read-back differs from what was written")
         except Exception:
             self.undo_failed_write(product, app, previous, new_id)
@@ -637,10 +638,10 @@ class Hygiene:
         secret if neither is certain: a valid, unused secret is safer than an unknown bundle with nothing to fall back to."""
         try:
             current = self.read_bundle(product)
-            if current.get(product.secret_key) != previous:
-                current[product.secret_key] = previous
+            if current.get(product.bundle_field) != previous:
+                current[product.bundle_field] = previous
                 self.aws.put_secret(product.bundle, json.dumps(current))
-                if self.read_bundle(product).get(product.secret_key) != previous:
+                if self.read_bundle(product).get(product.bundle_field) != previous:
                     raise AwsError("restore of the previous value did not read back")
             self.remove_secret(app, new_id)
             self.out("  bundle failed to write: previous value confirmed, new secret removed")
@@ -676,9 +677,9 @@ class Hygiene:
 
     def rollback_rotation(self, product: Product, app: dict, cluster: str, services: list[str], previous: str, new_id: str) -> int:
         current = self.read_bundle(product)
-        current[product.secret_key] = previous
+        current[product.bundle_field] = previous
         self.aws.put_secret(product.bundle, json.dumps(current))
-        if self.read_bundle(product).get(product.secret_key) != previous:
+        if self.read_bundle(product).get(product.bundle_field) != previous:
             raise AwsError("rollback: restore of the previous value did not read back; new secret kept, check by hand")
         del current
         for service in services:
@@ -693,15 +694,15 @@ class Hygiene:
         """Finish a rotation: remove one named secret, refusing the one the bundle holds now."""
         app = self.require_app(product.sign_in_app)
         bundle = self.read_bundle(product)
-        current = bundle.get(product.secret_key)
+        current = bundle.get(product.bundle_field)
         if not isinstance(current, str) or not current:
-            raise GraphError(f"bundle {product.bundle} key {product.secret_key} is missing: nothing changed")
-        cred = next((c for c in app.get("passwordCredentials") or [] if c["keyId"] == key_id), None)
-        if cred is None:
+            raise GraphError(f"bundle {product.bundle} key {product.bundle_field} is missing: nothing changed")
+        credential_meta = next((c for c in app.get("passwordCredentials") or [] if c["keyId"] == key_id), None)
+        if credential_meta is None:
             raise GraphError(f"keyId {key_id} is not a secret of {product.sign_in_app}")
-        if cred.get("hint") == current[:3]:
+        if credential_meta.get("hint") == current[:3]:  # matching only
             raise GraphError(f"keyId {key_id} matches the secret the bundle holds now; refusing to remove it")
-        if not self.confirm(f"Remove secret keyId {key_id} (hint {cred.get('hint')}) from {product.sign_in_app} ({product.env})?"):
+        if not self.confirm(f"Remove credential keyId {key_id} (ends {credential_meta.get('endDateTime')}) from {product.sign_in_app} ({product.env})?"):
             return
         self.remove_secret(app, key_id)
         self.out(f"removed keyId {key_id}")
