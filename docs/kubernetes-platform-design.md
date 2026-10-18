@@ -1,6 +1,11 @@
 # Platform design for seven products: EKS, ArgoCD, and one chart
 
-Status: **proposed, nothing provisioned.** Written 2026-09-14, revised 2026-09-14. Supersedes the
+> **ARCHIVED 2026-10-18. Do not implement from this document.** The EKS spike was torn down on 2026-10-12 and
+> AWS IAM Identity Center was retired on 2026-08-18. The Entra → Identity Center → EKS access path described
+> below no longer exists. The current platform is ECS Fargate; see `PLATFORM_ARCHITECTURE.md` in the org's
+> `.github` repo. This file is kept as history, so it is not deleted.
+
+Status (as written, 2026-09-14): **proposed, nothing provisioned.** Written 2026-09-14, revised 2026-09-14. Supersedes the
 compute half of `product-service-extraction.md`; the reasoning in that document about *why*
 duplication is the core problem still holds and is the reason this one exists.
 
