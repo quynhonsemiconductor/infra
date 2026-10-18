@@ -28,21 +28,31 @@ def d(name: str) -> str:
     return "sha256:" + hashlib.sha256(name.encode()).hexdigest()
 
 
+ATTESTATIONS: set[str] = set()
+
+
 def build_repo(n_builds: int = 12, release_on: int = 1):
-    """n_builds multi-arch commits oldest first: list sha-i with two untagged children each; the oldest `release_on` build
-    also carries v1.0.0. Returns (images as describe-images details, children map)."""
+    """n_builds multi-arch commits oldest first: list sha-i with two per-architecture children and two buildx attestation
+    manifests (all untagged); the oldest `release_on` build also carries v1.0.0. Returns (describe-images details, children)."""
     details, children = [], {}
+    ATTESTATIONS.clear()
     for i in range(1, n_builds + 1):
         tags = [f"sha-{i}"] + (["v1.0.0"] if i == release_on else [])
-        details.append({"imageDigest": d(f"list{i}"), "imageTags": tags, "imageManifestMediaType": INDEX, "imagePushedAt": f"2026-10-{i:02d}"})
+        pushed = f"2026-10-{i:02d}T00:00:00"
+        details.append({"imageDigest": d(f"list{i}"), "imageTags": tags, "imageManifestMediaType": INDEX, "imagePushedAt": pushed, "imageSizeInBytes": 856})
+        kids = []
         for arch in ("amd", "arm"):
-            details.append({"imageDigest": d(f"c{i}{arch}"), "imageManifestMediaType": IMAGE, "imagePushedAt": f"2026-10-{i:02d}"})
-        children[d(f"list{i}")] = [d(f"c{i}amd"), d(f"c{i}arm")]
+            details.append({"imageDigest": d(f"c{i}{arch}"), "imageManifestMediaType": IMAGE, "imagePushedAt": pushed, "imageSizeInBytes": 100_000_000})
+            details.append({"imageDigest": d(f"a{i}{arch}"), "imageManifestMediaType": IMAGE, "imagePushedAt": pushed, "imageSizeInBytes": 40_000})
+            ATTESTATIONS.add(d(f"a{i}{arch}"))
+            kids += [d(f"c{i}{arch}"), d(f"a{i}{arch}")]
+        children[d(f"list{i}")] = kids
     return details, children
 
 
 class FakeAws:
-    def __init__(self, details, children, expiring, tasks=None, services=None, families=None, fail=None, missing_manifest=False):
+    def __init__(self, details, children, expiring, tasks=None, services=None, families=None, fail=None, missing_manifest=False, reported_count=None):
+        self.reported_count = reported_count
         self.details, self.children, self.expiring = details, children, expiring
         self.tasks, self.services, self.families = tasks or [], services or [], families or {}
         self.fail, self.missing_manifest = fail or set(), missing_manifest
@@ -62,12 +72,16 @@ class FakeAws:
         if key == "ecr get-lifecycle-policy-preview":
             if args[args.index("--repository-name") + 1] != "rova-api":
                 return {"status": "COMPLETE", "previewResults": [], "summary": {"expiringImageTotalCount": 0}}
-            results = [{"imageDigest": x, "imageTags": tags, "action": {"type": "expire"}} for x, tags in self.expiring]
-            return {"status": "COMPLETE", "previewResults": results, "summary": {"expiringImageTotalCount": len(results)}}
+            # The real API spells the action in CAPITALS and says which rule hit each image.
+            results = [{"imageDigest": x, "imageTags": tags, "action": {"type": "EXPIRE"}, "appliedRulePriority": 3 if tags else 1} for x, tags in self.expiring]
+            count = len(results) if self.reported_count is None else self.reported_count
+            return {"status": "COMPLETE", "previewResults": results, "summary": {"expiringImageTotalCount": count}}
         if key == "ecr batch-get-image":
             ids = [a.split("=", 1)[1] for a in args if a.startswith("imageDigest=")]
             images = [] if self.missing_manifest else [
-                {"imageId": {"imageDigest": x}, "imageManifest": json.dumps({"manifests": [{"digest": c} for c in self.children[x]]})} for x in ids]
+                {"imageId": {"imageDigest": x}, "imageManifest": json.dumps({"manifests": [
+                    ({"digest": c, "platform": {"architecture": "unknown", "os": "unknown"}, "annotations": {"vnd.docker.reference.type": "attestation-manifest"}}
+                     if c in ATTESTATIONS else {"digest": c, "platform": {"architecture": "arm64", "os": "linux"}}) for c in self.children[x]]})} for x in ids]
             return {"images": images, "failures": []}
         if key == "ecs list-clusters":
             return {"clusterArns": [f"arn:aws:ecs:ap-southeast-1:{ACCOUNT}:cluster/rova-develop", f"arn:aws:ecs:ap-southeast-1:{ACCOUNT}:cluster/rova-prod"]}
@@ -142,12 +156,12 @@ class Scenarios(Harness):
         rc, md = self.run_script(FakeAws(self.details, self.children, self.clean))
         self.assertEqual(rc, 0, md)
         self.assertIn("**PASS", md)
-        self.assertIn("| rova-api | 36 | 12 → 10 | 2 | 0 | 0 | 0 |", md)  # 36 images (12 lists + 24 children); sha- 12 -> 10
+        self.assertIn("| rova-api | 60 | 12 → 10 | 2 | 0 | 0 | 0 |", md)  # 36 images (12 lists + 24 children); sha- 12 -> 10
 
     def test_nothing_expiring_is_a_preview_not_an_empty_repository(self):
         rc, md = self.run_script(FakeAws(self.details, self.children, []))
         self.assertEqual(rc, 0)
-        self.assertIn("| rova-api | 36 | 12 → 12 | 0 | 0 | 0 | 0 |", md)
+        self.assertIn("| rova-api | 60 | 12 → 12 | 0 | 0 | 0 | 0 |", md)
 
     def test_a_release_tagged_image_that_would_expire_fails(self):
         rc, md = self.run_script(FakeAws(self.details, self.children, self.clean + [(d("list1"), ["sha-1", "v1.0.0"])]))
@@ -228,6 +242,133 @@ class Scenarios(Harness):
         self.run_script(fake)
         verbs = {c[1] for c in fake.calls}
         self.assertTrue(all(v.startswith(("describe-", "list-", "get-", "batch-get-")) or v == "start-lifecycle-policy-preview" for v in verbs), verbs)
+
+
+class Breakdown(Harness):
+    def extra_images(self):
+        sig = "sha256-" + "ab" * 32 + ".sig"
+        return [
+            {"imageDigest": d("sig1"), "imageTags": [sig], "imageManifestMediaType": IMAGE, "imagePushedAt": "2026-10-05T00:00:00", "imageSizeInBytes": 2000},
+            {"imageDigest": d("cache"), "imageTags": ["buildcache"], "imageManifestMediaType": INDEX, "imagePushedAt": "2026-10-12T00:00:00", "imageSizeInBytes": 900},
+            {"imageDigest": d("pr"), "imageTags": ["pr-123"], "imageManifestMediaType": IMAGE, "imagePushedAt": "2026-10-12T00:00:00", "imageSizeInBytes": 5000},
+            {"imageDigest": d("att"), "imageManifestMediaType": IMAGE, "imagePushedAt": "2026-10-06T00:00:00", "imageSizeInBytes": 3000,
+             "artifactMediaType": "application/vnd.dev.sigstore.bundle.v0.3+json", "subjectManifestDigest": d("list2")},
+            {"imageDigest": d("orphan"), "imageManifestMediaType": IMAGE, "imagePushedAt": "2026-09-01T00:00:00", "imageSizeInBytes": 77},
+        ]
+
+    def summary_of(self, fake):
+        original = ep._aws
+        ep._aws = fake
+        ep.PREVIEW_POLL_SECONDS = 0
+        try:
+            images = ep.describe_images("rova-api")
+            children, kinds = ep.manifest_children("rova-api", images)
+            result = ep._aws("ecr", "get-lifecycle-policy-preview", "--repository-name", "rova-api")
+            return ep.summarise("rova-api", result, images, children, [], kinds, 10)
+        finally:
+            ep._aws = original
+
+    def test_every_image_lands_in_a_class_with_counts_and_sizes(self):
+        details, children = build_repo()
+        children[d("cache")] = []
+        fake = FakeAws(details + self.extra_images(), children, [(d("list2"), ["sha-2"]), (d("orphan"), [])])
+        b = self.summary_of(fake)["breakdown"]
+        c = b["classes"]
+        self.assertEqual(c["build sha-* (index)"]["images"], 11)  # 12 builds, one of which also carries v1.0.0
+        self.assertEqual(c["release v* (index)"]["images"], 1)
+        self.assertEqual(c["untagged child of a kept list"]["images"], 44)  # 11 kept lists x 4 children
+        self.assertEqual(c["untagged child of a EXPIRING list"]["images"], 4)  # only list2 expires; list1 is kept by its v tag
+        self.assertEqual(c["referrer-by-tag sha256-<digest>[.sig/.att/.sbom]"]["images"], 1)
+        self.assertEqual(c["referrer artifact (OCI subject)"]["images"], 1)
+        self.assertEqual(c["other tagged"]["images"], 2)
+        self.assertEqual(c["untagged orphan (no list references it)"]["images"], 1)
+        self.assertEqual(c["untagged orphan (no list references it)"]["expire_by_rule"], {"1": 1})
+        self.assertEqual(b["other_tag_patterns"], {"buildcache": 1, "pr-N": 1})
+        self.assertEqual(b["child_kinds"]["attestation"], 24)
+        self.assertEqual(b["child_kinds"]["linux/arm64"], 24)
+        self.assertEqual(c["untagged orphan (no list references it)"]["bytes"], 77)
+        self.assertEqual(b["artifact_media_types"], {"application/vnd.dev.sigstore.bundle.v0.3+json": 1})
+
+    def test_rule_3_diagnosis_accounts_for_every_build_beyond_the_newest_n(self):
+        details, children = build_repo()
+        b = self.summary_of(FakeAws(details, children, [(d("list2"), ["sha-2"])]))["breakdown"]
+        self.assertEqual(b["builds_beyond_keep"], 2)
+        results = {x["tags"]: x["result"] for x in b["builds_beyond_keep_diagnosis"]}
+        self.assertEqual(results["sha-2"], "expires by rule 3")
+        self.assertIn("also tagged v*", results["sha-1,v1.0.0"])
+        self.assertEqual(b["expiring_by_rule"], {"3": 1})
+
+    def test_a_rule_3_that_selects_nothing_is_reported_as_unexplained(self):
+        details, children = build_repo(release_on=0)  # no build carries a release tag
+        b = self.summary_of(FakeAws(details, children, []))["breakdown"]
+        self.assertEqual([x["result"].split(":")[0] for x in b["builds_beyond_keep_diagnosis"]], ["NOT SELECTED and unexplained"] * 2)
+        details, children = build_repo(release_on=0)
+        rc, md = self.run_script(FakeAws(details, children, []))
+        self.assertIn("are NOT expiring for no reason this script can find", md)
+        self.assertIn("## Breakdown: rova-api", md)
+
+    def test_the_markdown_table_has_sizes_and_rule_columns(self):
+        details, children = build_repo()
+        children[d("cache")] = []
+        rc, md = self.run_script(FakeAws(details + self.extra_images(), children, [(d("list2"), ["sha-2"])]))
+        self.assertIn("| class | images | size | kept | expire by rule 1 | rule 2 | rule 3 | rule 4 |", md)
+        self.assertIn("| build sha-* (index) | 11 |", md)
+        self.assertIn("Other tagged: distinct tag shapes: `buildcache` x1, `pr-N` x1", md)
+        self.assertIn("Untagged children by kind", md)
+
+    def test_tag_shapes(self):
+        self.assertEqual(ep.tag_pattern("sha-3f9a2c1"), "sha-<hex>")
+        self.assertEqual(ep.tag_pattern("v1.2.3"), "vN.N.N")
+        self.assertEqual(ep.tag_pattern("pr-123"), "pr-N")
+        self.assertEqual(ep.tag_pattern("buildcache"), "buildcache")
+        self.assertEqual(ep.tag_pattern("sha256-" + "ab" * 32 + ".sig"), "sha256-<sha>.sig".replace("sha256", "shaN"))
+
+    def test_the_candidate_referrer_rule_is_only_added_when_asked(self):
+        self.assertEqual([r["rulePriority"] for r in ep.build_policy({})["rules"]], [1, 2, 3])
+        rules = ep.build_policy({"referrer_tag_days": 210})["rules"]
+        self.assertEqual(rules[3]["selection"]["tagPatternList"], ["sha256-*"])
+        self.assertEqual(rules[3]["selection"]["countNumber"], 210)
+
+    def test_the_inventory_json_is_written_on_request(self):
+        details, children = build_repo()
+        original = ep._aws
+        ep._aws = FakeAws(details, children, [(d("list2"), ["sha-2"])])
+        ep.REPOSITORIES = {"rova-api": {}}
+        ep.PREVIEW_POLL_SECONDS = 0
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                rc = ep.run(False, os.path.join(tmp, "p.md"), inventory_path=os.path.join(tmp, "inv.json"))
+                inv = json.loads(pathlib.Path(tmp, "inv.json").read_text())
+                self.assertEqual(rc, 0)
+                self.assertEqual(len(inv["rova-api"]["images"]), 60)
+                self.assertIn("breakdown", inv["rova-api"]["summary"])
+        finally:
+            ep._aws = original
+
+
+class ActionSpelling(Harness):
+    """The bug that made the first real run a false PASS: the API says EXPIRE, the script looked for expire."""
+
+    def test_capitalised_expire_is_read_and_the_checks_run_on_it(self):
+        details, children = build_repo()
+        rc, md = self.run_script(FakeAws(details, children, [(d("list1"), ["sha-1", "v1.0.0"])]))
+        self.assertEqual(rc, 2)  # the release-tagged image IS seen
+        self.assertIn("| rova-api | 60 | 12 → 11 | 1 | 1 |", md)
+
+    def test_a_summary_that_disagrees_with_the_parsed_list_is_an_error_not_a_pass(self):
+        details, children = build_repo()
+        rc, md = self.run_script(FakeAws(details, children, [(d("list2"), ["sha-2"])], reported_count=26))
+        self.assertEqual(rc, 1)
+        self.assertIn("AWS says 26 image(s) would expire but 1 were read", md)
+        self.assertNotIn("**PASS", md)
+
+    def test_lower_case_is_still_accepted(self):
+        result = {"status": "COMPLETE", "previewResults": [{"imageDigest": d("list2"), "imageTags": ["sha-2"], "action": {"type": "expire"}, "appliedRulePriority": 3}],
+                  "summary": {"expiringImageTotalCount": 1}}
+        details, children = build_repo()
+        images = [{"digest": x["imageDigest"], "tags": x.get("imageTags") or [], "media_type": x["imageManifestMediaType"], "pushed_at": x["imagePushedAt"],
+                   "size": x["imageSizeInBytes"], "artifact_media_type": "", "subject": ""} for x in details]
+        self.assertEqual(ep.summarise("rova-api", result, images, children, [])["expiring_image_count"], 1)
 
 
 class NoCredentials(unittest.TestCase):

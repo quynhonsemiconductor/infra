@@ -62,6 +62,8 @@ USAGE
   python3 scripts/ecr_lifecycle_preview.py --discover      # ALSO preview any repo the
                                                            # account has that we don't know
   python3 scripts/ecr_lifecycle_preview.py -o preview.md   # write artefact to preview.md
+  python3 scripts/ecr_lifecycle_preview.py --inventory inv.json          # also dump every image as JSON
+  python3 scripts/ecr_lifecycle_preview.py --referrer-tag-days 210       # preview a CANDIDATE rule 4 for sha256-* tags
 
   Default artefact path is ecr-lifecycle-preview-<date>.md in the CWD.
 
@@ -146,7 +148,7 @@ def build_policy(overrides: dict) -> dict:
     untagged_days = overrides.get("untagged_expire_days", DEFAULT_UNTAGGED_EXPIRE_DAYS)
     release_prefix = overrides.get("release_tag_prefix", DEFAULT_RELEASE_TAG_PREFIX)
     build_prefix = overrides.get("build_tag_prefix", DEFAULT_BUILD_TAG_PREFIX)
-    return {
+    policy = {
         "rules": [
             {
                 "rulePriority": 1,
@@ -184,6 +186,18 @@ def build_policy(overrides: dict) -> dict:
             },
         ]
     }
+    referrer_days = overrides.get("referrer_tag_days")
+    if referrer_days:
+        # CANDIDATE rule, only when asked for (--referrer-tag-days): tag-schema referrers/signatures (`sha256-<digest>[.sig]`)
+        # are ordinary tagged images that no other rule selects and that carry no `subject` ECR could follow.
+        policy["rules"].append({
+            "rulePriority": 4,
+            "description": f"Expire sha256-* referrer tags older than {referrer_days} days",
+            "selection": {"tagStatus": "tagged", "tagPatternList": ["sha256-*"], "countType": "sinceImagePushed",
+                          "countUnit": "days", "countNumber": referrer_days},
+            "action": {"type": "expire"},
+        })
+    return policy
 
 
 INDEX_MEDIA_TYPES = (
@@ -218,16 +232,29 @@ def describe_images(repo: str) -> list[dict]:
             "tags": d.get("imageTags") or [],
             "media_type": d.get("imageManifestMediaType") or "",
             "pushed_at": d.get("imagePushedAt"),
+            "size": int(d.get("imageSizeInBytes") or 0),
+            "artifact_media_type": d.get("artifactMediaType") or "",
+            "subject": d.get("subjectManifestDigest") or "",
         }
         for d in details
     ]
 
 
-def manifest_children(repo: str, images: list[dict]) -> dict[str, list[str]]:
+def child_kind(entry: dict) -> str:
+    """What an index entry is: buildx marks its provenance/SBOM manifests with this annotation and an `unknown/unknown` platform."""
+    annotations = entry.get("annotations") or {}
+    platform = entry.get("platform") or {}
+    if annotations.get("vnd.docker.reference.type") == "attestation-manifest" or platform.get("architecture") == "unknown":
+        return "attestation"
+    return f"{platform.get('os', '?')}/{platform.get('architecture', '?')}"
+
+
+def manifest_children(repo: str, images: list[dict]) -> tuple[dict[str, list[str]], dict[str, str]]:
     """For every manifest LIST / OCI index in the repository: the digests of the images it references (per-architecture
-    children and buildx attestations). Read from the manifests themselves, not inferred."""
+    children and buildx attestations), and what each child is. Read from the manifests themselves, not inferred."""
     lists = [i["digest"] for i in images if i["media_type"] in INDEX_MEDIA_TYPES]
     children: dict[str, list[str]] = {}
+    kinds: dict[str, str] = {}
     for group in chunks(lists, 20):
         args = ["ecr", "batch-get-image", "--repository-name", repo, "--accepted-media-types", *INDEX_MEDIA_TYPES, "--image-ids"]
         args += [f"imageDigest={d}" for d in group]
@@ -241,10 +268,13 @@ def manifest_children(repo: str, images: list[dict]) -> dict[str, list[str]]:
             except json.JSONDecodeError as exc:
                 raise PreviewFailed(f"{repo}: manifest of {digest} is not JSON: {exc}") from exc
             children[digest] = [m.get("digest") for m in manifest.get("manifests", []) if m.get("digest")]
+            for entry in manifest.get("manifests", []):
+                if entry.get("digest"):
+                    kinds.setdefault(entry["digest"], child_kind(entry))
         missing = [d for d in group if d not in children]
         if missing:
             raise PreviewFailed(f"{repo}: no manifest returned for {len(missing)} index image(s), e.g. {missing[0]}")
-    return children
+    return children, kinds
 
 
 def collect_in_use() -> list[dict]:
@@ -400,16 +430,25 @@ def preview_repository(repo: str, overrides: dict) -> dict:
         time.sleep(PREVIEW_POLL_SECONDS)
 
 
-def summarise(repo: str, result: dict, images: list[dict], children: dict[str, list[str]], in_use: list[dict]) -> dict:
+def summarise(repo: str, result: dict, images: list[dict], children: dict[str, list[str]], in_use: list[dict],
+              kinds: dict[str, str] | None = None, keep_build: int = DEFAULT_KEEP_BUILD_COUNT) -> dict:
     """Reduce a COMPLETE preview to the facts the reviewer needs: how many images the policy would expire, and the
     acceptance tests: none carries a release (`v*`) tag, none is referenced by the ECS estate, none is a child of a
-    manifest list the policy keeps."""
+    manifest list the policy keeps. Also a breakdown of the whole repository by class, with the rule that hit each image."""
     expiring = []
     for pr in result.get("previewResults") or []:
-        if (pr.get("action") or {}).get("type") == "expire":
-            expiring.append({"digest": pr.get("imageDigest"), "tags": pr.get("imageTags") or []})
-    checks = classify_expiring(repo, images, expiring, children, in_use)
+        # The API spells the action in capitals ("EXPIRE"). Comparing against lower-case silently matched NOTHING, so every
+        # check below ran on an empty list and passed while the AWS summary said 26 images would expire.
+        if str((pr.get("action") or {}).get("type", "")).lower() == "expire":
+            expiring.append({"digest": pr.get("imageDigest"), "tags": pr.get("imageTags") or [], "priority": pr.get("appliedRulePriority")})
     summary = result.get("summary") or {}
+    reported = summary.get("expiringImageTotalCount")
+    if reported is not None and reported != len(expiring):
+        raise PreviewFailed(
+            f"{repo}: AWS says {reported} image(s) would expire but {len(expiring)} were read from the preview results; "
+            f"every check built on this list would be wrong, so this is an error and not a pass"
+        )
+    checks = classify_expiring(repo, images, expiring, children, in_use)
     build_prefix = DEFAULT_BUILD_TAG_PREFIX
     builds_now = sum(1 for i in images if any(t.startswith(build_prefix) for t in i["tags"]))
     builds_expiring = sum(1 for e in expiring if any(t.startswith(build_prefix) for t in e["tags"]))
@@ -419,12 +458,103 @@ def summarise(repo: str, result: dict, images: list[dict], children: dict[str, l
         "images_total": len(images),
         "build_images_now": builds_now,
         "build_images_after": builds_now - builds_expiring,
-        "expiring_image_count": summary.get("expiringImageTotalCount", len(expiring)),
+        "expiring_image_count": len(expiring),
         "expiring_with_release_tag": checks["release"],
         "expiring_in_use": checks["in_use"],
         "expiring_children_of_kept_lists": checks["children_of_kept_lists"],
         "index_images": len(children),
         "expiring_sample": expiring[:25],
+        "breakdown": breakdown(images, expiring, children, kinds or {}, keep_build),
+    }
+
+
+RELEASE_RE = re.compile(r"^v\d")
+REFERRER_TAG = re.compile(r"^sha256-[0-9a-f]{64}(\..+)?$")
+
+
+def tag_pattern(tag: str) -> str:
+    """`sha-3f9a2c1` -> `sha-<hex>`, `v1.2.3` -> `vN.N.N`, `pr-123` -> `pr-N`: the shape of a tag, to count distinct kinds."""
+    tag = re.sub(r"[0-9a-f]{40,64}", "<sha>", tag)
+    tag = re.sub(r"(?<![0-9a-zA-Z])[0-9a-f]{7,39}(?![0-9a-zA-Z])|(?<=-)[0-9a-f]{7,39}(?![0-9a-zA-Z])", "<hex>", tag)
+    return re.sub(r"\d+", "N", tag)
+
+
+def image_class(image: dict, parents_kept: set[str], parents_expiring: set[str], child_of: dict[str, str]) -> str:
+    """One class per image, in the order that explains why a rule does or does not select it."""
+    tags = image["tags"]
+    is_index = image["media_type"] in INDEX_MEDIA_TYPES
+    if image.get("subject") or (image.get("artifact_media_type") and not image["artifact_media_type"].startswith(
+            ("application/vnd.docker.container.image", "application/vnd.oci.image.config", "application/vnd.oci.empty"))):
+        return "referrer artifact (OCI subject)"
+    if tags:
+        if any(RELEASE_RE.match(t) for t in tags):
+            return "release v* (index)" if is_index else "release v* (single image)"
+        if any(t.startswith(DEFAULT_BUILD_TAG_PREFIX) for t in tags):
+            return "build sha-* (index)" if is_index else "build sha-* (single image)"
+        if any(REFERRER_TAG.match(t) for t in tags):
+            return "referrer-by-tag sha256-<digest>[.sig/.att/.sbom]"
+        return "other tagged"
+    if image["digest"] in child_of:
+        return f"untagged child of a {'kept' if child_of[image['digest']] in parents_kept else 'EXPIRING'} list"
+    return "untagged orphan (no list references it)"
+
+
+def breakdown(images: list[dict], expiring: list[dict], children: dict[str, list[str]], kinds: dict[str, str], keep_build: int) -> dict:
+    """Counts and sizes per class, which rule hit the expiring ones, the tag shapes, and why rule 3 does or does not select
+    the build images. Sizes are the sum of each image's reported size: layers shared between images are counted once PER
+    image, so the total overstates the bytes stored and the split between classes is the useful part."""
+    hit = {e["digest"]: e["priority"] for e in expiring}
+    expiring_digests = set(hit)
+    child_of = {kid: parent for parent, kids in children.items() for kid in kids}
+    parents_kept = {p for p in children if p not in expiring_digests}
+    parents_expiring = set(children) - parents_kept
+    classes: dict[str, dict] = {}
+    other_patterns: dict[str, int] = {}
+    artifact_types: dict[str, int] = {}
+    child_kinds: dict[str, int] = {}
+    for image in images:
+        cls = image_class(image, parents_kept, parents_expiring, child_of)
+        row = classes.setdefault(cls, {"images": 0, "bytes": 0, "expire_by_rule": {}, "kept": 0})
+        row["images"] += 1
+        row["bytes"] += image["size"]
+        if image["digest"] in hit:
+            rule = str(hit[image["digest"]])
+            row["expire_by_rule"][rule] = row["expire_by_rule"].get(rule, 0) + 1
+        else:
+            row["kept"] += 1
+        if cls == "other tagged":
+            for t in image["tags"]:
+                other_patterns[tag_pattern(t)] = other_patterns.get(tag_pattern(t), 0) + 1
+        if image.get("artifact_media_type"):
+            artifact_types[image["artifact_media_type"]] = artifact_types.get(image["artifact_media_type"], 0) + 1
+        if image["digest"] in child_of:
+            child_kinds[kinds.get(image["digest"], "?")] = child_kinds.get(kinds.get(image["digest"], "?"), 0) + 1
+
+    # Why rule 3 does or does not select the build images: rank them as ECR does (newest first, by push time).
+    builds = sorted((i for i in images if any(t.startswith(DEFAULT_BUILD_TAG_PREFIX) for t in i["tags"])),
+                    key=lambda i: str(i["pushed_at"]), reverse=True)
+    beyond = builds[keep_build:]
+    diagnosis = []
+    for image in beyond:
+        tags = ",".join(image["tags"])
+        priority = hit.get(image["digest"])
+        if priority is not None:
+            diagnosis.append({"tags": tags, "digest": image["digest"], "result": f"expires by rule {priority}"})
+        elif any(RELEASE_RE.match(t) for t in image["tags"]):
+            diagnosis.append({"tags": tags, "digest": image["digest"],
+                              "result": "KEPT: also tagged v*, so rule 2 (priority 2, 180 days) governs it and rule 3 (priority 3) may not expire it"})
+        else:
+            diagnosis.append({"tags": tags, "digest": image["digest"], "result": "NOT SELECTED and unexplained: beyond the newest N, no release tag, not in the preview"})
+    return {
+        "classes": classes,
+        "other_tag_patterns": dict(sorted(other_patterns.items(), key=lambda kv: -kv[1])),
+        "artifact_media_types": artifact_types,
+        "child_kinds": child_kinds,
+        "build_images": len(builds),
+        "keep_build": keep_build,
+        "builds_beyond_keep": len(beyond),
+        "builds_beyond_keep_diagnosis": diagnosis,
+        "expiring_by_rule": {str(r): sum(1 for p in hit.values() if p == r) for r in sorted({p for p in hit.values() if p is not None})},
     }
 
 
@@ -503,11 +633,60 @@ def render_artefact(previewed: list[dict], empty: list[str], failed: dict[str, s
                     extra = img.get("why") or img.get("parent") or ""
                     lines.append(f"- `{', '.join(img['tags']) or '(untagged)'}` ({img['digest']}) {extra}")
                 lines.append("")
+    for p in previewed:
+        lines += render_breakdown(p)
     return "\n".join(lines)
 
 
-def run(discover: bool, out_path: str) -> int:
-    repos = dict(REPOSITORIES)
+def human(n: int) -> str:
+    size = float(n)
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if size < 1024 or unit == "TiB":
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return str(n)
+
+
+def render_breakdown(p: dict) -> list[str]:
+    b = p["breakdown"]
+    lines = [f"## Breakdown: {p['repository']}", "",
+             f"{p['images_total']} images; the policy would expire {p['expiring_image_count']} "
+             f"(by rule: {', '.join(f'rule {r}: {n}' for r, n in b['expiring_by_rule'].items()) or 'none'}). "
+             "Sizes add up each image's reported size, so layers shared between images are counted once per image.", "",
+             "| class | images | size | kept | expire by rule 1 | rule 2 | rule 3 | rule 4 |",
+             "| :---- | -----: | ---: | ---: | ---: | ---: | ---: | ---: |"]
+    for cls, row in sorted(b["classes"].items(), key=lambda kv: -kv[1]["images"]):
+        by = row["expire_by_rule"]
+        lines.append(f"| {cls} | {row['images']} | {human(row['bytes'])} | {row['kept']} | {by.get('1', 0)} | {by.get('2', 0)} | {by.get('3', 0)} | {by.get('4', 0)} |")
+    lines.append("")
+    if b["child_kinds"]:
+        lines.append("Untagged children by kind (read from the index manifests): " + ", ".join(f"{k}: {n}" for k, n in sorted(b["child_kinds"].items())))
+        lines.append("")
+    if b["other_tag_patterns"]:
+        lines.append("Other tagged: distinct tag shapes: " + ", ".join(f"`{k}` x{n}" for k, n in b["other_tag_patterns"].items()))
+        lines.append("")
+    if b["artifact_media_types"]:
+        lines.append("Artifact media types present: " + ", ".join(f"`{k}` x{n}" for k, n in b["artifact_media_types"].items()))
+        lines.append("")
+    lines.append(f"**Rule 3 (keep the newest {b['keep_build']} `sha-*` images):** {b['build_images']} build images; "
+                 f"{b['builds_beyond_keep']} rank beyond the newest {b['keep_build']}.")
+    unexplained = [d for d in b["builds_beyond_keep_diagnosis"] if d["result"].startswith("NOT SELECTED")]
+    if not b["builds_beyond_keep_diagnosis"]:
+        lines.append("Nothing to expire: the repository holds no more than the number to keep.")
+    else:
+        lines.append(("All of them are accounted for:" if not unexplained else f"**{len(unexplained)} of them are NOT expiring for no reason this script can find:**"))
+        for d in b["builds_beyond_keep_diagnosis"][:30]:
+            lines.append(f"- `{d['tags']}` ({d['digest']}): {d['result']}")
+    lines.append("")
+    return lines
+
+
+def run(discover: bool, out_path: str, inventory_path: str | None = None, referrer_tag_days: int | None = None) -> int:
+    repos = {name: dict(o) for name, o in REPOSITORIES.items()}
+    if referrer_tag_days:
+        for o in repos.values():
+            o["referrer_tag_days"] = referrer_tag_days
+    inventory: dict[str, dict] = {}
     if discover:
         # Enumerate every repository the account has, so a repo created outside the four
         # known callers is previewed too rather than silently missed. describe-repositories
@@ -550,9 +729,10 @@ def run(discover: bool, out_path: str) -> int:
                 print(f"  {repo}: no images")
                 continue
             result = preview_repository(repo, overrides)
-            children = manifest_children(repo, images)
-            summary = summarise(repo, result, images, children, in_use)
+            children, kinds = manifest_children(repo, images)
+            summary = summarise(repo, result, images, children, in_use, kinds, overrides.get("keep_build_count", DEFAULT_KEEP_BUILD_COUNT))
             previewed.append(summary)
+            inventory[repo] = {"summary": {k: v for k, v in summary.items() if k != "expiring_sample"}, "images": images, "children": children, "child_kinds": kinds}
             print(
                 f"  {repo}: {summary['expiring_image_count']} of {summary['images_total']} expiring "
                 f"(sha-: {summary['build_images_now']} -> {summary['build_images_after']}); "
@@ -589,6 +769,10 @@ def run(discover: bool, out_path: str) -> int:
 
     with open(out_path, "w") as fh:
         fh.write(artefact)
+    if inventory_path:
+        with open(inventory_path, "w") as fh:
+            json.dump(inventory, fh, indent=1, default=str)
+        print(f"Inventory (digests, tags, sizes, classes) written to {inventory_path}")
     release = sum(len(p["expiring_with_release_tag"]) for p in previewed)
     used = sum(len(p["expiring_in_use"]) for p in previewed)
     kids = sum(len(p["expiring_children_of_kept_lists"]) for p in previewed)
@@ -642,11 +826,14 @@ def main() -> int:
     ap.add_argument("-o", "--out", default=default_out, help=f"artefact path (default {default_out})")
     ap.add_argument("--self-test-no-creds", action="store_true",
                     help="assert the fail-loud path: exit 1, no clean artefact, on a wholly failed run")
+    ap.add_argument("--inventory", metavar="FILE", help="also write every image (digest, tags, size, media type, children) as JSON")
+    ap.add_argument("--referrer-tag-days", type=int, metavar="N",
+                    help="evaluate a CANDIDATE rule 4 that expires sha256-* tags older than N days (not part of the module today)")
     args = ap.parse_args()
 
     if args.self_test_no_creds:
         return self_test_no_creds()
-    return run(discover=args.discover, out_path=args.out)
+    return run(discover=args.discover, out_path=args.out, inventory_path=args.inventory, referrer_tag_days=args.referrer_tag_days)
 
 
 if __name__ == "__main__":
