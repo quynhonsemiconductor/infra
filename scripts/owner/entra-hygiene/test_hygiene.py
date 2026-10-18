@@ -337,7 +337,8 @@ class RotateTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(removals(tenant), [])
         self.assertEqual(json.loads(aws.secrets["rova/develop/app"])["entra-client-secret"], SECRET)
-        self.assertTrue(any("remove-secret" in line and "old-key" in line for line in lines))
+        self.assertTrue(any("remove-secret" in line for line in lines))
+        self.assertTrue(any("OLD credential" in line for line in lines))
 
     def test_operator_says_no_rolls_back(self):
         tenant, aws = rova_rotation()
@@ -404,6 +405,8 @@ class RotateTests(unittest.TestCase):
         for secret in (SECRET, PREV):
             self.assertNotIn(secret, printed)
             self.assertNotIn(secret, ics)
+        for ident in ("old-key", "new-key", "other-key", "keyId", "zzz"):
+            self.assertNotIn(ident, printed)
         self.assertIn("DTSTART;VALUE=DATE:20270317", ics)  # expiry 2027-04-16 minus 30 days
 
     def test_production_needs_the_typed_app_name(self):

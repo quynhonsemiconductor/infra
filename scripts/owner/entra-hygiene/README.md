@@ -128,7 +128,7 @@ python3 scripts/owner/entra-hygiene/hygiene.py rotate --product rova --env devel
 Before anything is written, the command:
 
 - reads the bundle and refuses if the key is missing or not a string;
-- finds the one Entra secret whose hint matches the bundle's current value (refuses if there is not exactly one);
+- finds the one Entra credential that matches the bundle's current value (refuses if there is not exactly one);
 - scans every service in the cluster and refuses if one reads the bundle but is not in `--services`.
 
 Then it runs, asking `y` at each step:
@@ -139,18 +139,22 @@ Then it runs, asking `y` at each step:
 3. Checks every consumer: exactly one PRIMARY deployment, created after the bundle write, with running equal to desired.
 4. Asks: "Reached <app> signed in as you, in a private window?" Then it looks for your successful sign-in in the log
    (up to about 5 minutes).
-5. Removes only the old secret (the one the bundle held). Other secrets are listed and not touched.
+5. Removes only the old credential: the one the bundle held before the rotation. Other credentials are counted, not touched.
+
+The tool never prints a credential's Key ID, name or dates (its output is checked by CodeQL, and those fields count as
+credential data). Look them up in the Entra portal: app > Certificates & secrets.
 
 **Rollback:** if a consumer check fails, or you answer no at step 4, it restores the previous bundle value, restarts the
 services, and removes the new secret. The old secret stays valid until step 5.
 
 **Sign-in log miss:** if you answered yes at step 4 but the log shows no sign-in, nothing is rolled back and nothing is
-removed. Both secrets are valid. Wait a few minutes, check the sign-in log for your sign-in, then finish with the command
-the rotation prints:
+removed. Both secrets are valid. Wait a few minutes, check the sign-in log for your sign-in. Then, in the Entra portal
+(app > Certificates & secrets), note the Key ID of the **old** credential (the entry created before this rotation), and
+finish with:
 ```bash
-python3 scripts/owner/entra-hygiene/hygiene.py remove-secret --product rova --env develop --key-id <old keyId>
+python3 scripts/owner/entra-hygiene/hygiene.py remove-secret --product rova --env develop --key-id <old Key ID>
 ```
-It refuses the secret the bundle holds now. Run it only once your sign-in is in the log.
+It refuses the credential the bundle holds now. Run it only once your sign-in is in the log.
 
 **Before rotating KB Dev, warn developers.** The KB Dev secret is also in developers' local `.env` files
 (`docs/runbooks/entra-apps.md` in qnsc-kb-backend, "Local development", step 5). Local sign-in stops working once the old

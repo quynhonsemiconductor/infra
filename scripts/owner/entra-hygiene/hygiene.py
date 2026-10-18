@@ -347,8 +347,7 @@ class Hygiene:
         self.out(f"  notes set: {bool(app.get('notes'))}; app roles defined: {len(app.get('appRoles') or [])}")
         self.out(f"  instance lock: {(app.get('servicePrincipalLockConfiguration') or {}).get('isEnabled')}")
         self.out(f"  bundle {product.bundle} key {product.bundle_field} (value never read here)")
-        for credential_meta in app.get("passwordCredentials") or []:
-            self.out(f"  credential keyId={credential_meta['keyId']} name={credential_meta.get('displayName')} ends={credential_meta.get('endDateTime')}")
+        self.out(f"  Entra client credentials: {len(app.get('passwordCredentials') or [])} (Key IDs and dates: Entra portal, app > Certificates & secrets)")
         for group in product.groups:
             found = self.find_group(group.name)
             self.out(f"  group {group.name}: {'missing' if found is None else 'exists'}")
@@ -541,10 +540,8 @@ class Hygiene:
         hint = previous[:3]  # matching only: never printed
         matches = [c for c in app.get("passwordCredentials") or [] if c.get("hint") == hint]
         if len(matches) != 1:
-            listing = ", ".join(f"keyId={c['keyId']} name={c.get('displayName')} ends={c.get('endDateTime')}" for c in app.get("passwordCredentials") or [])
-            raise GraphError(f"{len(matches)} Entra credential(s) match the bundle's current value: {listing}. Nothing changed.")
-        old_meta = matches[0]
-        old_id = old_meta["keyId"]
+            raise GraphError(f"{len(matches)} Entra credential(s) match the bundle's current value; expected 1. Nothing changed.")
+        old_id = matches[0]["keyId"]
         unknown = sorted(set(services) - set(self.cluster_services(cluster)))
         if unknown:
             raise GraphError(f"not services of cluster {cluster}: {', '.join(unknown)}. Nothing changed.")
@@ -554,11 +551,10 @@ class Hygiene:
         missing = sorted(consumers - set(services))
         if missing:
             raise GraphError(f"services that read the bundle but are not in --services: {', '.join(missing)}. Nothing changed.")
-        self.out(f"{app['displayName']} ({product.env}): old credential keyId {old_id} (name {old_meta.get('displayName')}, ends {old_meta.get('endDateTime')}), kept until verified")
+        self.out(f"{app['displayName']} ({product.env}): the old credential (the one the bundle holds now) is kept until verified")
         self.out(f"  bundle {product.bundle} key {product.bundle_field}; consumers in {cluster}: {', '.join(sorted(consumers))}")
-        for other in app.get("passwordCredentials") or []:
-            if other["keyId"] != old_id:
-                self.out(f"  other credential keyId={other['keyId']} name={other.get('displayName')}: not touched")
+        others = len(app.get("passwordCredentials") or []) - 1
+        self.out(f"  {others} other credential(s): not touched")
         self.production_gate(product)
         if not self.confirm(f"Add a new client secret (180 days) and write it to the bundle ({product.env})?"):
             return 1
@@ -573,7 +569,7 @@ class Hygiene:
         if new.get("hint") and new["hint"] != secret[:3]:
             self.remove_secret(app, new_id)
             raise GraphError("the new secret's hint does not match its value: removed it; nothing else changed")
-        self.out(f"  new secret keyId {new_id}, ends {ends}, length {len(secret)} (value not shown)")
+        self.out(f"  new secret added, length {len(secret)} (value and Key ID not shown; see the portal)")
         self.write_bundle(product, app, previous, secret, new_id)
         del secret
         written_at = self.now()
@@ -596,13 +592,14 @@ class Hygiene:
             return self.rollback_rotation(product, app, cluster, services, previous, new_id)
         if not self.signed_in_after(app["appId"], upn, restarted):
             self.out("  you reported a sign-in, but the sign-in log has no successful sign-in by you after the restart yet.")
-            self.out(f"  Both secrets are valid; nothing removed; the new secret (keyId {new_id}) is in the bundle.")
-            self.out("  Wait a few minutes, check the sign-in log, then finish with:")
+            self.out("  Both secrets are valid; nothing removed; the new secret is in the bundle.")
+            self.out("  Wait a few minutes, check the sign-in log, then finish with the Key ID of the OLD credential")
+            self.out("  (Entra portal, app > Certificates & secrets: the entry created before this rotation):")
             self.out(f"    python3 scripts/owner/entra-hygiene/hygiene.py remove-secret --product {product_key(product)} "
-                     f"--env {product.env} --key-id {old_id}")
+                     f"--env {product.env} --key-id <old Key ID>")
             return 1
 
-        if self.confirm(f"Remove the old credential keyId {old_id} (ends {old_meta.get('endDateTime')}) now?"):
+        if self.confirm("Remove the old credential now?"):
             self.remove_secret(app, old_id)
         due = parse_time(ends) - dt.timedelta(days=ROTATE_BEFORE_EXPIRY_DAYS)
         path = write_calendar(out_dir, app["displayName"], due, ends)
@@ -646,7 +643,7 @@ class Hygiene:
             self.remove_secret(app, new_id)
             self.out("  bundle failed to write: previous value confirmed, new secret removed")
         except Exception as err:
-            self.out(f"  bundle state unknown after a failed write ({type(err).__name__}); new keyId {new_id} KEPT. Check the bundle by hand.")
+            self.out(f"  bundle state unknown after a failed write ({type(err).__name__}); the new secret is KEPT. Check the bundle and the portal by hand.")
 
     def cluster_services(self, cluster: str) -> list[str]:
         return [arn.rsplit("/", 1)[-1] for arn in self.aws.list_services(cluster)]
@@ -687,7 +684,7 @@ class Hygiene:
         for service in services:
             self.aws.wait_stable(cluster, service)
         self.remove_secret(app, new_id)
-        self.out(f"Rolled back: previous value restored, services restarted, new keyId {new_id} removed.")
+        self.out("Rolled back: previous value restored, services restarted, the new secret removed.")
         return 1
 
     def remove_old_secret(self, product: Product, key_id: str) -> None:
@@ -697,15 +694,15 @@ class Hygiene:
         current = bundle.get(product.bundle_field)
         if not isinstance(current, str) or not current:
             raise GraphError(f"bundle {product.bundle} key {product.bundle_field} is missing: nothing changed")
-        credential_meta = next((c for c in app.get("passwordCredentials") or [] if c["keyId"] == key_id), None)
-        if credential_meta is None:
-            raise GraphError(f"keyId {key_id} is not a secret of {product.sign_in_app}")
-        if credential_meta.get("hint") == current[:3]:  # matching only
-            raise GraphError(f"keyId {key_id} matches the secret the bundle holds now; refusing to remove it")
-        if not self.confirm(f"Remove credential keyId {key_id} (ends {credential_meta.get('endDateTime')}) from {product.sign_in_app} ({product.env})?"):
+        named = [c for c in app.get("passwordCredentials") or [] if c["keyId"] == key_id]
+        if len(named) != 1:
+            raise GraphError(f"the Key ID given is not a credential of {product.sign_in_app}. Nothing changed.")
+        if named[0].get("hint") == current[:3]:  # matching only
+            raise GraphError("that Key ID is the credential the bundle holds now; refusing to remove it. Nothing changed.")
+        if not self.confirm(f"Remove the credential you named from {product.sign_in_app} ({product.env})?"):
             return
         self.remove_secret(app, key_id)
-        self.out(f"removed keyId {key_id}")
+        self.out("removed the credential you named")
 
     def remove_secret(self, app: dict, key_id: str) -> None:
         self.graph.call("POST", f"{GRAPH}/applications/{app['id']}/removePassword", {"keyId": key_id})
