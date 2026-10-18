@@ -2,6 +2,15 @@
 """Preview the ECR lifecycle policy on EVERY repository in the estate, as a DRY RUN, and
 write an artefact a human attaches to the task 0.7 PR before the policy is applied.
 
+2026-10-18: `keep_build_count` goes from 20 to 10 (tf-modules `ecr`, owner decision), so this preview now answers
+three questions per repository BEFORE anyone applies it, and exits 2 if ANY answer is "yes, it would expire":
+
+  1. does it expire an image carrying a release (`v*`) tag?
+  2. does it expire an image a running ECS task, a service deployment or the newest ACTIVE task-definition revision of a
+     family (develop AND prod) references, by tag or by digest, or a per-architecture child of such a manifest list?
+  3. does it expire a per-architecture CHILD image of a manifest list the policy keeps? (AWS documents that ECR will not;
+     this measures it on the real repositories instead of trusting the documentation.)
+
 WHY THIS EXISTS (§13; the open step is tracked in infra issue #175, carried over from the former implementation-plan.md task 0.7). `tf-modules/modules/ecr` moved the
 RELEASE keep rule from a COUNT (`keep_release_count`) to a TIME window
 (`release_retention_days = 180`) in ecr-v2.1.0. A time rule can delete images a count rule
@@ -41,12 +50,14 @@ summary of the three that happened to work.
 THE POLICY TEXT MUST MATCH THE MODULE. The preview evaluates the policy TEXT you give it,
 so a preview of a policy that differs from what OpenTofu will apply proves nothing. This
 script builds the policy from the SAME rules and defaults as tf-modules/modules/ecr/main.tf
-(ecr-v2.1.0), with the per-caller overrides the live callers pass (see REPOSITORIES). If the
-module's rules change, change them here too, or the preview lies.
+(ecr-v2.1.0 with keep_build_count = 10, released as ecr-v2.2.0), with the per-caller overrides the live callers pass
+(see REPOSITORIES). If the module's rules change, change them here too, or the preview lies.
 
 USAGE
-  # Requires AWS credentials with ecr:StartLifecyclePolicyPreview,
-  # ecr:GetLifecyclePolicyPreview, ecr:DescribeRepositories, ecr:DescribeImages.
+  # READ-ONLY. Requires AWS credentials with ecr:StartLifecyclePolicyPreview, ecr:GetLifecyclePolicyPreview,
+  # ecr:DescribeRepositories, ecr:DescribeImages, ecr:BatchGetImage, and ecs:ListClusters, ecs:ListServices,
+  # ecs:DescribeServices, ecs:ListTasks, ecs:DescribeTasks, ecs:ListTaskDefinitionFamilies, ecs:DescribeTaskDefinition.
+  # (start-lifecycle-policy-preview writes nothing to the repository: it evaluates the policy text you pass.)
   python3 scripts/ecr_lifecycle_preview.py                 # preview known estate repos
   python3 scripts/ecr_lifecycle_preview.py --discover      # ALSO preview any repo the
                                                            # account has that we don't know
@@ -67,19 +78,20 @@ import argparse
 import datetime as _dt
 import json
 import os
+import re
 import subprocess
 import sys
 import time
 
 REGION = os.environ.get("AWS_REGION", "ap-southeast-1")
 
-# ── Policy parameters, mirrored from tf-modules/modules/ecr (ecr-v2.1.0) ─────────────────
+# ── Policy parameters, mirrored from tf-modules/modules/ecr (ecr-v2.1.0 + keep_build_count 10) ──
 # Keep these in lockstep with modules/ecr/main.tf and variables.tf. The preview is only
 # meaningful if the text below is the text OpenTofu will apply.
 DEFAULT_RELEASE_TAG_PREFIX = "v"
 DEFAULT_BUILD_TAG_PREFIX = "sha-"
 DEFAULT_RELEASE_RETENTION_DAYS = 180
-DEFAULT_KEEP_BUILD_COUNT = 20
+DEFAULT_KEEP_BUILD_COUNT = 10  # was 20 before ecr-v2.2.0
 DEFAULT_UNTAGGED_EXPIRE_DAYS = 1
 
 # ── The estate's repositories and any per-caller overrides ───────────────────────────────
@@ -174,6 +186,164 @@ def build_policy(overrides: dict) -> dict:
     }
 
 
+INDEX_MEDIA_TYPES = (
+    "application/vnd.oci.image.index.v1+json",
+    "application/vnd.docker.distribution.manifest.list.v2+json",
+)
+ECR_IMAGE = re.compile(
+    r"^(?P<host>\d+\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com)/(?P<repo>[^:@]+)(?::(?P<tag>[^@]+))?(?:@(?P<digest>sha256:[0-9a-f]+))?$"
+)
+
+
+def chunks(items: list, size: int):
+    for i in range(0, len(items), size):
+        yield items[i : i + size]
+
+
+def parse_image_ref(image: str) -> dict | None:
+    """`<acct>.dkr.ecr.<region>.amazonaws.com/<repo>:<tag>` (and/or `@sha256:...`) -> {repo, tag, digest}; None for any
+    other registry. The account id is parsed away on purpose and never printed."""
+    match = ECR_IMAGE.match(image or "")
+    if not match:
+        return None
+    return {"repo": match["repo"], "tag": match["tag"], "digest": match["digest"]}
+
+
+def describe_images(repo: str) -> list[dict]:
+    """Every image in the repository: digest, tags, manifest media type, push time."""
+    details = (_aws("ecr", "describe-images", "--repository-name", repo) or {}).get("imageDetails", [])
+    return [
+        {
+            "digest": d.get("imageDigest"),
+            "tags": d.get("imageTags") or [],
+            "media_type": d.get("imageManifestMediaType") or "",
+            "pushed_at": d.get("imagePushedAt"),
+        }
+        for d in details
+    ]
+
+
+def manifest_children(repo: str, images: list[dict]) -> dict[str, list[str]]:
+    """For every manifest LIST / OCI index in the repository: the digests of the images it references (per-architecture
+    children and buildx attestations). Read from the manifests themselves, not inferred."""
+    lists = [i["digest"] for i in images if i["media_type"] in INDEX_MEDIA_TYPES]
+    children: dict[str, list[str]] = {}
+    for group in chunks(lists, 20):
+        args = ["ecr", "batch-get-image", "--repository-name", repo, "--accepted-media-types", *INDEX_MEDIA_TYPES, "--image-ids"]
+        args += [f"imageDigest={d}" for d in group]
+        out = _aws(*args) or {}
+        if out.get("failures"):
+            raise PreviewFailed(f"{repo}: batch-get-image could not read manifest(s): {out['failures'][:3]}")
+        for item in out.get("images", []):
+            digest = (item.get("imageId") or {}).get("imageDigest")
+            try:
+                manifest = json.loads(item.get("imageManifest") or "{}")
+            except json.JSONDecodeError as exc:
+                raise PreviewFailed(f"{repo}: manifest of {digest} is not JSON: {exc}") from exc
+            children[digest] = [m.get("digest") for m in manifest.get("manifests", []) if m.get("digest")]
+        missing = [d for d in group if d not in children]
+        if missing:
+            raise PreviewFailed(f"{repo}: no manifest returned for {len(missing)} index image(s), e.g. {missing[0]}")
+    return children
+
+
+def collect_in_use() -> list[dict]:
+    """Every ECR image reference the ECS estate depends on, develop and prod alike (all clusters of the account/region):
+
+      * the task definition of EVERY deployment of EVERY service (PRIMARY and the ACTIVE one a rollback would return to),
+      * the task definition and the resolved image digest of every RUNNING task,
+      * the newest ACTIVE revision of every task-definition family (one-shot tasks such as the migrator run from these).
+
+    Raises PreviewFailed on any ECS failure: an estate that could not be read must not read as an estate with nothing in use."""
+    refs: list[dict] = []
+    task_defs: dict[str, str] = {}  # arn -> why
+
+    clusters = (_aws("ecs", "list-clusters") or {}).get("clusterArns", [])
+    for cluster in clusters:
+        name = cluster.split("/")[-1]
+        services = (_aws("ecs", "list-services", "--cluster", cluster) or {}).get("serviceArns", [])
+        for group in chunks(services, 10):
+            described = _aws("ecs", "describe-services", "--cluster", cluster, "--services", *group) or {}
+            if described.get("failures"):
+                raise PreviewFailed(f"ecs describe-services failed in {name}: {described['failures'][:2]}")
+            for svc in described.get("services", []):
+                for dep in svc.get("deployments", []):
+                    arn = dep.get("taskDefinition")
+                    if arn:
+                        task_defs.setdefault(arn, f"{name}/{svc.get('serviceName')} {dep.get('status', '?')} deployment")
+        tasks = (_aws("ecs", "list-tasks", "--cluster", cluster, "--desired-status", "RUNNING") or {}).get("taskArns", [])
+        for group in chunks(tasks, 100):
+            described = _aws("ecs", "describe-tasks", "--cluster", cluster, "--tasks", *group) or {}
+            if described.get("failures"):
+                raise PreviewFailed(f"ecs describe-tasks failed in {name}: {described['failures'][:2]}")
+            for task in described.get("tasks", []):
+                arn = task.get("taskDefinitionArn")
+                if arn:
+                    task_defs.setdefault(arn, f"{name} running task")
+                for container in task.get("containers", []):
+                    parsed = parse_image_ref(container.get("image", ""))
+                    if parsed:
+                        refs.append({**parsed, "digest": container.get("imageDigest") or parsed["digest"], "source": f"{name} running task ({container.get('name')})"})
+
+    families = (_aws("ecs", "list-task-definition-families", "--status", "ACTIVE") or {}).get("families", [])
+    for family in families:
+        latest = (_aws("ecs", "describe-task-definition", "--task-definition", family) or {}).get("taskDefinition", {})
+        if latest.get("taskDefinitionArn"):
+            task_defs.setdefault(latest["taskDefinitionArn"], f"newest ACTIVE revision of {family}")
+
+    for arn, why in task_defs.items():
+        definition = (_aws("ecs", "describe-task-definition", "--task-definition", arn) or {}).get("taskDefinition", {})
+        label = f"{why}: {arn.split('/')[-1]}"
+        for container in definition.get("containerDefinitions", []):
+            parsed = parse_image_ref(container.get("image", ""))
+            if parsed:
+                refs.append({**parsed, "source": f"{label} ({container.get('name')})"})
+    return refs
+
+
+def classify_expiring(repo: str, images: list[dict], expiring: list[dict], children: dict[str, list[str]], in_use: list[dict]) -> dict:
+    """Pure: which of the images the preview would expire are (a) release-tagged, (b) in use, (c) a child of a manifest
+    list that is KEPT. `expiring` items are {digest, tags}; `children` maps a list digest to its children's digests."""
+    expiring_digests = {e["digest"] for e in expiring}
+    by_tag = {t: i["digest"] for i in images for t in i["tags"]}
+
+    in_use_digests: dict[str, str] = {}  # digest -> why
+    for ref in in_use:
+        if ref["repo"] != repo:
+            continue
+        if ref.get("digest"):
+            in_use_digests.setdefault(ref["digest"], ref["source"])
+        if ref.get("tag") and ref["tag"] in by_tag:
+            in_use_digests.setdefault(by_tag[ref["tag"]], f"{ref['source']} (tag {ref['tag']})")
+    for parent, why in list(in_use_digests.items()):  # a running list keeps its children too
+        for child in children.get(parent, []):
+            in_use_digests.setdefault(child, f"child of {why}")
+    for parent, kids in children.items():  # and a running child (a task reports the digest it pulled) keeps its list
+        running = next((in_use_digests[k] for k in kids if k in in_use_digests), None)
+        if running:
+            in_use_digests.setdefault(parent, f"manifest list of {running}")
+
+    kept_children: dict[str, str] = {}
+    for parent, kids in children.items():
+        if parent in expiring_digests:
+            continue
+        label = next((",".join(i["tags"]) for i in images if i["digest"] == parent), parent) or parent
+        for kid in kids:
+            kept_children.setdefault(kid, label)
+
+    release, used, orphaned = [], [], []
+    for e in expiring:
+        entry = {"digest": e["digest"], "tags": e["tags"]}
+        if any(t.startswith(DEFAULT_RELEASE_TAG_PREFIX) and t != "latest" for t in e["tags"]):
+            release.append(entry)
+        if e["digest"] in in_use_digests:
+            used.append({**entry, "why": in_use_digests[e["digest"]]})
+        if e["digest"] in kept_children:
+            orphaned.append({**entry, "parent": kept_children[e["digest"]]})
+    return {"release": release, "in_use": used, "children_of_kept_lists": orphaned}
+
+
+
 def repository_exists(repo: str) -> bool:
     """True if the repository exists. A repository that does not exist yet (the products are
     not yet created) cannot be
@@ -230,42 +400,49 @@ def preview_repository(repo: str, overrides: dict) -> dict:
         time.sleep(PREVIEW_POLL_SECONDS)
 
 
-def summarise(repo: str, result: dict) -> dict:
-    """Reduce a COMPLETE preview to the facts the reviewer needs: how many images the policy
-    would expire, and — the actual acceptance test — whether ANY of them carry a release tag
-    (a `v*` tag), which is the thing 0.7 forbids expiring."""
-    preview_results = result.get("previewResults") or []
+def summarise(repo: str, result: dict, images: list[dict], children: dict[str, list[str]], in_use: list[dict]) -> dict:
+    """Reduce a COMPLETE preview to the facts the reviewer needs: how many images the policy would expire, and the
+    acceptance tests: none carries a release (`v*`) tag, none is referenced by the ECS estate, none is a child of a
+    manifest list the policy keeps."""
     expiring = []
-    release_expiring = []
-    for pr in preview_results:
-        tags = pr.get("imageTags") or []
-        applied = (pr.get("action") or {}).get("type")
-        if applied == "expire":
-            expiring.append({"digest": pr.get("imageDigest"), "tags": tags})
-            if any(t.startswith(DEFAULT_RELEASE_TAG_PREFIX) and t != "latest" for t in tags):
-                release_expiring.append({"digest": pr.get("imageDigest"), "tags": tags})
+    for pr in result.get("previewResults") or []:
+        if (pr.get("action") or {}).get("type") == "expire":
+            expiring.append({"digest": pr.get("imageDigest"), "tags": pr.get("imageTags") or []})
+    checks = classify_expiring(repo, images, expiring, children, in_use)
     summary = result.get("summary") or {}
+    build_prefix = DEFAULT_BUILD_TAG_PREFIX
+    builds_now = sum(1 for i in images if any(t.startswith(build_prefix) for t in i["tags"]))
+    builds_expiring = sum(1 for e in expiring if any(t.startswith(build_prefix) for t in e["tags"]))
     return {
         "repository": repo,
         "status": result.get("status"),
+        "images_total": len(images),
+        "build_images_now": builds_now,
+        "build_images_after": builds_now - builds_expiring,
         "expiring_image_count": summary.get("expiringImageTotalCount", len(expiring)),
-        "expiring_with_release_tag": release_expiring,
+        "expiring_with_release_tag": checks["release"],
+        "expiring_in_use": checks["in_use"],
+        "expiring_children_of_kept_lists": checks["children_of_kept_lists"],
+        "index_images": len(children),
         "expiring_sample": expiring[:25],
     }
 
 
-def render_artefact(previewed: list[dict], empty: list[str], failed: dict[str, str]) -> str:
+def render_artefact(previewed: list[dict], empty: list[str], failed: dict[str, str], in_use_count: int | None) -> str:
     now = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
     lines = [
-        "# ECR lifecycle-policy preview (task 0.7, §13)",
+        "# ECR lifecycle-policy preview (keep_build_count 10; release rule unchanged)",
         "",
         f"Generated: {now}  ·  region: {REGION}",
         "",
-        "Dry run of `aws ecr start-lifecycle-policy-preview` with the ecr-v2.1.0 policy "
-        "(time-based release retention). Nothing was deleted. Attach this to the retention PR.",
+        f"Dry run of `aws ecr start-lifecycle-policy-preview` with the ecr-v2.1.0 policy and keep_build_count = "
+        f"{DEFAULT_KEEP_BUILD_COUNT} (qnsc-kb passes its own 5). Nothing was deleted. "
+        + (f"{in_use_count} image reference(s) in use by the ECS estate were cross-checked." if in_use_count is not None else "ECS was NOT read."),
         "",
     ]
     total_release = sum(len(p["expiring_with_release_tag"]) for p in previewed)
+    total_used = sum(len(p["expiring_in_use"]) for p in previewed)
+    total_children = sum(len(p["expiring_children_of_kept_lists"]) for p in previewed)
     if failed:
         lines += [
             "## ⚠ INCOMPLETE — do NOT treat this as a clean preview",
@@ -280,7 +457,6 @@ def render_artefact(previewed: list[dict], empty: list[str], failed: dict[str, s
         lines.append("")
     lines += ["## Verdict", ""]
     if not previewed:
-        # Nothing reached COMPLETE. Say nothing reassuring — there is no verdict to give.
         lines += [
             "**No repository was successfully previewed, so there is NO verdict.** This run "
             "says nothing about what the policy would delete. Resolve the failures above and "
@@ -288,47 +464,45 @@ def render_artefact(previewed: list[dict], empty: list[str], failed: dict[str, s
             "",
         ]
     else:
+        bad = total_release + total_used + total_children
         lines += [
-            (
-                f"**{total_release} image(s) carrying a release (`v*`) tag would expire "
-                f"across the {len(previewed)} repository/repositories that previewed.** "
-                + (
-                    "This FAILS the 0.7 acceptance test — raise `release_retention_days` until "
-                    "it reaches zero. Do NOT lower it to match a count rule."
-                    if total_release > 0
-                    else "No release image is expired on any previewed repository."
-                )
-            ),
+            f"- images carrying a release (`v*`) tag that would expire: **{total_release}**",
+            f"- images referenced by an ECS service deployment, running task or newest ACTIVE task definition that would expire: **{total_used}**",
+            f"- per-architecture children of a KEPT manifest list that would expire: **{total_children}**",
+            "",
+            ("**FAIL — do not apply.** Raise the retention (or fix what holds the reference) until all three are zero."
+             if bad else
+             f"**PASS — all three are zero on the {len(previewed)} repository/repositories that previewed.**"),
             "",
         ]
         if failed:
-            lines += [
-                "Note the verdict covers only the repositories that previewed; the "
-                f"{len(failed)} above were not read and are not included.",
-                "",
-            ]
+            lines += [f"The verdict covers only the repositories that previewed; the {len(failed)} above were not read.", ""]
     lines += [
         "## Per repository",
         "",
-        "| repository | status | images expiring | of which release-tagged |",
-        "| :--------- | :----- | --------------: | ----------------------: |",
+        "| repository | images now | `sha-` now → after | expiring | release-tagged | in use | children of kept lists |",
+        "| :--------- | ---------: | -----------------: | -------: | -------------: | -----: | ---------------------: |",
     ]
     for p in previewed:
         lines.append(
-            f"| {p['repository']} | {p['status']} | {p['expiring_image_count']} "
-            f"| {len(p['expiring_with_release_tag'])} |"
+            f"| {p['repository']} | {p['images_total']} | {p['build_images_now']} → {p['build_images_after']} | {p['expiring_image_count']} "
+            f"| {len(p['expiring_with_release_tag'])} | {len(p['expiring_in_use'])} | {len(p['expiring_children_of_kept_lists'])} |"
         )
     for repo in empty:
-        lines.append(f"| {repo} | NO IMAGES | 0 | 0 |")
+        lines.append(f"| {repo} | 0 | – | 0 | 0 | 0 | 0 |")
     for repo in failed:
-        lines.append(f"| {repo} | **COULD NOT PREVIEW** | ? | ? |")
+        lines.append(f"| {repo} | **COULD NOT PREVIEW** | ? | ? | ? | ? | ? |")
     lines.append("")
     for p in previewed:
-        if p["expiring_with_release_tag"]:
-            lines += [f"### {p['repository']}: release images that would expire", ""]
-            for img in p["expiring_with_release_tag"]:
-                lines.append(f"- `{', '.join(img['tags'])}` ({img['digest']})")
-            lines.append("")
+        for key, title in (("expiring_with_release_tag", "release images that would expire"),
+                           ("expiring_in_use", "images in use that would expire"),
+                           ("expiring_children_of_kept_lists", "children of kept manifest lists that would expire")):
+            if p[key]:
+                lines += [f"### {p['repository']}: {title}", ""]
+                for img in p[key]:
+                    extra = img.get("why") or img.get("parent") or ""
+                    lines.append(f"- `{', '.join(img['tags']) or '(untagged)'}` ({img['digest']}) {extra}")
+                lines.append("")
     return "\n".join(lines)
 
 
@@ -348,7 +522,21 @@ def run(discover: bool, out_path: str) -> int:
     empty: list[str] = []
     failed: dict[str, str] = {}
 
+    # What the ECS estate references is read ONCE. If it cannot be read, nothing can be called safe: every repository is
+    # then reported as not verifiable, never as clean.
+    in_use: list[dict] | None
+    try:
+        in_use = collect_in_use()
+        print(f"  ECS: {len(in_use)} image reference(s) in use across all clusters")
+    except PreviewFailed as exc:
+        in_use = None
+        for repo in repos:
+            failed[repo] = f"in-use check impossible, ECS could not be read: {exc}"
+        print(f"  ECS COULD NOT BE READ — {exc}", file=sys.stderr)
+
     for repo, overrides in repos.items():
+        if in_use is None:
+            break
         try:
             if not repository_exists(repo):
                 # Written-but-not-applied is the norm today; report it, do not fail on it,
@@ -356,22 +544,26 @@ def run(discover: bool, out_path: str) -> int:
                 empty.append(repo)
                 print(f"  {repo}: repository does not exist yet — nothing to preview")
                 continue
-            result = preview_repository(repo, overrides)
-            summary = summarise(repo, result)
-            if summary["expiring_image_count"] == 0 and not (result.get("previewResults")):
+            images = describe_images(repo)
+            if not images:
                 empty.append(repo)
-                print(f"  {repo}: no images / nothing expires")
-            else:
-                previewed.append(summary)
-                print(
-                    f"  {repo}: {summary['expiring_image_count']} expiring, "
-                    f"{len(summary['expiring_with_release_tag'])} release-tagged"
-                )
+                print(f"  {repo}: no images")
+                continue
+            result = preview_repository(repo, overrides)
+            children = manifest_children(repo, images)
+            summary = summarise(repo, result, images, children, in_use)
+            previewed.append(summary)
+            print(
+                f"  {repo}: {summary['expiring_image_count']} of {summary['images_total']} expiring "
+                f"(sha-: {summary['build_images_now']} -> {summary['build_images_after']}); "
+                f"release-tagged {len(summary['expiring_with_release_tag'])}, in use {len(summary['expiring_in_use'])}, "
+                f"children of kept lists {len(summary['expiring_children_of_kept_lists'])}"
+            )
         except PreviewFailed as exc:
             failed[repo] = str(exc)
             print(f"  {repo}: COULD NOT PREVIEW — {exc}", file=sys.stderr)
 
-    artefact = render_artefact(previewed, empty, failed)
+    artefact = render_artefact(previewed, empty, failed, len(in_use) if in_use is not None else None)
 
     if failed:
         # Never write a success artefact on a partial run. Write the incomplete report so the
@@ -397,16 +589,18 @@ def run(discover: bool, out_path: str) -> int:
 
     with open(out_path, "w") as fh:
         fh.write(artefact)
-    total_release = sum(len(p["expiring_with_release_tag"]) for p in previewed)
+    release = sum(len(p["expiring_with_release_tag"]) for p in previewed)
+    used = sum(len(p["expiring_in_use"]) for p in previewed)
+    kids = sum(len(p["expiring_children_of_kept_lists"]) for p in previewed)
     print(f"\nPreview complete. Artefact written to {out_path}.")
-    if total_release:
+    if release or used or kids:
         print(
-            f"FAIL: {total_release} release-tagged image(s) would expire. Raise "
-            f"release_retention_days before applying (0.7).",
+            f"FAIL: would expire {release} release-tagged, {used} in-use and {kids} manifest-list-child image(s). "
+            f"Do not apply; raise the retention or fix the reference first.",
             file=sys.stderr,
         )
         return 2
-    print("PASS: no release-tagged image would expire on any previewed repository (0.7).")
+    print("PASS: no release-tagged, in-use or kept-list-child image would expire on any previewed repository.")
     return 0
 
 
