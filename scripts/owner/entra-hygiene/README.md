@@ -36,11 +36,12 @@ infra stacks). Products: `rova` (develop, production), `opshub` (develop), `kb` 
 
 ## Track 1: assignment required (OpsHub and KB, develop first)
 
-Each product gets two groups:
+Each product gets:
 
 - `<product>-users`: **dynamic**, every internal Member with an enabled account (`user.userType -eq "Member"` and
-  `user.accountEnabled -eq true`).
-- `<product>-guests`: **assigned**, filled by hand with the people outside that rule.
+  `user.accountEnabled -eq true`). OpsHub and KB.
+- `kb-guests` (KB only): **assigned**, filled by hand with external guests. OpsHub has no guests group: its sign-in refuses
+  B2B guests (`allowGuests: false`), so nobody outside the rule can sign in to it.
 
 ### OpsHub only: the App Role `employee` (one-time owner step)
 
@@ -63,7 +64,7 @@ It adds the role if missing and reads it back. It keeps any App Roles already on
    ```bash
    python3 scripts/owner/entra-hygiene/hygiene.py setup --product kb --env develop
    ```
-3. **Add anyone outside the dynamic rule** (usually external guests) to the assigned group. If there are none, skip this.
+3. **KB only: add external guests** to `kb-guests`. If there are none, skip this. OpsHub: skip.
    ```bash
    python3 scripts/owner/entra-hygiene/hygiene.py add-member --product kb --env develop --group kb-guests --upn guest@example.com
    ```
@@ -80,7 +81,7 @@ It adds the role if missing and reads it back. It keeps any App Roles already on
    ```bash
    python3 scripts/owner/entra-hygiene/hygiene.py enforce --product kb --env develop
    ```
-6. **Test:** sign in to the develop product as a staff member and as a guest in the guests group. Both must work. A tenant
+6. **Test:** sign in to the develop product as a staff member; for KB also as a guest in `kb-guests`. Both must work. A tenant
    user in no group must be refused.
 
 **Rollback (one line, at once):**
@@ -88,7 +89,7 @@ It adds the role if missing and reads it back. It keeps any App Roles already on
 python3 scripts/owner/entra-hygiene/hygiene.py rollback --product kb --env develop
 ```
 
-Then OpsHub the same way (`--product opshub`), after `add-role`.
+Then OpsHub the same way (`--product opshub`), after `add-role`. OpsHub has no guests step.
 
 ## Why Rova is not on assignment
 
@@ -136,12 +137,24 @@ Then it runs, asking `y` at each step:
    changed. A failed write puts the previous value back and removes the new secret.
 2. Restarts the services (rolling). Old tasks keep the old secret until replaced.
 3. Checks every consumer: exactly one PRIMARY deployment, created after the bundle write, with running equal to desired.
-4. Asks you to sign in to the app **in a private window**, as yourself. It then looks for your successful sign-in in the
-   log (up to about 5 minutes).
+4. Asks: "Reached <app> signed in as you, in a private window?" Then it looks for your successful sign-in in the log
+   (up to about 5 minutes).
 5. Removes only the old secret (the one the bundle held). Other secrets are listed and not touched.
 
-If any check fails, it **rolls back**: restores the previous bundle value, restarts the services, and removes the new
-secret. The old secret stays valid until step 5.
+**Rollback:** if a consumer check fails, or you answer no at step 4, it restores the previous bundle value, restarts the
+services, and removes the new secret. The old secret stays valid until step 5.
+
+**Sign-in log miss:** if you answered yes at step 4 but the log shows no sign-in, nothing is rolled back and nothing is
+removed. Both secrets are valid. Wait a few minutes, check the sign-in log for your sign-in, then finish with the command
+the rotation prints:
+```bash
+python3 scripts/owner/entra-hygiene/hygiene.py remove-secret --product rova --env develop --key-id <old keyId>
+```
+It refuses the secret the bundle holds now. Run it only once your sign-in is in the log.
+
+**Before rotating KB Dev, warn developers.** The KB Dev secret is also in developers' local `.env` files
+(`docs/runbooks/entra-apps.md` in qnsc-kb-backend, "Local development", step 5). Local sign-in stops working once the old
+secret is removed. Tell them when rotation happens, and have each set the new value from the bundle.
 
 For production, add `--env production --prod`. It also asks you to type the app name (`Rova Prod`), before anything is
 written.
@@ -167,7 +180,7 @@ Tell the architect.
 
 - **Who keeps access.** `opshub-users` and `kb-users` default to every enabled internal Member. Confirm for KB: the KB
   user population was not known when this was written.
-- **Guests** of OpsHub and KB: who goes into `<product>-guests`, before enforcing.
+- **Guests of KB:** who goes into `kb-guests`, before enforcing. OpsHub has none.
 - **OpsHub:** the App Role `employee` (step above).
 - **Claude for Outlook:** its repo for the Notes field, and whether it is in this tenant.
 - **Production.** Track 1 and Track 2 for production only after the owner's "go" and a green develop run.
@@ -182,6 +195,7 @@ Tell the architect.
   sign-in falls back to it when no claim matches, so a token with `employee` and a token with no role give the same
   roles. The opshub test suite was not run for this.
 - Sign-in logs keep 30 days on P1/P2 and 7 days on the free tier. Check can miss a user who signed in longer ago.
-- Other consumers of the sign-in secret outside the ECS services (for example a CI job or a Pages function) are not
-  scanned. Confirm none before rotating.
+- Other consumers of the sign-in secret outside the ECS services are not scanned: KB developers' local `.env` (see above),
+  a CI job, a Pages function. Confirm none before rotating.
+- KB production is not configured here. Its bundle is `qnsc-kb/prod/app` (per the KB runbook), and it is not in this tool.
 - ECS cluster and service names, and the KB user population, are owner inputs.

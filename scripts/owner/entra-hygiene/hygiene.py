@@ -77,7 +77,8 @@ PRODUCTS: dict[tuple[str, str], Product] = {
         "develop",
         "opshub/develop/app",
         "entra-client-secret",
-        (Group("opshub-users", dynamic=True), Group("opshub-guests", dynamic=False)),
+        # No guests group: OpsHub's sign-in refuses B2B guests (allowGuests: false).
+        (Group("opshub-users", dynamic=True),),
         role_value="employee",
     ),
     ("kb", "develop"): Product(
@@ -231,7 +232,7 @@ def odata_quote(value: str) -> str:
 
 def references_bundle(task_def: dict, bundle: str) -> bool:
     """True when a container of the task definition names the bundle: as a `secrets` valueFrom or an env value."""
-    pattern = re.compile(r":secret:" + re.escape(bundle) + r"(-[A-Za-z0-9]+)?(:|$)")
+    pattern = re.compile(r"(^|:secret:)" + re.escape(bundle) + r"(-[A-Za-z0-9]{6})?(:|$)")
     for container in task_def.get("containerDefinitions", []):
         values = [s.get("valueFrom", "") for s in container.get("secrets", [])]
         values += [e.get("value", "") for e in container.get("environment", [])]
@@ -361,8 +362,14 @@ class Hygiene:
             raise GraphError(f"{product.sign_in_app} uses default access; no app role to add")
         app = self.require_app(product.sign_in_app)
         existing = app.get("appRoles") or []
-        if any(r.get("value") == product.role_value for r in existing):
-            self.out(f"{product.sign_in_app}: app role {product.role_value!r} already present")
+        present = [r for r in existing if r.get("value") == product.role_value]
+        if present:
+            if not any(r.get("isEnabled") for r in present):
+                raise GraphError(
+                    f"{product.sign_in_app}: app role {product.role_value!r} exists but is disabled; "
+                    "enable it by hand in the portal, then re-run"
+                )
+            self.out(f"{product.sign_in_app}: app role {product.role_value!r} already present and enabled")
             return
         self.production_gate(product)
         if not self.confirm(f"Add app role {product.role_value!r} to {product.sign_in_app} ({product.env})?"):
@@ -393,7 +400,10 @@ class Hygiene:
             return DEFAULT_ROLE_ID
         match = [r for r in roles if r.get("value") == product.role_value and r.get("isEnabled")]
         if not match:
-            raise GraphError(f"{app['displayName']} has no enabled app role {product.role_value!r}; run add-role first (README)")
+            raise GraphError(
+                f"{app['displayName']} has no enabled app role {product.role_value!r}; run add-role first, "
+                "or enable it by hand if it exists disabled"
+            )
         return match[0]["id"]
 
     # ── setup: groups and assignments ─────────────────────────────────────────────────────────────────
@@ -524,7 +534,7 @@ class Hygiene:
         self.preflight(need_p1=False)
         upn = self.operator_upn()
         app = self.require_app(product.sign_in_app)
-        bundle = json.loads(self.aws.get_secret(product.bundle))
+        bundle = self.read_bundle(product)
         previous = bundle.get(product.secret_key)
         if not isinstance(previous, str) or not previous:
             raise GraphError(f"bundle {product.bundle} key {product.secret_key} is missing or not a string: nothing changed")
@@ -534,6 +544,9 @@ class Hygiene:
             listing = ", ".join(f"keyId={c['keyId']} hint={c.get('hint')}" for c in app.get("passwordCredentials") or [])
             raise GraphError(f"{len(matches)} Entra secret(s) match the bundle's current value by hint: {listing}. Nothing changed.")
         old_id = matches[0]["keyId"]
+        unknown = sorted(set(services) - set(self.cluster_services(cluster)))
+        if unknown:
+            raise GraphError(f"not services of cluster {cluster}: {', '.join(unknown)}. Nothing changed.")
         consumers = self.consumers(cluster, product.bundle)
         if not consumers:
             raise GraphError(f"no service in cluster {cluster} reads bundle {product.bundle}: check --cluster")
@@ -577,12 +590,16 @@ class Hygiene:
             return self.rollback_rotation(product, app, cluster, services, previous, new_id)
         self.out("  every consumer has one PRIMARY deployment created after the bundle write, running == desired")
 
-        prompt = f"Sign in to {app['displayName']} ({product.env}) as {upn} in a PRIVATE window now. Did it work?"
+        prompt = f"Reached {app['displayName']} ({product.env}) signed in as {upn}, in a private window?"
         if not self.confirm(prompt):
             return self.rollback_rotation(product, app, cluster, services, previous, new_id)
         if not self.signed_in_after(app["appId"], upn, restarted):
-            self.out("  no successful sign-in by the operator to the app after the restart is in the sign-in log.")
-            return self.rollback_rotation(product, app, cluster, services, previous, new_id)
+            self.out("  you reported a sign-in, but the sign-in log has no successful sign-in by you after the restart yet.")
+            self.out(f"  Both secrets are valid; nothing removed; the new secret (keyId {new_id}) is in the bundle.")
+            self.out("  Wait a few minutes, check the sign-in log, then finish with:")
+            self.out(f"    python3 scripts/owner/entra-hygiene/hygiene.py remove-secret --product {product_key(product)} "
+                     f"--env {product.env} --key-id {old_id}")
+            return 1
 
         if self.confirm(f"Remove the old secret keyId {old_id} (hint {hint}) now?"):
             self.remove_secret(app, old_id)
@@ -591,8 +608,17 @@ class Hygiene:
         self.out(f"Next rotation due {due:%Y-%m-%d} (30 days before {ends}). Calendar file: {path}")
         return 0
 
+    def read_bundle(self, product: Product) -> dict:
+        try:
+            bundle = json.loads(self.aws.get_secret(product.bundle))
+        except json.JSONDecodeError as err:
+            raise GraphError(f"bundle {product.bundle} is not JSON: nothing changed") from err
+        if not isinstance(bundle, dict):
+            raise GraphError(f"bundle {product.bundle} is not a JSON object: nothing changed")
+        return bundle
+
     def write_bundle(self, product: Product, app: dict, previous: str, secret: str, new_id: str) -> None:
-        before = json.loads(self.aws.get_secret(product.bundle))
+        before = self.read_bundle(product)
         updated = dict(before)
         updated[product.secret_key] = secret
         try:
@@ -610,21 +636,23 @@ class Hygiene:
         """Put the previous value back if the bundle does not hold it, then remove the new secret. Keep the new
         secret if neither is certain: a valid, unused secret is safer than an unknown bundle with nothing to fall back to."""
         try:
-            current = json.loads(self.aws.get_secret(product.bundle))
+            current = self.read_bundle(product)
             if current.get(product.secret_key) != previous:
                 current[product.secret_key] = previous
                 self.aws.put_secret(product.bundle, json.dumps(current))
-                if json.loads(self.aws.get_secret(product.bundle)).get(product.secret_key) != previous:
+                if self.read_bundle(product).get(product.secret_key) != previous:
                     raise AwsError("restore of the previous value did not read back")
             self.remove_secret(app, new_id)
             self.out("  bundle failed to write: previous value confirmed, new secret removed")
         except Exception as err:
             self.out(f"  bundle state unknown after a failed write ({type(err).__name__}); new keyId {new_id} KEPT. Check the bundle by hand.")
 
+    def cluster_services(self, cluster: str) -> list[str]:
+        return [arn.rsplit("/", 1)[-1] for arn in self.aws.list_services(cluster)]
+
     def consumers(self, cluster: str, bundle: str) -> set[str]:
-        names = [arn.rsplit("/", 1)[-1] for arn in self.aws.list_services(cluster)]
         found: set[str] = set()
-        for svc in self.aws.describe_services(cluster, names):
+        for svc in self.aws.describe_services(cluster, self.cluster_services(cluster)):
             if references_bundle(self.aws.task_definition(svc["taskDefinition"]), bundle):
                 found.add(svc["serviceName"])
         return found
@@ -647,10 +675,10 @@ class Hygiene:
         return ok
 
     def rollback_rotation(self, product: Product, app: dict, cluster: str, services: list[str], previous: str, new_id: str) -> int:
-        current = json.loads(self.aws.get_secret(product.bundle))
+        current = self.read_bundle(product)
         current[product.secret_key] = previous
         self.aws.put_secret(product.bundle, json.dumps(current))
-        if json.loads(self.aws.get_secret(product.bundle)).get(product.secret_key) != previous:
+        if self.read_bundle(product).get(product.secret_key) != previous:
             raise AwsError("rollback: restore of the previous value did not read back; new secret kept, check by hand")
         del current
         for service in services:
@@ -660,6 +688,23 @@ class Hygiene:
         self.remove_secret(app, new_id)
         self.out(f"Rolled back: previous value restored, services restarted, new keyId {new_id} removed.")
         return 1
+
+    def remove_old_secret(self, product: Product, key_id: str) -> None:
+        """Finish a rotation: remove one named secret, refusing the one the bundle holds now."""
+        app = self.require_app(product.sign_in_app)
+        bundle = self.read_bundle(product)
+        current = bundle.get(product.secret_key)
+        if not isinstance(current, str) or not current:
+            raise GraphError(f"bundle {product.bundle} key {product.secret_key} is missing: nothing changed")
+        cred = next((c for c in app.get("passwordCredentials") or [] if c["keyId"] == key_id), None)
+        if cred is None:
+            raise GraphError(f"keyId {key_id} is not a secret of {product.sign_in_app}")
+        if cred.get("hint") == current[:3]:
+            raise GraphError(f"keyId {key_id} matches the secret the bundle holds now; refusing to remove it")
+        if not self.confirm(f"Remove secret keyId {key_id} (hint {cred.get('hint')}) from {product.sign_in_app} ({product.env})?"):
+            return
+        self.remove_secret(app, key_id)
+        self.out(f"removed keyId {key_id}")
 
     def remove_secret(self, app: dict, key_id: str) -> None:
         self.graph.call("POST", f"{GRAPH}/applications/{app['id']}/removePassword", {"keyId": key_id})
@@ -700,6 +745,10 @@ class Hygiene:
         if not (after.get("isEnabled") and after.get("allProperties")):
             raise GraphError(f"{name}: lock write returned, but a read shows {after}")
         self.out(f"{name}: instance property lock on (read back)")
+
+
+def product_key(product: Product) -> str:
+    return next(name for (name, _env), value in PRODUCTS.items() if value is product)
 
 
 def write_calendar(out_dir: str, app_name: str, due: dt.datetime, expiry: str) -> str:
@@ -751,6 +800,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--cluster", required=True)
     p.add_argument("--services", required=True, help="comma-separated ECS services; must include every service that reads the bundle")
     p.add_argument("--out-dir", required=True, help="directory OUTSIDE any git repository for the calendar file")
+    p = sub.add_parser("remove-secret", help="finish a rotation: remove the named old secret")
+    product_args(p)
+    p.add_argument("--key-id", required=True)
     p = sub.add_parser("notes", help="set Notes (repo link) on the known apps")
     p.add_argument("--force", action="store_true", help="replace Notes that are already set")
     p = sub.add_parser("lock-app", help="application instance property lock on one app")
@@ -787,6 +839,8 @@ def main(argv: list[str] | None = None, graph=None, aws=None, hygiene: Hygiene |
         h.enforce(product, True)
     elif args.command == "rollback":
         h.enforce(product, False)
+    elif args.command == "remove-secret":
+        h.remove_old_secret(product, args.key_id)
     elif args.command == "rotate":
         return h.rotate(product, args.cluster, [s for s in args.services.split(",") if s], args.out_dir)
     return 0

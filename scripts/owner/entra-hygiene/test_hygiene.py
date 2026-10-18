@@ -12,7 +12,7 @@ import urllib.parse
 from types import SimpleNamespace
 
 import hygiene
-from hygiene import DEFAULT_ROLE_ID, GraphError, Group, Hygiene, MEMBER_RULE, PRODUCTS
+from hygiene import DEFAULT_ROLE_ID, GraphError, Hygiene, MEMBER_RULE, PRODUCTS, references_bundle
 
 NOW = dt.datetime(2026, 10, 18, 9, 0, tzinfo=dt.timezone.utc)
 ACCOUNT = "608983206583"
@@ -180,7 +180,12 @@ class FakeAws:
 
     def add_service(self, name, via="secrets", key="entra-client-secret"):
         ref = f"arn:aws:secretsmanager:ap-southeast-1:{ACCOUNT}:secret:{self.bundle_id}-AbCdEf"
-        container = {"secrets": [{"name": "X", "valueFrom": f"{ref}:{key}::"}]} if via == "secrets" else {"environment": [{"name": "IDENTITY_HOME_SECRET_REF", "value": ref}]}
+        if via == "secrets":
+            container = {"secrets": [{"name": "X", "valueFrom": f"{ref}:{key}::"}]}
+        elif via == "bare":
+            container = {"environment": [{"name": "SECRET_NAME", "value": self.bundle_id}]}
+        else:
+            container = {"environment": [{"name": "IDENTITY_HOME_SECRET_REF", "value": ref}]}
         self.task_defs[f"td-{name}"] = {"containerDefinitions": [container]}
         self.services[name] = {"serviceName": name, "taskDefinition": f"td-{name}", "deployments": [self.deployment("2026-10-17T00:00:00+00:00", 1)]}
 
@@ -325,13 +330,56 @@ class RotateTests(unittest.TestCase):
         self.assertEqual(removals(tenant), ["new-key"])
         self.assertEqual(json.loads(aws.secrets["rova/develop/app"])["entra-client-secret"], PREV)
 
-    def test_no_sign_in_by_the_operator_rolls_back(self):
+    def test_reported_sign_in_missing_from_the_log_keeps_both_secrets(self):
         tenant, aws = rova_rotation()
         tenant.signins = []
-        code, _, _ = run_rotate(tenant, aws, ROVA_DEV)
+        code, lines, _ = run_rotate(tenant, aws, ROVA_DEV)
+        self.assertEqual(code, 1)
+        self.assertEqual(removals(tenant), [])
+        self.assertEqual(json.loads(aws.secrets["rova/develop/app"])["entra-client-secret"], SECRET)
+        self.assertTrue(any("remove-secret" in line and "old-key" in line for line in lines))
+
+    def test_operator_says_no_rolls_back(self):
+        tenant, aws = rova_rotation()
+        code, _, _ = run_rotate(tenant, aws, ROVA_DEV, answers={"Reached": "n"})
         self.assertEqual(code, 1)
         self.assertNotIn("old-key", removals(tenant))
-        self.assertIn("new-key", removals(tenant))
+        self.assertEqual(json.loads(aws.secrets["rova/develop/app"])["entra-client-secret"], PREV)
+
+    def test_unknown_service_name_is_refused_before_adding_a_secret(self):
+        tenant, aws = rova_rotation()
+        with self.assertRaises(GraphError) as ctx:
+            run_rotate(tenant, aws, ROVA_DEV, services=("api", "worker", "typo-svc"))
+        self.assertIn("typo-svc", str(ctx.exception))
+        self.assertEqual(adds(tenant), [])
+
+    def test_bundle_that_is_not_an_object_is_a_clean_refusal(self):
+        tenant, aws = rova_rotation()
+        aws.secrets["rova/develop/app"] = json.dumps(["not", "an", "object"])
+        with self.assertRaises(GraphError):
+            run_rotate(tenant, aws, ROVA_DEV)
+        self.assertEqual(adds(tenant), [])
+
+    def test_bare_name_reference_is_a_consumer(self):
+        self.assertTrue(references_bundle({"containerDefinitions": [{"environment": [{"name": "N", "value": "rova/develop/app"}]}]}, "rova/develop/app"))
+        self.assertFalse(references_bundle({"containerDefinitions": [{"environment": [{"name": "N", "value": "rova/develop/app-old"}]}]}, "rova/develop/app"))
+
+    def test_remove_secret_refuses_the_one_the_bundle_holds(self):
+        tenant, aws = rova_rotation()
+        tenant.app["passwordCredentials"].append({"keyId": "new-key", "hint": SECRET[:3]})
+        aws.secrets["rova/develop/app"] = json.dumps({"entra-client-secret": SECRET})
+        h, _ = make(tenant, aws)
+        with self.assertRaises(GraphError):
+            h.remove_old_secret(ROVA_DEV, "new-key")
+        self.assertEqual(removals(tenant), [])
+
+    def test_remove_secret_removes_the_named_old_secret(self):
+        tenant, aws = rova_rotation()
+        tenant.app["passwordCredentials"].append({"keyId": "new-key", "hint": SECRET[:3]})
+        aws.secrets["rova/develop/app"] = json.dumps({"entra-client-secret": SECRET})
+        h, _ = make(tenant, aws)
+        h.remove_old_secret(ROVA_DEV, "old-key")
+        self.assertEqual(removals(tenant), ["old-key"])
 
     def test_failed_put_removes_the_new_secret(self):
         tenant, aws = rova_rotation()
@@ -491,7 +539,18 @@ class GroupAndRoleTests(unittest.TestCase):
         h, _ = make(tenant, FakeAws("x", {}))
         h.setup(OPSHUB_DEV)
         self.assertEqual({a["appRoleId"] for a in tenant.assignments}, {"role-emp"})
-        self.assertEqual(len(tenant.assignments), 2)
+        self.assertEqual(len(tenant.assignments), 1)
+
+    def test_opshub_has_no_guests_group(self):
+        self.assertEqual([g.name for g in OPSHUB_DEV.groups], ["opshub-users"])
+
+    def test_disabled_employee_role_is_refused_not_re_added(self):
+        tenant = FakeTenant("OpsHub Dev", app_roles=[{"id": "r-e", "value": "employee", "isEnabled": False}])
+        h, _ = make(tenant, FakeAws("x", {}))
+        with self.assertRaises(GraphError) as ctx:
+            h.add_role(OPSHUB_DEV)
+        self.assertIn("disabled", str(ctx.exception))
+        self.assertEqual(tenant.writes, [])
 
     def test_opshub_setup_stops_when_the_role_is_missing(self):
         tenant = FakeTenant("OpsHub Dev", app_roles=[{"id": "r-x", "value": "admin", "isEnabled": True}])
