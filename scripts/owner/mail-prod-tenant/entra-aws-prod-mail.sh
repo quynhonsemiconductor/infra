@@ -84,7 +84,7 @@ product_setup() {
     kb)
       require_guid KB_PROD_SERVICE_APP_ID "${KB_PROD_SERVICE_APP_ID:-}"
       APP_ID="$KB_PROD_SERVICE_APP_ID"
-      SECRET_NAME="qnsc-kb/prod/mail-graph-certificate"
+      SECRET_NAME="qnsc-kb/production/mail-graph-certificate"
       ;;
     *)
       die "unknown product '$PRODUCT' (rova, opshub, kb)"

@@ -30,7 +30,7 @@ The sign-in app `503133fe-58c0-4158-86ca-0cecb2f6f376` ("Rova Prod") is a known 
 
 ## Standards these scripts follow
 
-- Secrets: one standalone secret per product certificate, readable only by the worker's execution role. Names: `rova/production/mail-graph-certificate`, `opshub/production/graph-client-certificate`, `qnsc-kb/prod/mail-graph-certificate`. Values go in on stdin (`file:///dev/stdin`), never in argv. Output shows lengths and PEM markers only.
+- Secrets: one standalone secret per product certificate, readable only by the worker's execution role. Names: `rova/production/mail-graph-certificate`, `opshub/production/graph-client-certificate`, `qnsc-kb/production/mail-graph-certificate`. Values go in on stdin (`file:///dev/stdin`), never in argv. Output shows lengths and PEM markers only.
 - Entra: certificate only, no client secret, no `Mail.*` permission anywhere. Only the `.crt` is uploaded. Keys stay in `~/.qnsc-secrets/mail-certs` (mode 700, files 600). The scripts refuse paths under `~/Desktop`, `~/Documents` and iCloud Drive.
 - Graph permissions: `opshub` prod gets exactly the five application roles (`SecurityEvents.Read.All`, `DeviceManagementManagedDevices.Read.All`, `User.Read.All`, `User.EnableDisableAccount.All`, `User.RevokeSessions.All`). Rova and KB Service apps get none, as their runbooks require. Role IDs are resolved from Microsoft Graph by name, not hard-coded.
 - Every AWS command names `--profile qnsc-admin --region ap-southeast-1`. Preflight verifies the account is `608983206583`.
@@ -69,7 +69,7 @@ Run in this order. Step 3 (the check tools) needs steps 1 and 2 finished, and th
 
    The `check` step sends one test message per product. Each tool must report `PASS` for the SEND to the prod mailbox and `PASS` (403) for each denied mailbox. If an allowed send is refused in the first hour, wait and retry: that is Exchange propagation.
 
-   After `check` passes, the product switch-on PRs (`email_provider = "graph"`, the client ID, the certificate flag) are separate changes. They are not part of this directory.
+   After `check` passes, the rova prod switch-on (`email_provider = "graph"`, the client ID, the certificate flag) goes out in the same release window as the SES removal; the release order is in the PR body, not in this directory. opshub and KB prod switch-ons stay deferred until those products have a prod release.
 
 4. **Rova production only, after a real invitation has arrived from `noreply-rova@qnsc.vn`:** remove the old grant on the sign-in app. This is a dry run unless the flag is passed:
 
