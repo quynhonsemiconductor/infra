@@ -1,0 +1,31 @@
+# Tests for scripts/ecr_lifecycle_preview.py: the preview that gates a destructive lifecycle-policy change. The AWS CLI is
+# faked in the tests; nothing here reads an account.
+name: ECR preview · Tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/ecr_lifecycle_preview.py'
+      - 'scripts/test_ecr_lifecycle_preview.py'
+      - '.github/workflows/ecr-preview-tests.yml'
+  pull_request:
+    # No `branches:` filter on purpose (see security.yml): a stacked PR must run its checks too.
+    paths:
+      - 'scripts/ecr_lifecycle_preview.py'
+      - 'scripts/test_ecr_lifecycle_preview.py'
+      - '.github/workflows/ecr-preview-tests.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: python3 -m unittest scripts/test_ecr_lifecycle_preview.py
