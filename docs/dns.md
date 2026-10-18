@@ -9,9 +9,9 @@ record unless the PR carries the `allow-dns-destroy` label; see `docs/incidents/
 | Name | Type | Purpose | In code |
 |---|---|---|---|
 | `qnsc.vn` | TXT | SPF for the apex: Microsoft 365 + SES, `-all` | not yet (set by hand) |
-| `mail.qnsc.vn` | MX | SES custom MAIL FROM (`feedback-smtp.<region>.amazonses.com`) | `ses_mail_from_mx` |
-| `mail.qnsc.vn` | TXT | SPF for the MAIL FROM domain, `~all` | `ses_mail_from_spf` |
-| three `*._domainkey` | CNAME | SES DKIM | `ses_dkim[0..2]` |
+| `mail.qnsc.vn` | MX | SES custom MAIL FROM | deleted by the SES identity removal (not merged until every product is off SES) |
+| `mail.qnsc.vn` | TXT | SPF for the MAIL FROM domain | removed with the same change |
+| three `*._domainkey` | CNAME | SES DKIM | removed with the same change |
 | `_dmarc.qnsc.vn` | TXT | DMARC, report-only | `dmarc` (imported, see below) |
 
 ## DMARC policy and its plan
