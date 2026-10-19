@@ -265,7 +265,7 @@ module "shared_cache" {
   # every other module source in this layer, and the tags are what scripts/pin_drift.py in
   # qnsc-ci compares across repos. A commit hash would satisfy the check and make the pin
   # invisible to that report.
-  source = "git::https://github.com/quynhonsemiconductor/tf-modules.git//modules/cache?ref=cache-v1.1.0"
+  source = "git::https://github.com/quynhonsemiconductor/tf-modules.git//modules/cache?ref=cache-v1.2.0"
 
   name              = "${local.name}-cache"
   subnet_ids        = module.network.data_subnet_ids
@@ -280,6 +280,13 @@ module "shared_cache" {
 
   mode      = "node"
   node_type = "cache.t4g.micro"
+
+  # Valkey 7.2 -> 8.1 in place, the same engine as local, CI and the product targets. Approved
+  # 2026-10-19: all three develop environments share this node and blip for the upgrade. The
+  # ElastiCache "8.2" line is open-source 8.1 plus valkey-search, so 8.1 is the target.
+  # apply_immediately is develop-only: the upgrade starts now, not in the maintenance window.
+  node_engine_version = "8.1"
+  apply_immediately   = true
 
   tags = { Environment = "develop" }
 }
