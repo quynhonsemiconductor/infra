@@ -439,6 +439,13 @@ resource "grafana_rule_group" "series_near_cap" {
 # (a stopped service, or a dead OTLP credential) is the alerting-health job's
 # finding, not this rule's — this rule must fire on a POSITIVE signal, a
 # fail-open line, never on absence.
+#
+# DORMANT until on-prem: on AWS no app log reaches Loki (app logs go to
+# CloudWatch; the tf-modules observability-agent ships metrics and traces
+# only, and the apps have no OTel log exporter), so these rules can never
+# fire there. They land for real with on-prem log collection (Alloy pod
+# logs carrying the same env labels). The CloudWatch filters + alarms in
+# the product stacks are the AWS-era coverage.
 resource "grafana_rule_group" "security_fail_open" {
   name             = "security (stack-wide)"
   folder_uid       = grafana_folder.alerts.uid
@@ -452,7 +459,7 @@ resource "grafana_rule_group" "security_fail_open" {
     iterator = env_rule
     content {
       name          = "security-control-failed-open-${env_rule.value.env}"
-      condition     = "B"
+      condition     = "C"
       for           = "0m"
       no_data_state = "OK"
       # A Loki or pipeline error is an alerting-infrastructure fault, not a
@@ -461,7 +468,7 @@ resource "grafana_rule_group" "security_fail_open" {
 
       data {
         ref_id         = "A"
-        query_type     = "range"
+        query_type     = "instant"
         datasource_uid = data.grafana_data_source.logs.uid
 
         relative_time_range {
@@ -473,7 +480,8 @@ resource "grafana_rule_group" "security_fail_open" {
           refId      = "A"
           datasource = { type = "loki", uid = data.grafana_data_source.logs.uid }
           expr       = "sum(count_over_time({service_namespace=~\".+\", deployment_environment_name=\"${env_rule.value.env}\"} | json | securityFailOpen != \"\" [5m]))"
-          queryType  = "range"
+          queryType  = "instant"
+          instant    = true
           intervalMs = 1000
         })
       }
@@ -489,9 +497,27 @@ resource "grafana_rule_group" "security_fail_open" {
 
         model = jsonencode({
           refId      = "B"
-          type       = "threshold"
+          type       = "reduce"
           datasource = { type = "__expr__", uid = "__expr__" }
           expression = "A"
+          reducer    = "last"
+        })
+      }
+
+      data {
+        ref_id         = "C"
+        datasource_uid = "__expr__"
+
+        relative_time_range {
+          from = 0
+          to   = 0
+        }
+
+        model = jsonencode({
+          refId      = "C"
+          type       = "threshold"
+          datasource = { type = "__expr__", uid = "__expr__" }
+          expression = "B"
           conditions = [
             {
               evaluator = {
@@ -512,7 +538,7 @@ resource "grafana_rule_group" "security_fail_open" {
       }
 
       annotations = {
-        summary = "A security control (token denylist or rate limiter) failed OPEN in ${env_rule.value.env} — Valkey is likely unreachable. Revoked tokens are being accepted and rate limits are off. Check Valkey health."
+        summary = "A security control failed open in ${env_rule.value.env}. Check Valkey health."
       }
     }
   }
