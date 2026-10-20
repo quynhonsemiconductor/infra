@@ -9,6 +9,8 @@ live/
   observability       edge                          ← account-wide, no env
   runtime-dev         runtime-prod
   storage-dev         storage-prod                  ← platform, per env
+  identity            onprem                        ← Phase-1 skeletons (Azure not
+                                                      set up yet; in NOT_PLANNABLE)
 ```
 
 ## Why the depth is fixed
