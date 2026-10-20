@@ -87,11 +87,10 @@ jobs:
           #   observability-alerting
           #                 reads `observability`'s state for the Grafana INSTANCE
           #                 url and the stack service-account token that configure
-          #                 its `grafana` provider. `observability` itself now
-          #                 plans cleanly (its resources use only the default
-          #                 provider, configured from var.grafana_cloud_api_key)
-          #                 and has simply never been applied — the same
-          #                 same read-the-sibling's-state shape.
+          #                 its `grafana` provider. It is planned and applied here
+          #                 after `observability` (apply-observability-alerting).
+          #                 Its Grafana objects are adopted by import blocks, so the
+          #                 first plan shows imports and in-place updates, not creates.
           #
           #                 This REPLACES the old `observability` provider-alias
           #                 diagnosis: the single stack used to configure an
@@ -104,9 +103,9 @@ jobs:
           #                 was to split the stack in two, which is done: the
           #                 provider is now configured from the sibling's outputs
           #                 via terraform_remote_state, known before any resource
-          #                 is evaluated. So `observability` left this list, and
-          #                 `observability-alerting` takes its place until the
-          #                 first apply of `observability`.
+          #                 is evaluated. `observability` stays on this list until
+          #                 its Grafana objects are removed from its state (owner
+          #                 `tofu state rm`), then it leaves the list.
           #
           #   organization  AccessDenied on sso:DescribePermissionSet,
           #                 organizations:ListAccounts and
@@ -172,7 +171,7 @@ jobs:
           # Keeping the exclusions named in code rather than dropping the
           # derivation: any NEW stack is planned by default, and each gap is named
           # here instead of being absent from a list nobody compared to anything.
-          NOT_PLANNABLE="observability observability-alerting organization"
+          NOT_PLANNABLE="observability organization"
 
           SKIPPED=""
           PLANNABLE=""
