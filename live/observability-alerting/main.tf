@@ -267,9 +267,19 @@ resource "grafana_contact_point" "teams" {
   }
 }
 
+resource "grafana_contact_point" "email" {
+  name = "email-devops"
+
+  email {
+    addresses = [var.alerts_email]
+  }
+}
+
 resource "grafana_notification_policy" "root" {
-  count         = local.alerting_enabled ? 1 : 0
-  contact_point = grafana_contact_point.teams[0].name
+  # Develop (and any alert without env=prod) goes to email only. Prod adds Teams,
+  # via the first child below, and email via the second; a matched child stops
+  # the root, so prod lists both explicitly.
+  contact_point = grafana_contact_point.email.name
   # "env" is REQUIRED here, not "product" alone — caught in a pre-prod
   # audit, before it could bite: with only develop's alert rules active
   # this was invisible, but the moment prod's rules activate, a develop
@@ -283,6 +293,28 @@ resource "grafana_notification_policy" "root" {
   # Long repeat: a channel re-notified every default 4h for a still-firing
   # alert is exactly the kind of noise that trains people to ignore it.
   repeat_interval = "12h"
+
+  dynamic "policy" {
+    for_each = local.alerting_enabled ? [1] : []
+    content {
+      matcher {
+        label = "env"
+        match = "="
+        value = "prod"
+      }
+      contact_point = grafana_contact_point.teams[0].name
+      continue      = true
+    }
+  }
+
+  policy {
+    matcher {
+      label = "env"
+      match = "="
+      value = "prod"
+    }
+    contact_point = grafana_contact_point.email.name
+  }
 }
 
 # Stack-wide, not per-product — lives here because the "Active Mimir series"
@@ -371,6 +403,12 @@ resource "grafana_rule_group" "series_near_cap" {
       summary = "Active Mimir series across the whole stack (all products) is above 8000 — 80% of the 10k free-tier ceiling. New series will start being silently dropped past 10k."
     }
   }
+}
+
+variable "alerts_email" {
+  description = "Address that receives Grafana alerts for every env, and CloudWatch alarms via their own SNS topics."
+  type        = string
+  default     = "devops@qnsc.vn"
 }
 
 variable "teams_webhook_url" {
