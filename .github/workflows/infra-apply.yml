@@ -87,7 +87,7 @@ jobs:
           # 2026-09-20 split removed, so every plan fails with "Provider configuration not present ... (orphan)"), and an all-stacks run
           # that includes it is red every time. A change under live/observability/ still selects it below, so that remains visible.
           # Put it back in this list with the state migration: docs/runbooks/observability-state-migration.md.
-          ALL='"bootstrap","security-baseline","runtime-dev","runtime-prod","edge","storage-dev","storage-prod"'
+          ALL='"bootstrap","security-baseline","runtime-dev","runtime-prod","edge","storage-dev","storage-prod","observability-alerting"'
           # Manual dispatch or an unknown/zero base commit → apply everything.
           if [ -z "${BEFORE:-}" ] || [[ "$BEFORE" =~ ^0+$ ]] || ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
             echo "stacks=[$ALL]" >> "$GITHUB_OUTPUT"; exit 0
@@ -116,7 +116,7 @@ jobs:
           UNMANAGED=""
           for d in $(find live -name '*.tf' -not -path '*/.terraform/*' -exec dirname {} \; \
                        | sed 's|^live/||' | sort -u); do
-            case " bootstrap security-baseline runtime-dev runtime-prod edge storage-dev storage-prod observability " in
+            case " bootstrap security-baseline runtime-dev runtime-prod edge storage-dev storage-prod observability observability-alerting " in
               *" $d "*) ;;
               *) UNMANAGED="$UNMANAGED $d" ;;
             esac
@@ -420,7 +420,7 @@ jobs:
     name: Apply observability-alerting
     # After the observability job: this stack reads its state (Grafana url and token).
     needs: [detect, apply-observability]
-    if: ${{ always() && contains(fromJson(needs.detect.outputs.stacks), 'observability-alerting') && needs.apply-observability.result != 'failure' }}
+    if: ${{ always() && contains(fromJson(needs.detect.outputs.stacks), 'observability-alerting') && needs.apply-observability.result != 'failure' && needs.apply-observability.result != 'cancelled' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: shared   # platform blast radius — gate with required reviewers

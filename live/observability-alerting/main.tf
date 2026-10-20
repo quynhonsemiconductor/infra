@@ -462,7 +462,7 @@ import {
 }
 
 import {
-  to = grafana_contact_point.teams
+  to = grafana_contact_point.teams[0]
   id = "0:teams-alerts"
 }
 
