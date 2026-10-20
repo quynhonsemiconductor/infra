@@ -171,17 +171,13 @@ jobs:
           # Keeping the exclusions named in code rather than dropping the
           # derivation: any NEW stack is planned by default, and each gap is named
           # here instead of being absent from a list nobody compared to anything.
-<<<<<<< HEAD
-          NOT_PLANNABLE="observability organization"
-=======
           # identity / onprem (added 2026-10-20, Phase-1 skeletons): the Azure
           #                       subscription and stqnsctfstate do not exist yet
           #                       (pre-work (e)), and onprem additionally needs a
           #                       Cloudflare token with Tunnel scope. init would
           #                       fail on the azurerm backend for both. Remove
           #                       from this list in the PR that applies them first.
-          NOT_PLANNABLE="observability observability-alerting organization identity onprem"
->>>>>>> 2ea3a17 (feat(live): identity and onprem skeletons — azure blob state, tunnel ingress per host+path)
+          NOT_PLANNABLE="observability organization identity onprem"
 
           SKIPPED=""
           PLANNABLE=""
