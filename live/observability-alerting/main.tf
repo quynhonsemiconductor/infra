@@ -133,6 +133,17 @@ data "grafana_data_source" "prometheus" {
   name = data.terraform_remote_state.observability.outputs.alerting_prometheus_datasource_name
 }
 
+# Same formula as observability's alerting_prometheus_datasource_name output,
+# with Grafana Cloud's "-logs" suffix for the auto-provisioned Loki instance
+# (A-9). Computed here rather than added as a sibling output in `observability`
+# so this stack needs no change on the sibling while the import migration is in
+# flight. The product stacks resolve the same name their own way (rova's
+# `logs_datasource_name` defaults to "grafanacloud-qnsc-logs") — the slug is
+# the same one, so both spellings must stay identical or the lookup 404s.
+data "grafana_data_source" "logs" {
+  name = "grafanacloud-${data.terraform_remote_state.observability.outputs.alerting_stack_slug}-logs"
+}
+
 # ONE system-level dashboard, split by `service_namespace` (the product
 # label observability-agent already stamps on every signal) rather than
 # hardcoding a panel per product. Works today with only rally emitting
@@ -401,6 +412,134 @@ resource "grafana_rule_group" "series_near_cap" {
 
     annotations = {
       summary = "Active Mimir series across the whole stack (all products) is above 8000 — 80% of the 10k free-tier ceiling. New series will start being silently dropped past 10k."
+    }
+  }
+}
+
+# ── Alerting: a security control failed OPEN ─────────────────────────────────
+# The products' JwtAuthGuard token denylist and rate limiter fail open when
+# Valkey is unreachable; the apps tag those log lines with the
+# `securityFailOpen` field (FAIL_OPEN_FIELD in @quynhonsemiconductor/
+# observability — renaming it there silently disarms this rule, which is why
+# the products' fail-open.spec.ts greps their infra tree to pin the coupling).
+# Each product's own stack already carries a CloudWatch metric filter + alarm
+# on the same field; this is the platform-side counterpart (A-9): ONE rule per
+# environment covering every product at once, so a product whose CloudWatch
+# alarm was never wired (or whose logs the OTel pipeline carries but whose
+# alarm emails went nowhere) still pages.
+#
+# Log-based on purpose, same reason as the CloudWatch filters: the event is a
+# pino JSON log line, not an OTel counter, and the lines reach Loki through
+# the same OTLP pipeline as everything else. Two rules, not one: the
+# notification policy routes on an `env` label (prod → Teams + email, develop
+# → email only) and a rule's labels are static, so a single env-less rule
+# could not reach Teams for prod while staying quiet for develop.
+#
+# no_data_state = OK is deliberate: an environment emitting nothing at all
+# (a stopped service, or a dead OTLP credential) is the alerting-health job's
+# finding, not this rule's — this rule must fire on a POSITIVE signal, a
+# fail-open line, never on absence.
+#
+# DORMANT until on-prem: on AWS no app log reaches Loki (app logs go to
+# CloudWatch; the tf-modules observability-agent ships metrics and traces
+# only, and the apps have no OTel log exporter), so these rules can never
+# fire there. They land for real with on-prem log collection (Alloy pod
+# logs carrying the same env labels). The CloudWatch filters + alarms in
+# the product stacks are the AWS-era coverage.
+resource "grafana_rule_group" "security_fail_open" {
+  name             = "security (stack-wide)"
+  folder_uid       = grafana_folder.alerts.uid
+  interval_seconds = 60
+
+  dynamic "rule" {
+    for_each = {
+      develop    = { env = "develop", severity = "warning" }
+      production = { env = "production", severity = "critical" }
+    }
+    iterator = env_rule
+    content {
+      name          = "security-control-failed-open-${env_rule.value.env}"
+      condition     = "C"
+      for           = "0m"
+      no_data_state = "OK"
+      # A Loki or pipeline error is an alerting-infrastructure fault, not a
+      # fail-open: report it as an error state rather than paging on it.
+      exec_err_state = "Error"
+
+      data {
+        ref_id         = "A"
+        query_type     = "instant"
+        datasource_uid = data.grafana_data_source.logs.uid
+
+        relative_time_range {
+          from = 300
+          to   = 0
+        }
+
+        model = jsonencode({
+          refId      = "A"
+          datasource = { type = "loki", uid = data.grafana_data_source.logs.uid }
+          expr       = "sum(count_over_time({service_namespace=~\".+\", deployment_environment_name=\"${env_rule.value.env}\"} | json | securityFailOpen != \"\" [5m]))"
+          queryType  = "instant"
+          instant    = true
+          intervalMs = 1000
+        })
+      }
+
+      data {
+        ref_id         = "B"
+        datasource_uid = "__expr__"
+
+        relative_time_range {
+          from = 0
+          to   = 0
+        }
+
+        model = jsonencode({
+          refId      = "B"
+          type       = "reduce"
+          datasource = { type = "__expr__", uid = "__expr__" }
+          expression = "A"
+          reducer    = "last"
+        })
+      }
+
+      data {
+        ref_id         = "C"
+        datasource_uid = "__expr__"
+
+        relative_time_range {
+          from = 0
+          to   = 0
+        }
+
+        model = jsonencode({
+          refId      = "C"
+          type       = "threshold"
+          datasource = { type = "__expr__", uid = "__expr__" }
+          expression = "B"
+          conditions = [
+            {
+              evaluator = {
+                type   = "gt"
+                params = [0]
+              }
+            }
+          ]
+          intervalMs    = 1000
+          maxDataPoints = 43200
+        })
+      }
+
+      labels = {
+        product  = "platform"
+        env      = env_rule.value.env
+        severity = env_rule.value.severity
+      }
+
+      annotations = {
+        summary = "A security control failed open in ${env_rule.value.env}. Check Valkey health."
+      }
     }
   }
 }
