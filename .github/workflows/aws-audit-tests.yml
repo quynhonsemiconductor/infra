@@ -1,0 +1,54 @@
+# =============================================================================
+# AWS orphan audit · Tests — the owner-run inventory in scripts/owner.
+#
+# The audit is run by a person in their own terminal against the real account; CI never touches AWS.
+# What CI guards:
+#   * shellcheck          on the audit script and its test;
+#   * the offline test    a stub `aws` CLI on recorded fixtures: every call is a read, no secret is requested, delete
+#                         commands stay commented, a wrong account is refused, and the date helper reads every
+#                         timestamp shape the CLI prints (Z, +00:00, local offsets, fractional seconds), in UTC+07:00
+#                         as well as UTC.
+# =============================================================================
+name: AWS audit · Tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/owner/**'
+      - '.github/workflows/aws-audit-tests.yml'
+  pull_request:
+    # No `branches:` filter on purpose (see security.yml): a stacked PR must run its checks too.
+    paths:
+      - 'scripts/owner/**'
+      - '.github/workflows/aws-audit-tests.yml'
+
+concurrency:
+  group: aws-audit-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Lint and offline tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: shellcheck
+        run: shellcheck -x scripts/owner/aws-orphan-audit.sh scripts/owner/test_aws_orphan_audit.sh
+
+      - name: Tests (UTC+07:00, as the owner's machine)
+        env:
+          TZ: Asia/Bangkok
+        run: bash scripts/owner/test_aws_orphan_audit.sh
+
+      - name: Tests (UTC)
+        env:
+          TZ: UTC
+        run: bash scripts/owner/test_aws_orphan_audit.sh

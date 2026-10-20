@@ -1,0 +1,45 @@
+# =============================================================================
+# Owner Entra hygiene · Tests — the owner-run helper in scripts/owner/entra-hygiene.
+#
+# The helper is run by the owner in their own terminal against the real tenant; CI never touches a tenant. CI runs the
+# unit tests on a fake Graph and a fake AWS, which cover the rules that must hold: enforce refuses while anyone would
+# lose access, the old secret is removed only after a verified sign-in, a failed bundle write leaves no orphan secret,
+# and no secret value reaches argv or output.
+# =============================================================================
+name: Owner Entra hygiene · Tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/owner/entra-hygiene/**'
+      - '.github/workflows/owner-entra-hygiene.yml'
+  pull_request:
+    # No `branches:` filter on purpose (see security.yml): a stacked PR must run its checks too.
+    paths:
+      - 'scripts/owner/entra-hygiene/**'
+      - '.github/workflows/owner-entra-hygiene.yml'
+
+concurrency:
+  group: owner-entra-hygiene-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Compile
+        run: python3 -m py_compile scripts/owner/entra-hygiene/hygiene.py scripts/owner/entra-hygiene/test_hygiene.py
+
+      - name: Tests
+        working-directory: scripts/owner/entra-hygiene
+        run: python3 -m unittest test_hygiene -v
