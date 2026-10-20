@@ -52,28 +52,26 @@ locals {
     stack      = "live/identity"
   }
 
-  vaults = {
-    prod = {
-      name             = "kv-qnsc-prod"
-      purge_protection = true
-    }
-    dev = {
-      name             = "kv-qnsc-dev"
-      purge_protection = false
-    }
-    platform = {
-      name             = "kv-qnsc-platform"
-      purge_protection = true
-    }
-    admin = {
-      name             = "kv-qnsc-admin"
-      purge_protection = true
-    }
+  # Network checks (CKV_AZURE_189/109, CKV2_AZURE_32) are skipped on BOTH
+  # resources, with one reason: the vault is reached from the office LAN and
+  # from GitHub's OIDC flows, and the on-prem cluster has NO VNet — a private
+  # endpoint or IP allowlist cannot be attached to it. The RBAC boundary
+  # (QNSC ESO <env>, CI Read = metadata only) is the access control; network
+  # lockdown is §9 hardening with its own trigger.
+  purge_protected = {
+    prod     = { name = "kv-qnsc-prod" }
+    platform = { name = "kv-qnsc-platform" }
+    admin    = { name = "kv-qnsc-admin" }
   }
 }
 
-resource "azurerm_key_vault" "vaults" {
-  for_each = local.vaults
+# Three of the four vaults (§7.1: purge protection on prod, platform, admin).
+resource "azurerm_key_vault" "purge_protected" {
+  for_each = local.purge_protected
+
+  # checkov:skip=CKV_AZURE_189:on-prem k3s has no VNet - no private endpoint/IP allowlist is reachable; RBAC is the boundary (§9 hardening has the trigger)
+  # checkov:skip=CKV_AZURE_109:same reason as CKV_AZURE_189
+  # checkov:skip=CKV2_AZURE_32:same reason as CKV_AZURE_189
 
   name                          = each.value.name
   location                      = azurerm_resource_group.platform.location
@@ -82,14 +80,30 @@ resource "azurerm_key_vault" "vaults" {
   sku_name                      = "standard"
   rbac_authorization_enabled    = true
   soft_delete_retention_days    = 90
-  purge_protection_enabled      = each.value.purge_protection
+  purge_protection_enabled      = true
   public_network_access_enabled = true
+  tags                          = local.tags
+}
 
-  # Network rules: open by default for now — the ESO SPs and CI identities are
-  # the RBAC boundary, and the vaults must be reachable from the office IP and
-  # from GitHub's OIDC flows. Locking down to named networks is a §9 hardening
-  # step with its own trigger, not day-one work.
-  tags = local.tags
+# kv-qnsc-dev — purge protection deliberately OFF (§7.1): Phase 1 iterates on
+# the dev vault, and dev secret VALUES are re-issuable; soft delete (90 days)
+# still protects against accidents.
+resource "azurerm_key_vault" "dev" {
+  # checkov:skip=CKV_AZURE_189:on-prem k3s has no VNet - no private endpoint/IP allowlist is reachable; RBAC is the boundary (§9 hardening has the trigger)
+  # checkov:skip=CKV_AZURE_109:same reason as CKV_AZURE_189
+  # checkov:skip=CKV2_AZURE_32:same reason as CKV_AZURE_189
+  # checkov:skip=CKV_AZURE_110:dev is deliberately purge-unprotected during Phase-1 iteration; secrets are re-issuable, soft delete covers accidents
+  # checkov:skip=CKV_AZURE_42:same reason as CKV_AZURE_110 (soft delete is enabled; purge protection is the dev exception)
+  name                          = "kv-qnsc-dev"
+  location                      = azurerm_resource_group.platform.location
+  resource_group_name           = azurerm_resource_group.platform.name
+  tenant_id                     = data.azuread_client_config.current.tenant_id
+  sku_name                      = "standard"
+  rbac_authorization_enabled    = true
+  soft_delete_retention_days    = 90
+  purge_protection_enabled      = false
+  public_network_access_enabled = true
+  tags                          = local.tags
 }
 
 data "azuread_client_config" "current" {}
