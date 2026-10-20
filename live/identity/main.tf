@@ -30,7 +30,8 @@
 #   - Client secrets are created outside state (dashboard/az) and piped into
 #     the vaults through stdin with expiry + owner/rotate-by tags.
 
-# Import target: `tofu import azurerm_resource_group.platform <subscription>/<rg id>`
+# Import target:
+#   tofu import azurerm_resource_group.platform '/subscriptions/<sub>/resourceGroups/rg-qnsc-platform'
 # after pre-work (e) creates it by hand (the backend needs it first).
 resource "azurerm_resource_group" "platform" {
   name     = "rg-qnsc-platform"
