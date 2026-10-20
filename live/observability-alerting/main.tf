@@ -323,6 +323,14 @@ moved {
   to   = grafana_notification_policy.root
 }
 
+# series_near_cap lost its count when it stopped depending on Teams. A state that holds it as
+# [0] would otherwise plan a destroy and recreate of the stack-wide rule group. A no-op when
+# the state has no indexed instance.
+moved {
+  from = grafana_rule_group.series_near_cap[0]
+  to   = grafana_rule_group.series_near_cap
+}
+
 # Stack-wide, not per-product — lives here because the "Active Mimir series"
 # panel it alerts on the same number as does too (System Overview dashboard,
 # above). This is the free-tier-cap alert Grafana Cloud's own Cost
