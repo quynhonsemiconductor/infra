@@ -276,9 +276,10 @@ resource "grafana_contact_point" "email" {
 }
 
 resource "grafana_notification_policy" "root" {
-  # Develop (and any alert without env=prod) goes to email only. Prod adds Teams,
+  # Develop (and any alert without env=production) goes to email only. Prod adds Teams,
   # via the first child below, and email via the second; a matched child stops
-  # the root, so prod lists both explicitly.
+  # the root, so prod lists both explicitly. The env label is "production" in the
+  # prod stacks (live/prod env = "production"), "develop" in develop.
   contact_point = grafana_contact_point.email.name
   # "env" is REQUIRED here, not "product" alone — caught in a pre-prod
   # audit, before it could bite: with only develop's alert rules active
@@ -300,7 +301,7 @@ resource "grafana_notification_policy" "root" {
       matcher {
         label = "env"
         match = "="
-        value = "prod"
+        value = "production"
       }
       contact_point = grafana_contact_point.teams[0].name
       continue      = true
@@ -311,10 +312,15 @@ resource "grafana_notification_policy" "root" {
     matcher {
       label = "env"
       match = "="
-      value = "prod"
+      value = "production"
     }
     contact_point = grafana_contact_point.email.name
   }
+}
+
+moved {
+  from = grafana_notification_policy.root[0]
+  to   = grafana_notification_policy.root
 }
 
 # Stack-wide, not per-product — lives here because the "Active Mimir series"
@@ -334,7 +340,6 @@ resource "grafana_notification_policy" "root" {
 # and Billing -> Usage Alerts (Logs, ~40 GiB) until Grafana ships a
 # Terraform-manageable equivalent.
 resource "grafana_rule_group" "series_near_cap" {
-  count            = local.alerting_enabled ? 1 : 0
   name             = "platform (stack-wide)"
   folder_uid       = grafana_folder.alerts.uid
   interval_seconds = 300
