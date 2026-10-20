@@ -98,7 +98,7 @@ jobs:
             echo "stacks=[$ALL]" >> "$GITHUB_OUTPUT"; exit 0
           fi
           SEL=""
-          for s in bootstrap security-baseline runtime-dev runtime-prod edge storage-dev storage-prod observability; do
+          for s in bootstrap security-baseline runtime-dev runtime-prod edge storage-dev storage-prod observability observability-alerting; do
             if echo "$CHANGED" | grep -qE "^live/$s/"; then SEL="$SEL\"$s\","; fi
           done
           echo "stacks=[${SEL%,}]" >> "$GITHUB_OUTPUT"
@@ -414,6 +414,62 @@ jobs:
       - name: tofu apply
         if: steps.plan.outputs.exitcode == '2'
         working-directory: live/observability
+        run: tofu apply -input=false tfplan
+
+  apply-observability-alerting:
+    name: Apply observability-alerting
+    # After the observability job: this stack reads its state (Grafana url and token).
+    needs: [detect, apply-observability]
+    if: ${{ always() && contains(fromJson(needs.detect.outputs.stacks), 'observability-alerting') && needs.apply-observability.result != 'failure' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: shared   # platform blast radius — gate with required reviewers
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: read   # destructive-guard reads the PR labels
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: quynhonsemiconductor/ci/actions/setup-tofu-aws@v1
+        with:
+          role-arn:     arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/qnsc-github-infra-apply
+          aws-region:   ${{ env.AWS_REGION }}
+          tofu-version: ${{ env.TOFU_VERSION }}
+
+      - name: tofu init
+        working-directory: live/observability-alerting
+        run: tofu init -input=false
+
+      - name: tofu plan
+        id: plan
+        working-directory: live/observability-alerting
+        run: |
+          set +e
+          tofu plan -input=false -detailed-exitcode -out tfplan -no-color 2>&1 | tee plan.txt
+          ec=${PIPESTATUS[0]}   # tofu's real exit, independent of the tee pipe
+          echo "tofu plan detailed exit code: $ec (0=no change, 2=changes, 1=error)"
+          echo "exitcode=$ec" >> "$GITHUB_OUTPUT"
+          if [ "$ec" = "1" ]; then exit 1; fi
+        env:
+          TF_VAR_teams_webhook_url: ${{ secrets.TEAMS_ALERTS_WEBHOOK_URL }}
+
+      # A provider bump, a lock-file change or an empty variable can turn a plan into "replace every DNS record" (2026-10-09).
+      # The plan is applied unreviewed here, so it is read first: deleting or replacing a DNS/identity resource needs the
+      # `allow-dns-destroy` label on the merged PR (or the allow_destructive dispatch input).
+      - name: Refuse destructive DNS / identity changes
+        if: steps.plan.outputs.exitcode == '2'
+        uses: quynhonsemiconductor/ci/actions/destructive-guard@v1
+        with:
+          working-directory: live/observability-alerting
+          dispatch-allow: ${{ inputs.allow_destructive }}
+
+      - name: tofu apply
+        if: steps.plan.outputs.exitcode == '2'
+        working-directory: live/observability-alerting
         run: tofu apply -input=false tfplan
 
   apply-runtime-prod:

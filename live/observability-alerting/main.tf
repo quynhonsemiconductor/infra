@@ -318,19 +318,6 @@ resource "grafana_notification_policy" "root" {
   }
 }
 
-moved {
-  from = grafana_notification_policy.root[0]
-  to   = grafana_notification_policy.root
-}
-
-# series_near_cap lost its count when it stopped depending on Teams. A state that holds it as
-# [0] would otherwise plan a destroy and recreate of the stack-wide rule group. A no-op when
-# the state has no indexed instance.
-moved {
-  from = grafana_rule_group.series_near_cap[0]
-  to   = grafana_rule_group.series_near_cap
-}
-
 # Stack-wide, not per-product — lives here because the "Active Mimir series"
 # panel it alerts on the same number as does too (System Overview dashboard,
 # above). This is the free-tier-cap alert Grafana Cloud's own Cost
@@ -434,4 +421,57 @@ variable "teams_webhook_url" {
   type        = string
   sensitive   = true
   default     = ""
+}
+
+# Adopt the objects that live/observability created in Grafana. The ids are the state ids
+# from live/observability, verbatim (provider v3 org-prefixed form). This block is only
+# for the state migration; PR 2 removes it once both stacks plan clean.
+import {
+  to = grafana_folder.company
+  id = "0:efwpy0j4y7g8wf"
+}
+
+import {
+  to = grafana_folder.alerts
+  id = "0:efwpy0l5x8nwgb"
+}
+
+import {
+  to = grafana_folder.dashboards
+  id = "0:efwpy0l7g6fi8a"
+}
+
+import {
+  to = grafana_folder.slos
+  id = "0:ffwpy0lokzcw0e"
+}
+
+import {
+  to = grafana_folder.rally_dashboards
+  id = "0:cfwpy0n7xqcqoc"
+}
+
+import {
+  to = grafana_folder.opshub_dashboards
+  id = "0:cfwqtc9gtooowd"
+}
+
+import {
+  to = grafana_dashboard.system_overview
+  id = "0:system-overview"
+}
+
+import {
+  to = grafana_contact_point.teams
+  id = "0:teams-alerts"
+}
+
+import {
+  to = grafana_notification_policy.root
+  id = "0:policy"
+}
+
+import {
+  to = grafana_rule_group.series_near_cap
+  id = "0:efwpy0l5x8nwgb:platform (stack-wide)"
 }

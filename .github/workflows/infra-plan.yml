@@ -172,7 +172,7 @@ jobs:
           # Keeping the exclusions named in code rather than dropping the
           # derivation: any NEW stack is planned by default, and each gap is named
           # here instead of being absent from a list nobody compared to anything.
-          NOT_PLANNABLE="observability observability-alerting organization"
+          NOT_PLANNABLE="observability organization"
 
           SKIPPED=""
           PLANNABLE=""
