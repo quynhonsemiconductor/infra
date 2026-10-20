@@ -12,6 +12,10 @@
 # sees one origin: no CORS, no cross-site cookies, CF-Connecting-IP is
 # trustworthy because the origin has no other door.
 #
+# Service names are the CHART's services keys (charts/qnsc-service
+# templates/service.yaml: `name: {{ $name }}`): the origin for a product's api
+# is `api.<product>-<env>.svc:<port>` — NOT <product>-api.
+#
 # `path` is a REGEX (cloudflared ingress matching), anchored here on purpose:
 # a broad pattern silently widens what bypasses Access.
 #
@@ -25,25 +29,25 @@
 locals {
   qnsc_apps_ingress = [
     # rova prod — the only prod app; Access is NOT in front of prod (§8.2)
-    { hostname = "rova.qnsc.vn", path = "^/api/auth/", service = "http://rova-api.rova-prod.svc:3000" },
-    { hostname = "rova.qnsc.vn", path = "^/v1/", service = "http://rova-api.rova-prod.svc:3000" },
-    { hostname = "rova.qnsc.vn", path = "^/readyz$", service = "http://rova-api.rova-prod.svc:3000" },
+    { hostname = "rova.qnsc.vn", path = "^/api/auth/", service = "http://api.rova-prod.svc:3000" },
+    { hostname = "rova.qnsc.vn", path = "^/v1/", service = "http://api.rova-prod.svc:3000" },
+    { hostname = "rova.qnsc.vn", path = "^/readyz$", service = "http://api.rova-prod.svc:3000" },
 
     # rova dev — one Access app on the host (live/edge); the webhook bypass
     # lives in live/edge too, this file only routes what reaches the origin
-    { hostname = "rova-dev.qnsc.vn", path = "^/api/auth/", service = "http://rova-api.rova-dev.svc:3000" },
-    { hostname = "rova-dev.qnsc.vn", path = "^/v1/", service = "http://rova-api.rova-dev.svc:3000" },
-    { hostname = "rova-dev.qnsc.vn", path = "^/readyz$", service = "http://rova-api.rova-dev.svc:3000" },
+    { hostname = "rova-dev.qnsc.vn", path = "^/api/auth/", service = "http://api.rova-dev.svc:3000" },
+    { hostname = "rova-dev.qnsc.vn", path = "^/v1/", service = "http://api.rova-dev.svc:3000" },
+    { hostname = "rova-dev.qnsc.vn", path = "^/readyz$", service = "http://api.rova-dev.svc:3000" },
 
     # opshub dev
-    { hostname = "opshub-dev.qnsc.vn", path = "^/api/auth/", service = "http://opshub-api.opshub-dev.svc:3000" },
-    { hostname = "opshub-dev.qnsc.vn", path = "^/v1/", service = "http://opshub-api.opshub-dev.svc:3000" },
-    { hostname = "opshub-dev.qnsc.vn", path = "^/readyz$", service = "http://opshub-api.opshub-dev.svc:3000" },
+    { hostname = "opshub-dev.qnsc.vn", path = "^/api/auth/", service = "http://api.opshub-dev.svc:3000" },
+    { hostname = "opshub-dev.qnsc.vn", path = "^/v1/", service = "http://api.opshub-dev.svc:3000" },
+    { hostname = "opshub-dev.qnsc.vn", path = "^/readyz$", service = "http://api.opshub-dev.svc:3000" },
 
     # kb dev — everything under /api (incl. /api/v1/auth/entra/callback) plus
     # /readyz, the alias of /health/ready that Synthetic Monitoring probes
-    { hostname = "kb-dev.qnsc.vn", path = "^/api/", service = "http://kb-api.kb-dev.svc:8000" },
-    { hostname = "kb-dev.qnsc.vn", path = "^/readyz$", service = "http://kb-api.kb-dev.svc:8000" },
+    { hostname = "kb-dev.qnsc.vn", path = "^/api/", service = "http://api.kb-dev.svc:8000" },
+    { hostname = "kb-dev.qnsc.vn", path = "^/readyz$", service = "http://api.kb-dev.svc:8000" },
   ]
 }
 

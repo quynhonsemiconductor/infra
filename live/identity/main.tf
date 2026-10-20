@@ -17,9 +17,11 @@
 #                sign-in apps' redirect URIs per §8.2 (loopback on dev only);
 #                Key Vault RBAC role assignments (ESO Secrets User, CI Reader)
 #
-#   imported     stqnsctfstate — created BY HAND (pre-work (e)), then
-#                `tofu import` into this stack; never created by TF, because
-#                the state backend must exist before TF can hold state
+#   imported     rg-qnsc-platform AND stqnsctfstate — both created BY HAND
+#                (pre-work (e); the state backend and its resource group must
+#                exist before TF can hold any state), then `tofu import`ed into
+#                this stack. The resource group block below is therefore an
+#                import target, never a creation path.
 #
 # Rules this stack never breaks (§7):
 #   - OpenTofu owns SHAPE and ACCESS, never values. No secret, token, key or
@@ -28,6 +30,8 @@
 #   - Client secrets are created outside state (dashboard/az) and piped into
 #     the vaults through stdin with expiry + owner/rotate-by tags.
 
+# Import target: `tofu import azurerm_resource_group.platform <subscription>/<rg id>`
+# after pre-work (e) creates it by hand (the backend needs it first).
 resource "azurerm_resource_group" "platform" {
   name     = "rg-qnsc-platform"
   location = var.location

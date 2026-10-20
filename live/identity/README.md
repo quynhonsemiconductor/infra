@@ -12,7 +12,8 @@ holds the two OIDC identities ("QNSC CI Infra" / "QNSC CI Infra Read").
   prod/platform/admin), the $10 budget alert.
 - Phase 1: the Entra groups, ESO/CI/Backup SP apps with federated credentials
   or certificate auth, product sign-in app redirect URIs, vault RBAC.
-- Import target for `stqnsctfstate` (hand-created, never TF-created).
+- Import targets for `rg-qnsc-platform` and `stqnsctfstate` (both hand-created
+  first — the backend needs them before any state can exist).
 
 ## Never does
 
