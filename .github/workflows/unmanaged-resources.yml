@@ -46,7 +46,7 @@ jobs:
       # qnsc-github-infra-plan carries ReadOnlyAccess — the correct role for a job that
       # enumerates and never mutates. Deliberately NOT the infra-apply role: a scanner has
       # no reason to hold write credentials, and this one runs unattended every day.
-      - uses: quynhonsemiconductor/ci/actions/setup-aws-oidc@v1
+      - uses: quynhonsemiconductor/ci/actions/setup-aws-oidc@691668f7a1bd4f4a3416f9224ae7ff7ebe831a3a # v1.23.0
         with:
           role-arn: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/qnsc-github-infra-plan
           aws-region: ${{ env.AWS_REGION }}
