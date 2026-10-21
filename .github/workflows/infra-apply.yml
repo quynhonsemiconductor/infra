@@ -145,7 +145,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: quynhonsemiconductor/ci/actions/setup-tofu-aws@v1
+      - uses: quynhonsemiconductor/ci/actions/setup-tofu-aws@691668f7a1bd4f4a3416f9224ae7ff7ebe831a3a # v1.23.0
         with:
           role-arn:     arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/qnsc-github-infra-apply
           aws-region:   ${{ env.AWS_REGION }}
@@ -176,7 +176,7 @@ jobs:
       # `allow-dns-destroy` label on the merged PR (or the allow_destructive dispatch input).
       - name: Refuse destructive DNS / identity changes
         if: steps.plan.outputs.exitcode == '2'
-        uses: quynhonsemiconductor/ci/actions/destructive-guard@v1
+        uses: quynhonsemiconductor/ci/actions/destructive-guard@691668f7a1bd4f4a3416f9224ae7ff7ebe831a3a # v1.23.0
         with:
           working-directory: live/bootstrap
           dispatch-allow: ${{ inputs.allow_destructive }}
@@ -203,7 +203,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: quynhonsemiconductor/ci/actions/setup-tofu-aws@v1
+      - uses: quynhonsemiconductor/ci/actions/setup-tofu-aws@691668f7a1bd4f4a3416f9224ae7ff7ebe831a3a # v1.23.0
         with:
           role-arn:     arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/qnsc-github-infra-apply
           aws-region:   ${{ env.AWS_REGION }}
@@ -229,7 +229,7 @@ jobs:
       # `allow-dns-destroy` label on the merged PR (or the allow_destructive dispatch input).
       - name: Refuse destructive DNS / identity changes
         if: steps.plan.outputs.exitcode == '2'
-        uses: quynhonsemiconductor/ci/actions/destructive-guard@v1
+        uses: quynhonsemiconductor/ci/actions/destructive-guard@691668f7a1bd4f4a3416f9224ae7ff7ebe831a3a # v1.23.0
         with:
           working-directory: live/security-baseline
           dispatch-allow: ${{ inputs.allow_destructive }}
@@ -256,7 +256,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: quynhonsemiconductor/ci/actions/setup-tofu-aws@v1
+      - uses: quynhonsemiconductor/ci/actions/setup-tofu-aws@691668f7a1bd4f4a3416f9224ae7ff7ebe831a3a # v1.23.0
         with:
           role-arn:     arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/qnsc-github-infra-apply
           aws-region:   ${{ env.AWS_REGION }}
@@ -286,7 +286,7 @@ jobs:
       # `allow-dns-destroy` label on the merged PR (or the allow_destructive dispatch input).
       - name: Refuse destructive DNS / identity changes
         if: steps.plan.outputs.exitcode == '2'
-        uses: quynhonsemiconductor/ci/actions/destructive-guard@v1
+        uses: quynhonsemiconductor/ci/actions/destructive-guard@691668f7a1bd4f4a3416f9224ae7ff7ebe831a3a # v1.23.0
         with:
           working-directory: live/edge
           dispatch-allow: ${{ inputs.allow_destructive }}
@@ -316,7 +316,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: quynhonsemiconductor/ci/actions/setup-tofu-aws@v1
+      - uses: quynhonsemiconductor/ci/actions/setup-tofu-aws@691668f7a1bd4f4a3416f9224ae7ff7ebe831a3a # v1.23.0
         with:
           role-arn:     arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/qnsc-github-infra-apply
           aws-region:   ${{ env.AWS_REGION }}
@@ -342,7 +342,7 @@ jobs:
       # `allow-dns-destroy` label on the merged PR (or the allow_destructive dispatch input).
       - name: Refuse destructive DNS / identity changes
         if: steps.plan.outputs.exitcode == '2'
-        uses: quynhonsemiconductor/ci/actions/destructive-guard@v1
+        uses: quynhonsemiconductor/ci/actions/destructive-guard@691668f7a1bd4f4a3416f9224ae7ff7ebe831a3a # v1.23.0
         with:
           working-directory: live/runtime-dev
           dispatch-allow: ${{ inputs.allow_destructive }}
@@ -377,7 +377,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: quynhonsemiconductor/ci/actions/setup-tofu-aws@v1
+      - uses: quynhonsemiconductor/ci/actions/setup-tofu-aws@691668f7a1bd4f4a3416f9224ae7ff7ebe831a3a # v1.23.0
         with:
           role-arn:     arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/qnsc-github-infra-apply
           aws-region:   ${{ env.AWS_REGION }}
@@ -406,7 +406,7 @@ jobs:
       # `allow-dns-destroy` label on the merged PR (or the allow_destructive dispatch input).
       - name: Refuse destructive DNS / identity changes
         if: steps.plan.outputs.exitcode == '2'
-        uses: quynhonsemiconductor/ci/actions/destructive-guard@v1
+        uses: quynhonsemiconductor/ci/actions/destructive-guard@691668f7a1bd4f4a3416f9224ae7ff7ebe831a3a # v1.23.0
         with:
           working-directory: live/observability
           dispatch-allow: ${{ inputs.allow_destructive }}
@@ -434,7 +434,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: quynhonsemiconductor/ci/actions/setup-tofu-aws@v1
+      - uses: quynhonsemiconductor/ci/actions/setup-tofu-aws@691668f7a1bd4f4a3416f9224ae7ff7ebe831a3a # v1.23.0
         with:
           role-arn:     arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/qnsc-github-infra-apply
           aws-region:   ${{ env.AWS_REGION }}
@@ -462,7 +462,7 @@ jobs:
       # `allow-dns-destroy` label on the merged PR (or the allow_destructive dispatch input).
       - name: Refuse destructive DNS / identity changes
         if: steps.plan.outputs.exitcode == '2'
-        uses: quynhonsemiconductor/ci/actions/destructive-guard@v1
+        uses: quynhonsemiconductor/ci/actions/destructive-guard@691668f7a1bd4f4a3416f9224ae7ff7ebe831a3a # v1.23.0
         with:
           working-directory: live/observability-alerting
           dispatch-allow: ${{ inputs.allow_destructive }}
@@ -492,7 +492,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: quynhonsemiconductor/ci/actions/setup-tofu-aws@v1
+      - uses: quynhonsemiconductor/ci/actions/setup-tofu-aws@691668f7a1bd4f4a3416f9224ae7ff7ebe831a3a # v1.23.0
         with:
           role-arn:     arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/qnsc-github-infra-apply
           aws-region:   ${{ env.AWS_REGION }}
@@ -518,7 +518,7 @@ jobs:
       # `allow-dns-destroy` label on the merged PR (or the allow_destructive dispatch input).
       - name: Refuse destructive DNS / identity changes
         if: steps.plan.outputs.exitcode == '2'
-        uses: quynhonsemiconductor/ci/actions/destructive-guard@v1
+        uses: quynhonsemiconductor/ci/actions/destructive-guard@691668f7a1bd4f4a3416f9224ae7ff7ebe831a3a # v1.23.0
         with:
           working-directory: live/runtime-prod
           dispatch-allow: ${{ inputs.allow_destructive }}
@@ -550,7 +550,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: quynhonsemiconductor/ci/actions/setup-tofu-aws@v1
+      - uses: quynhonsemiconductor/ci/actions/setup-tofu-aws@691668f7a1bd4f4a3416f9224ae7ff7ebe831a3a # v1.23.0
         with:
           role-arn:     arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/qnsc-github-infra-apply
           aws-region:   ${{ env.AWS_REGION }}
@@ -580,7 +580,7 @@ jobs:
       # `allow-dns-destroy` label on the merged PR (or the allow_destructive dispatch input).
       - name: Refuse destructive DNS / identity changes
         if: steps.plan.outputs.exitcode == '2'
-        uses: quynhonsemiconductor/ci/actions/destructive-guard@v1
+        uses: quynhonsemiconductor/ci/actions/destructive-guard@691668f7a1bd4f4a3416f9224ae7ff7ebe831a3a # v1.23.0
         with:
           working-directory: live/storage-dev
           dispatch-allow: ${{ inputs.allow_destructive }}
@@ -610,7 +610,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: quynhonsemiconductor/ci/actions/setup-tofu-aws@v1
+      - uses: quynhonsemiconductor/ci/actions/setup-tofu-aws@691668f7a1bd4f4a3416f9224ae7ff7ebe831a3a # v1.23.0
         with:
           role-arn:     arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/qnsc-github-infra-apply
           aws-region:   ${{ env.AWS_REGION }}
@@ -640,7 +640,7 @@ jobs:
       # `allow-dns-destroy` label on the merged PR (or the allow_destructive dispatch input).
       - name: Refuse destructive DNS / identity changes
         if: steps.plan.outputs.exitcode == '2'
-        uses: quynhonsemiconductor/ci/actions/destructive-guard@v1
+        uses: quynhonsemiconductor/ci/actions/destructive-guard@691668f7a1bd4f4a3416f9224ae7ff7ebe831a3a # v1.23.0
         with:
           working-directory: live/storage-prod
           dispatch-allow: ${{ inputs.allow_destructive }}
