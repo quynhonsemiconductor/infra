@@ -21,7 +21,7 @@ The failure is semantic, not structural, so no plan-time check can see it.
 AND SOMETHING WORSE THAN A GAP: AWS DELETES UNCONFIRMED EMAIL SUBSCRIPTIONS after roughly
 three days. So an SNS email subscription is not a durable control — it is a control that
 silently expires unless a human clicked a link. rova's stack had the correct default
-`nghiavt@qnsc.vn` for weeks and still delivered nothing for exactly this reason. A
+`devops@qnsc.vn` for weeks and still delivered nothing for exactly this reason. A
 PendingConfirmation subscription therefore counts as a finding here, not as progress.
 
 WHAT THIS DOES NOT DO. It does not verify that an alarm's THRESHOLD is sensible, or that

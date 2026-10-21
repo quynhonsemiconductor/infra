@@ -94,5 +94,5 @@ cheaply.
 
 ## Contacts
 
-Prepared by: <nghiavt@qnsc.vn>
+Prepared by: <devops@qnsc.vn>
 Related documents: `infra/docs/kubernetes-platform-design.md` §17, `VLSI-ACADEMY-LMS-PLAN.md`
