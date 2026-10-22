@@ -260,7 +260,7 @@ module "alb_logs" {
 # Removal order is therefore: fix infra-template to the `try(...)` form, re-verify with
 # `grep -rn "https_listener_arn" --include=*.tf . | grep -v /.terraform/`, then delete
 # module.alb, module.waf, var.enable_alb and the https_listener_arn output together. See
-# infra/docs/product-service-extraction.md for the full sequence.
+# infra/docs/records/product-service-extraction.md for the full sequence.
 module "alb" {
   count = var.enable_alb ? 1 : 0
 

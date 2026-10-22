@@ -171,7 +171,7 @@ module "network" {
 # the listener via `try(…outputs.https_listener_arn, "")`, as do rova's and qnsc-kb's, so a
 # missing output is absorbed. The only bare reference lives in `infra-template`, which would
 # break the next scaffolded product rather than anything deployed. See
-# infra/docs/product-service-extraction.md for the removal order.
+# infra/docs/records/product-service-extraction.md for the removal order.
 module "alb" {
   count = var.enable_alb ? 1 : 0
 

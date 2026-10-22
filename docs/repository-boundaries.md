@@ -108,7 +108,7 @@ live in — those move to the new estate rather than being deleted with the rest
 
 `product-service` (`tf-modules`, 0.1.0, unconsumed) was extracted to collapse the
 three `infra/modules/stack` copies on ECS.
-[`product-service-extraction.md`](./product-service-extraction.md) is **SUPERSEDED**:
+[`product-service-extraction.md`](./records/product-service-extraction.md) is **SUPERSEDED**:
 running it means migrating three products onto a module that §17 then deletes with
 the ECS estate.
 
