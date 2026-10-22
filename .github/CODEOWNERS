@@ -1,10 +1,8 @@
-# Platform infra — all changes require platform-lead review
-*                          @quynhonsemiconductor/platform-infra
-modules/                   @quynhonsemiconductor/platform-infra
-live/                      @quynhonsemiconductor/platform-infra
-.github/workflows/         @quynhonsemiconductor/platform-infra
+# Platform infra — all changes require platform-lead review.
+# Enforced via the main-protection ruleset (require_code_owner_review).
+# Org docs: quynhonsemiconductor/.github → docs/ORG-GOVERNANCE.md (the area-team model).
 
-# The workflows that call the destructive-guard (2026-10-09). The guard itself is quynhonsemiconductor/ci/actions/destructive-guard@v1.
-# `*` already routes these to platform-infra; they are listed so that loosening the rule above cannot silently drop them.
-# Only enforced if branch protection on main has "Require review from Code Owners" on.
-.github/                                  @quynhonsemiconductor/platform-infra
+* @quynhonsemiconductor/platform-leads
+
+# Covered by the wildcard: the destructive-guard workflows (2026-10-09; the guard itself is
+# quynhonsemiconductor/ci/actions/destructive-guard@v1) and everything under .github/.
