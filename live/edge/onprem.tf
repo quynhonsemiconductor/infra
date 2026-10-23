@@ -29,6 +29,11 @@ locals {
   }
   webhook_bypass = "rova-dev.qnsc.vn/v1/scm/webhook/*"
 
+  # door terminal (ATTENDANCE-DEVICE ADR): cannot pass Access; the app
+  # verifies its bearer token, no cookie so no CSRF. Same pattern as the
+  # rova SCM webhook bypass.
+  door_bypass = "opshub-dev.qnsc.vn/v1/door/terminal/*"
+
   api_paths = ["/api/*", "/v1/*", "/readyz"]
 }
 
@@ -121,8 +126,10 @@ resource "cloudflare_zero_trust_access_policy" "admin_allow" {
 }
 
 # Dev hosts: one Access app per host (§8.2), Allow grp-qnsc-developers —
-# gated on cutover_hosts like everything else: no Access app exists for a
-# host that still points at AWS/Pages.
+# gated on cutover_hosts (an Access app for a host still pointing at
+# AWS/Pages would be dead weight). The BYPASS apps below are harmless before
+# cutover — a bypass on an unresolving host protects nothing — so they are
+# not gated.
 resource "cloudflare_zero_trust_access_application" "dev" {
   for_each = { for h, v in local.app_hosts : h => v if v.env == "dev" && contains(var.cutover_hosts, h) }
 
@@ -156,6 +163,7 @@ resource "cloudflare_zero_trust_access_application" "dev_bypass" {
   for_each = merge(
     { for p in keys(local.bypass_paths) : p => local.bypass_paths[p] },
     { (local.webhook_bypass) = "rova-dev" },
+    { (local.door_bypass) = "opshub-dev" },
   )
 
   account_id = var.cloudflare_account_id
