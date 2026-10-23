@@ -29,6 +29,11 @@ locals {
   }
   webhook_bypass = "rova-dev.qnsc.vn/v1/scm/webhook/*"
 
+  # door terminal (ATTENDANCE-DEVICE ADR): cannot pass Access; the app
+  # verifies its bearer token, no cookie so no CSRF. Same pattern as the
+  # rova SCM webhook bypass.
+  door_bypass = "opshub-dev.qnsc.vn/v1/door/terminal/*"
+
   api_paths = ["/api/*", "/v1/*", "/readyz"]
 }
 
@@ -156,6 +161,7 @@ resource "cloudflare_zero_trust_access_application" "dev_bypass" {
   for_each = merge(
     { for p in keys(local.bypass_paths) : p => local.bypass_paths[p] },
     { (local.webhook_bypass) = "rova-dev" },
+    { (local.door_bypass) = "opshub-dev" },
   )
 
   account_id = var.cloudflare_account_id

@@ -382,3 +382,22 @@ module "landing_turnstile" {
   domains    = [var.certificate_domain, "www.${var.certificate_domain}"]
   mode       = "managed"
 }
+
+# =============================================================================
+# Bot Fight Mode — pinned OFF, in code.
+#
+# On the Free plan BFM cannot be skipped per path, and it challenges
+# non-browser clients: the opshub door terminal (`/v1/door/terminal/*`,
+# ATTENDANCE-DEVICE ADR) and MCP clients (MCP-PLAN §11). It is off in the
+# dashboard today; the import below adopts the existing setting so the first
+# apply is a no-op, and from then on tofu keeps it off (plan flags any drift).
+# =============================================================================
+resource "cloudflare_bot_management" "zone" {
+  zone_id    = var.cloudflare_zone_id
+  fight_mode = false
+}
+
+import {
+  to = cloudflare_bot_management.zone
+  id = var.cloudflare_zone_id
+}
