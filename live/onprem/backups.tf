@@ -2,101 +2,140 @@
 #
 # ONE bucket, prefix-scoped lifecycle + Bucket Lock:
 #   pg-rova/    CNPG barman base+WAL        PITR 14 d (barman prunes, not us)
-#   dumps/      pg_dump daily 15 d / weekly 35 d / monthly 100 d (SERVER-SIDE
-#               copy by the nightly job; the job itself never deletes)
+#   dumps/      pg_dump daily 15 d / weekly 35 d / monthly 100 d
 #   files/      rova attachments 35 d; full-<YYYY-MM>/ 35 d
-#   dev/        pg-dev dumps 7 d (no lock)
-#   gate/       pg-gate Phase-1 gate 7 d (no lock)
+#   dev/        pg-dev dumps 7 d (NO lock — a 14-day lock would override it)
+#   gate/       pg-gate Phase-1 gate 7 d (NO lock); CUTOVER B9 adds a locked
+#               TEST prefix to prove barman works under the lock
 #
-# The lock never exceeds the shortest lifecycle (daily dumps 15 d > lock 14 d).
 # The lock is the immutability control: RW tokens scoped to this bucket, no
-# "write-only" claim (§10.3).
+# "write-only" claim (§10.3). Lock covers pg-rova/, dumps/, files/ — 14 days,
+# never longer than the shortest locked lifecycle (daily 15 d > 14 d).
 #
 # Product buckets (rova-dev/opshub-dev/kb-dev + rova-prod files) are imported
 # from live/storage-dev/-prod in their move PRs — this file is only the
-# backups bucket (the rename/import of rova's FILES bucket rides the rova
-# dev-move PR, §6.5).
+# backups bucket.
 
 resource "cloudflare_r2_bucket" "qnsc_backups" {
   account_id = var.cloudflare_account_id
   name       = "qnsc-backups"
-  location   = "APAC"
+  location   = "apac"
 }
 
-# Bucket Lock — 14 days, the immutability control (§10.3).
-# VERIFY AT PLAN TIME: the v5 provider's lock surface (cloudflare_r2_bucket_lock
-# vs a rule block on the bucket) against the live API — the plan PR records
-# that this schema was checked, not guessed. If the resource differs, fix here
-# before apply; the INTENT (14-day object lock on every prefix) does not move.
 resource "cloudflare_r2_bucket_lock" "qnsc_backups" {
-  account_id  = var.cloudflare_account_id
-  bucket_name = cloudflare_r2_bucket.qnsc_backups.name
+  account_id   = var.cloudflare_account_id
+  bucket_name  = cloudflare_r2_bucket.qnsc_backups.name
+  jurisdiction = "default"
 
-  rule {
-    id              = "lock-14d"
-    prefix          = ""
-    enabled         = true
-    retain_for_days = 14
-  }
+  rules = [
+    {
+      id      = "lock-pg-rova-14d"
+      prefix  = "pg-rova/"
+      enabled = true
+      condition = {
+        type            = "Age"
+        max_age_seconds = 1209600 # 14 days
+      }
+    },
+    {
+      id      = "lock-dumps-14d"
+      prefix  = "dumps/"
+      enabled = true
+      condition = {
+        type            = "Age"
+        max_age_seconds = 1209600
+      }
+    },
+    {
+      id      = "lock-files-14d"
+      prefix  = "files/"
+      enabled = true
+      condition = {
+        type            = "Age"
+        max_age_seconds = 1209600
+      }
+    },
+  ]
 }
 
 resource "cloudflare_r2_bucket_lifecycle" "qnsc_backups" {
-  account_id  = var.cloudflare_account_id
-  bucket_name = cloudflare_r2_bucket.qnsc_backups.name
+  account_id   = var.cloudflare_account_id
+  bucket_name  = cloudflare_r2_bucket.qnsc_backups.name
+  jurisdiction = "default"
 
-  rule {
-    id      = "dumps-daily"
-    enabled = true
-    conditions {
-      prefix = "dumps/daily/"
-    }
-    delete_objects_transition_days = 15 # ≥ the 14 d lock
-  }
-
-  rule {
-    id      = "dumps-weekly"
-    enabled = true
-    conditions {
-      prefix = "dumps/weekly/"
-    }
-    delete_objects_transition_days = 35
-  }
-
-  rule {
-    id      = "dumps-monthly"
-    enabled = true
-    conditions {
-      prefix = "dumps/monthly/"
-    }
-    delete_objects_transition_days = 100
-  }
-
-  rule {
-    id      = "files"
-    enabled = true
-    conditions {
-      prefix = "files/"
-    }
-    delete_objects_transition_days = 35
-  }
-
-  rule {
-    id      = "dev"
-    enabled = true
-    conditions {
-      prefix = "dev/"
-    }
-    delete_objects_transition_days = 7
-  }
-
-  rule {
-    id      = "gate"
-    enabled = true
-    conditions {
-      prefix = "gate/"
-    }
-    delete_objects_transition_days = 7
-  }
+  rules = [
+    {
+      id      = "dumps-daily"
+      enabled = true
+      conditions = {
+        prefix = "dumps/daily/"
+      }
+      delete_objects_transition = {
+        condition = { type = "Age", max_age = 1296000 } # 15 d ≥ the 14 d lock
+      }
+    },
+    {
+      id      = "dumps-weekly"
+      enabled = true
+      conditions = {
+        prefix = "dumps/weekly/"
+      }
+      delete_objects_transition = {
+        condition = { type = "Age", max_age = 3024000 } # 35 d
+      }
+    },
+    {
+      id      = "dumps-monthly"
+      enabled = true
+      conditions = {
+        prefix = "dumps/monthly/"
+      }
+      delete_objects_transition = {
+        condition = { type = "Age", max_age = 8640000 } # 100 d
+      }
+    },
+    {
+      id      = "files"
+      enabled = true
+      conditions = {
+        prefix = "files/"
+      }
+      delete_objects_transition = {
+        condition = { type = "Age", max_age = 3024000 } # 35 d
+      }
+    },
+    {
+      id      = "dev"
+      enabled = true
+      conditions = {
+        prefix = "dev/"
+      }
+      # no lock on purpose: a 14-day lock would override the 7-day delete
+      delete_objects_transition = {
+        condition = { type = "Age", max_age = 604800 } # 7 d
+      }
+    },
+    {
+      id      = "gate"
+      enabled = true
+      conditions = {
+        prefix = "gate/"
+      }
+      delete_objects_transition = {
+        condition = { type = "Age", max_age = 604800 }
+      }
+    },
+    {
+      id      = "cleanup-incomplete-uploads"
+      enabled = true
+      conditions = {
+        prefix = ""
+      }
+      abort_multipart_uploads_transition = {
+        condition = { type = "Age", max_age = 604800 } # 7 d
+      }
+    },
+  ]
 }
 
 output "qnsc_backups_bucket" {
