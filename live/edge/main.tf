@@ -61,7 +61,7 @@ module "edge" {
   rate_limit_rules = [{
     ref                 = "api_default"
     description         = "Rate-limit product API endpoints per client IP"
-    expression          = "(starts_with(http.request.uri.path, \"/v1/\"))"
+    expression          = "(starts_with(http.request.uri.path, \"/v1/\") or starts_with(http.request.uri.path, \"/api/\"))"
     period              = 10
     requests_per_period = 300
     mitigation_timeout  = 10
