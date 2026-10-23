@@ -26,8 +26,6 @@ data "azuread_service_principal" "msgraph" {
   client_id = "00000003-0000-0000-c000-000000000000" # well-known, not a secret
 }
 
-data "azuread_client_config" "current" {}
-
 locals {
   # Scope NAMES → the msgraph SP's delegated (oauth2) permission ids, resolved
   # at plan time instead of hardcoded UUIDs.
