@@ -177,48 +177,6 @@ resource "cloudflare_zero_trust_access_policy" "dev_bypass" {
   }
 }
 
-# ── ceo.qnsc.vn — the EXISTING Access app, adopted (round 5, item 3) ────────
-# Protected today by the OLD Entra IdP (app "CEO Suite Access"). It moves to
-# the NEW IdP ("QNSC Cloudflare Access") with the SAME Entra groups in the
-# allow policy — who can get in stays identical; the login page just changes
-# IdP. The OLD IdP is removed in a SEPARATE, clearly-marked later step, only
-# after this apply + a verified ceo.qnsc.vn sign-in; then the owner deletes
-# the Entra app "CEO Suite Access".
-resource "cloudflare_zero_trust_access_application" "ceo" {
-  account_id       = var.cloudflare_account_id
-  name             = "ceo.qnsc.vn"
-  domain           = "ceo.qnsc.vn/*"
-  session_duration = "12h"
-  allowed_idps     = [cloudflare_zero_trust_access_identity_provider.entra.id]
-}
-
-resource "cloudflare_zero_trust_access_policy" "ceo_allow" {
-  account_id       = var.cloudflare_account_id
-  application_id   = cloudflare_zero_trust_access_application.ceo.id
-  name             = "ceo-allow"
-  decision         = "allow"
-  precedence       = 1
-  session_duration = "12h"
-
-  include {
-    azure {
-      id                   = var.ceo_policy_azure_group_ids
-      identity_provider_id = cloudflare_zero_trust_access_identity_provider.entra.id
-    }
-  }
-}
-
-# Adoption ids — from the zt-inventory output (scripts/zt-inventory.sh), fed
-# by CI repository variables (owner sets the real values).
-import {
-  to = cloudflare_zero_trust_access_application.ceo
-  id = var.existing_ceo_access_app_id
-}
-import {
-  to = cloudflare_zero_trust_access_policy.ceo_allow
-  id = "${cloudflare_zero_trust_access_application.ceo.id}:${var.existing_ceo_access_policy_id}"
-}
-
 # ── Workers routes (§8.2), gated on cutover_hosts like the DNS ──────────────
 # SPA script on `<host>/*`; the API paths are no-Worker routes (script_name
 # omitted — the route exists with no script, so the traffic falls through to

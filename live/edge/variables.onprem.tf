@@ -44,17 +44,3 @@ variable "entra_idp_client_secret" {
   description = "Client secret of the Zero Trust Entra IdP app — created out-of-band (owner, stdin); lands in the CF state as THE documented exception (plan §7). TF_VAR_entra_idp_client_secret (repo secret)."
 }
 
-variable "existing_ceo_access_app_id" {
-  type        = string
-  description = "Access application id of the EXISTING ceo.qnsc.vn app (zt-inventory). TF_VAR_existing_ceo_access_app_id."
-}
-
-variable "existing_ceo_access_policy_id" {
-  type        = string
-  description = "Id of the existing ceo.qnsc.vn Allow policy (zt-inventory). TF_VAR_existing_ceo_access_policy_id."
-}
-
-variable "ceo_policy_azure_group_ids" {
-  type        = list(string)
-  description = "Entra group ids in the existing ceo.qnsc.vn allow policy — carried over UNCHANGED so who-can-get-in is identical. TF_VAR_ceo_policy_azure_group_ids (JSON list)."
-}
