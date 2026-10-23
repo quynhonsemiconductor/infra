@@ -120,9 +120,11 @@ resource "cloudflare_zero_trust_access_policy" "admin_allow" {
   }
 }
 
-# Dev hosts: one Access app per host (§8.2), Allow grp-qnsc-developers.
+# Dev hosts: one Access app per host (§8.2), Allow grp-qnsc-developers —
+# gated on cutover_hosts like everything else: no Access app exists for a
+# host that still points at AWS/Pages.
 resource "cloudflare_zero_trust_access_application" "dev" {
-  for_each = { for h, v in local.app_hosts : h => v if v.env == "dev" }
+  for_each = { for h, v in local.app_hosts : h => v if v.env == "dev" && contains(var.cutover_hosts, h) }
 
   account_id       = var.cloudflare_account_id
   name             = each.key

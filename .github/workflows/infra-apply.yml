@@ -270,6 +270,22 @@ jobs:
         id: plan
         working-directory: live/edge
         run: |
+          set -euo pipefail
+          # preflight: refuse placeholder variable values — an apply with
+          # SETME/example.invalid/all-zero values would create real Access
+          # apps and DNS pointing nowhere
+          bad=0
+          for v in "ADMIN_HOSTNAMES:${TF_VAR_admin_hostnames-}" "CUTOVER_HOSTS:${TF_VAR_cutover_hosts-}" \
+                   "GRP_PLATFORM_ADMINS_ID:${TF_VAR_grp_platform_admins_id-}" "GRP_DEVELOPERS_ID:${TF_VAR_grp_developers_id-}" \
+                   "ENTRA_TENANT_ID:${TF_VAR_entra_tenant_id-}" "ENTRA_IDP_CLIENT_ID:${TF_VAR_entra_idp_client_id-}" \
+                   "ENTRA_IDP_CLIENT_SECRET:${TF_VAR_entra_idp_client_secret-}"; do
+            name="${v%%:*}"; value="${v#*:}"
+            if [ -z "$value" ] || printf '%s' "$value" | grep -Eq 'SETME|SET-VIA-CI|example\.invalid|^0{8}-|^0+$'; then
+              echo "::error::edge apply: $name holds a placeholder or is empty — the owner must set the real value before apply"
+              bad=1
+            fi
+          done
+          [ "$bad" = "0" ] || exit 1
           set +e
           tofu plan -input=false -detailed-exitcode -out tfplan -no-color 2>&1 | tee plan.txt
           ec=${PIPESTATUS[0]}   # tofu's real exit, independent of the tee pipe
@@ -280,6 +296,14 @@ jobs:
           TF_VAR_cloudflare_api_token:  ${{ secrets.CLOUDFLARE_API_TOKEN }}
           TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           TF_VAR_cloudflare_zone_id:    ${{ vars.CLOUDFLARE_ZONE_ID }}
+          TF_VAR_admin_hostnames: ${{ vars.ADMIN_HOSTNAMES }}
+          TF_VAR_cutover_hosts: ${{ vars.CUTOVER_HOSTS }}
+          TF_VAR_tunnels_exist: ${{ vars.TUNNELS_EXIST }}
+          TF_VAR_grp_platform_admins_id: ${{ vars.ENTRA_GRP_PLATFORM_ADMINS_ID }}
+          TF_VAR_grp_developers_id: ${{ vars.ENTRA_GRP_DEVELOPERS_ID }}
+          TF_VAR_entra_tenant_id: ${{ vars.ENTRA_TENANT_ID }}
+          TF_VAR_entra_idp_client_id: ${{ vars.ENTRA_IDP_CLIENT_ID }}
+          TF_VAR_entra_idp_client_secret: ${{ secrets.ENTRA_IDP_CLIENT_SECRET }}
 
       # A provider bump, a lock-file change or an empty variable can turn a plan into "replace every DNS record" (2026-10-09).
       # The plan is applied unreviewed here, so it is read first: deleting or replacing a DNS/identity resource needs the
@@ -400,14 +424,6 @@ jobs:
         env:
           TF_VAR_grafana_cloud_api_key: ${{ secrets.GRAFANA_CLOUD_API_KEY }}
           TF_VAR_teams_webhook_url: ${{ secrets.TEAMS_ALERTS_WEBHOOK_URL }}
-          TF_VAR_admin_hostnames: ${{ vars.ADMIN_HOSTNAMES }}
-          TF_VAR_cutover_hosts: ${{ vars.CUTOVER_HOSTS }}
-          TF_VAR_tunnels_exist: ${{ vars.TUNNELS_EXIST }}
-          TF_VAR_grp_platform_admins_id: ${{ vars.ENTRA_GRP_PLATFORM_ADMINS_ID }}
-          TF_VAR_grp_developers_id: ${{ vars.ENTRA_GRP_DEVELOPERS_ID }}
-          TF_VAR_entra_tenant_id: ${{ vars.ENTRA_TENANT_ID }}
-          TF_VAR_entra_idp_client_id: ${{ vars.ENTRA_IDP_CLIENT_ID }}
-          TF_VAR_entra_idp_client_secret: ${{ secrets.ENTRA_IDP_CLIENT_SECRET }}
 
       # A provider bump, a lock-file change or an empty variable can turn a plan into "replace every DNS record" (2026-10-09).
       # The plan is applied unreviewed here, so it is read first: deleting or replacing a DNS/identity resource needs the
@@ -464,14 +480,6 @@ jobs:
           if [ "$ec" = "1" ]; then exit 1; fi
         env:
           TF_VAR_teams_webhook_url: ${{ secrets.TEAMS_ALERTS_WEBHOOK_URL }}
-          TF_VAR_admin_hostnames: ${{ vars.ADMIN_HOSTNAMES }}
-          TF_VAR_cutover_hosts: ${{ vars.CUTOVER_HOSTS }}
-          TF_VAR_tunnels_exist: ${{ vars.TUNNELS_EXIST }}
-          TF_VAR_grp_platform_admins_id: ${{ vars.ENTRA_GRP_PLATFORM_ADMINS_ID }}
-          TF_VAR_grp_developers_id: ${{ vars.ENTRA_GRP_DEVELOPERS_ID }}
-          TF_VAR_entra_tenant_id: ${{ vars.ENTRA_TENANT_ID }}
-          TF_VAR_entra_idp_client_id: ${{ vars.ENTRA_IDP_CLIENT_ID }}
-          TF_VAR_entra_idp_client_secret: ${{ secrets.ENTRA_IDP_CLIENT_SECRET }}
 
       # A provider bump, a lock-file change or an empty variable can turn a plan into "replace every DNS record" (2026-10-09).
       # The plan is applied unreviewed here, so it is read first: deleting or replacing a DNS/identity resource needs the
