@@ -153,13 +153,9 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_route" "qnsc_admin_lan" {
 }
 
 # ── NOT in this stack yet (Phase 1, same directory, own PRs) ────────────────
-#
-# qnsc-backups (R2): Bucket Lock + lifecycle (§10.3). The v5 provider's R2
-#   locking surface needs a schema check against the live API at apply time —
-#   written when the account exists, not guessed now.
 # stqnscbackup (Azure): the storage account with locked immutability + lifecycle
-#   (§10.3). Same rule: written once the subscription exists.
-#
+#   (§10.3). Written once the subscription exists.
+# (qnsc-backups lives in backups.tf since M-6.)
 # TOKENS: the tunnel resources keep NO secret in state — a cloudflare-managed
 # tunnel's token is read from the dashboard/API after apply and piped into
 # kv-qnsc-platform (platform-cloudflared-qnsc-apps) by the owner, through
