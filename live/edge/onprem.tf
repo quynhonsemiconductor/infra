@@ -126,8 +126,10 @@ resource "cloudflare_zero_trust_access_policy" "admin_allow" {
 }
 
 # Dev hosts: one Access app per host (§8.2), Allow grp-qnsc-developers —
-# gated on cutover_hosts like everything else: no Access app exists for a
-# host that still points at AWS/Pages.
+# gated on cutover_hosts (an Access app for a host still pointing at
+# AWS/Pages would be dead weight). The BYPASS apps below are harmless before
+# cutover — a bypass on an unresolving host protects nothing — so they are
+# not gated.
 resource "cloudflare_zero_trust_access_application" "dev" {
   for_each = { for h, v in local.app_hosts : h => v if v.env == "dev" && contains(var.cutover_hosts, h) }
 
