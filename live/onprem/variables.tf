@@ -19,3 +19,13 @@ variable "admin_private_ip" {
   type        = string
   description = "pve01's address inside admin_private_cidr, the target of the qnsc-admin tunnel route."
 }
+
+variable "admin_pve_hostname" {
+  type        = string
+  description = "Door-2 Proxmox hostname. GitHub Actions repository variable TF_VAR_admin_pve_hostname (same source as live/edge's admin_hostnames); real value in product-docs runbook §12.1."
+}
+
+variable "admin_pbs_hostname" {
+  type        = string
+  description = "Door-2 PBS hostname. GitHub Actions repository variable TF_VAR_admin_pbs_hostname."
+}
