@@ -140,7 +140,7 @@ resource "cloudflare_zero_trust_access_policy" "dev_allow" {
 # GitHub webhook (GitHub cannot pass Access; the app verifies the signature).
 resource "cloudflare_zero_trust_access_application" "dev_bypass" {
   for_each = toset(flatten([
-    for h in [for h, v in local.app_hosts : v.env == "dev" ? h : null] : [
+    for h in compact([for h, v in local.app_hosts : v.env == "dev" ? h : null]) : [
       for p in local.api_paths : "${h}${replace(p, "/*", "")}"
     ]
   ]))
