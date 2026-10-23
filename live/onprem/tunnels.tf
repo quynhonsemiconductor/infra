@@ -93,8 +93,10 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "qnsc_apps" {
 #
 # Runs as a systemd service on pve01 (not in k3s), so the host stays reachable
 # (Proxmox UI, PBS, NUT) even when the cluster is the thing that is broken.
-# Two public hostnames (pve.qnsc.vn, pbs.qnsc.vn) gated by Cloudflare Access +
-# Entra + amr=mfa (§7.2; Access apps in live/edge), plus private-network
+# Two public hostnames (admin_hostnames CI variable — never literal in this
+# public repo; real values recorded in product-docs runbook §12.1) gated by
+# Cloudflare Access + Entra + amr=mfa (§7.2; Access apps in live/edge), plus
+# private-network
 # routing for WARP + kubectl/SSH (§12.1). The Access app must exist BEFORE the
 # first apply turns the hostnames on (runbook §12.1: Access first, hostname
 # second). Interim MFA until FIDO2 keys arrive: Security Defaults +
@@ -116,7 +118,7 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "qnsc_admin" {
       # these rules only decide where an authenticated request lands. Order
       # matters: host rules BEFORE the catch-all.
       {
-        hostname = "pve.qnsc.vn"
+        hostname = var.admin_pve_hostname
         path     = null
         service  = "https://localhost:8006"
         origin_request = {
@@ -124,7 +126,7 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "qnsc_admin" {
         }
       },
       {
-        hostname = "pbs.qnsc.vn"
+        hostname = var.admin_pbs_hostname
         path     = null
         service  = "https://localhost:8007"
         origin_request = {
