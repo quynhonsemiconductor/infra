@@ -400,6 +400,14 @@ jobs:
         env:
           TF_VAR_grafana_cloud_api_key: ${{ secrets.GRAFANA_CLOUD_API_KEY }}
           TF_VAR_teams_webhook_url: ${{ secrets.TEAMS_ALERTS_WEBHOOK_URL }}
+          TF_VAR_admin_hostnames: ${{ vars.ADMIN_HOSTNAMES }}
+          TF_VAR_cutover_hosts: ${{ vars.CUTOVER_HOSTS }}
+          TF_VAR_tunnels_exist: ${{ vars.TUNNELS_EXIST }}
+          TF_VAR_grp_platform_admins_id: ${{ vars.ENTRA_GRP_PLATFORM_ADMINS_ID }}
+          TF_VAR_grp_developers_id: ${{ vars.ENTRA_GRP_DEVELOPERS_ID }}
+          TF_VAR_entra_tenant_id: ${{ vars.ENTRA_TENANT_ID }}
+          TF_VAR_entra_idp_client_id: ${{ vars.ENTRA_IDP_CLIENT_ID }}
+          TF_VAR_entra_idp_client_secret: ${{ secrets.ENTRA_IDP_CLIENT_SECRET }}
 
       # A provider bump, a lock-file change or an empty variable can turn a plan into "replace every DNS record" (2026-10-09).
       # The plan is applied unreviewed here, so it is read first: deleting or replacing a DNS/identity resource needs the
@@ -456,6 +464,14 @@ jobs:
           if [ "$ec" = "1" ]; then exit 1; fi
         env:
           TF_VAR_teams_webhook_url: ${{ secrets.TEAMS_ALERTS_WEBHOOK_URL }}
+          TF_VAR_admin_hostnames: ${{ vars.ADMIN_HOSTNAMES }}
+          TF_VAR_cutover_hosts: ${{ vars.CUTOVER_HOSTS }}
+          TF_VAR_tunnels_exist: ${{ vars.TUNNELS_EXIST }}
+          TF_VAR_grp_platform_admins_id: ${{ vars.ENTRA_GRP_PLATFORM_ADMINS_ID }}
+          TF_VAR_grp_developers_id: ${{ vars.ENTRA_GRP_DEVELOPERS_ID }}
+          TF_VAR_entra_tenant_id: ${{ vars.ENTRA_TENANT_ID }}
+          TF_VAR_entra_idp_client_id: ${{ vars.ENTRA_IDP_CLIENT_ID }}
+          TF_VAR_entra_idp_client_secret: ${{ secrets.ENTRA_IDP_CLIENT_SECRET }}
 
       # A provider bump, a lock-file change or an empty variable can turn a plan into "replace every DNS record" (2026-10-09).
       # The plan is applied unreviewed here, so it is read first: deleting or replacing a DNS/identity resource needs the

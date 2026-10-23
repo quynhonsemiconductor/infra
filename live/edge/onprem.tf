@@ -1,22 +1,19 @@
 # ── On-prem edge: DNS, Access, Workers routes (ONPREM-PLAN §8.2 — M-5) ──────
 #
-# ADDITIVE: nothing AWS-era is removed here. The ACM/SES/Pages resources stay
-# until each product's cutover apply (§8.2 "one live/edge apply per product")
-# and Stage E — this file only ADDS the on-prem doors so the day-of work is
-# apply-only.
+# Provider: cloudflare v4.52.9 (this stack's pin — the v5 upgrade + the Azure
+# state migration for this stack are their own later PR, CUTOVER E2).
 #
-# One host per app (§8.2): a Worker serves the SPA on `<app>[-dev].qnsc.vn/*`;
-# the API paths are no-Worker routes (they negate the SPA route and fall
-# through to the qnsc-apps tunnel, whose ingress lives in live/onprem).
+# ADDITIVE: nothing AWS-era is removed here. DNS records and Workers routes
+# are gated on `cutover_hosts` — each host joins AT ITS CUTOVER apply (§8.2:
+# "one live/edge apply per product"), with the Pages domain/records imported
+# and removed in the SAME apply. rova prod resolves to AWS today and must
+# keep doing so until Nov 10.
 #
-# ADMIN hostnames are NOT literal in this public repo — they come from the
-# `admin_hostnames` variable, fed by a GitHub Actions repository variable
-# (`TF_VAR_admin_hostnames` on the infra `prod` environment). The real values
-# are recorded in product-docs (runbook §12.1: pve/pbs.qnsc.vn).
+# ADMIN hostnames are NOT literal in this public repo — `admin_hostnames`,
+# fed by a GitHub Actions repository variable. Real values: product-docs,
+# runbook §12.1.
 
 locals {
-  # host → product/env. Product hostnames are already public elsewhere in this
-  # repo (live/onprem/tunnels.tf); only admin hostnames are variable-fed.
   app_hosts = {
     "rova.qnsc.vn"       = { product = "rova", env = "prod" }
     "rova-dev.qnsc.vn"   = { product = "rova", env = "dev" }
@@ -24,85 +21,99 @@ locals {
     "kb-dev.qnsc.vn"     = { product = "kb", env = "dev" }
   }
 
-  # API paths that must NOT hit the SPA Worker (§8.2 table). The MCP paths
-  # (/.well-known/oauth-*, /mcp) join when AI-4 ships.
+  # The ONLY Access bypasses (plan §8.2): /readyz per dev host + the rova-dev
+  # GitHub webhook. NEVER the whole /api or /v1.
+  bypass_paths = {
+    for h in compact([for h, v in local.app_hosts : v.env == "dev" ? h : null]) :
+    "${h}/readyz" => h
+  }
+  webhook_bypass = "rova-dev.qnsc.vn/v1/scm/webhook/*"
+
   api_paths = ["/api/*", "/v1/*", "/readyz"]
 }
 
-# ── The qnsc-apps tunnel (created in live/onprem) — data only ───────────────
+# ── Tunnels (created in live/onprem; data lookups gated on tunnels_exist) ───
 data "cloudflare_zero_trust_tunnel_cloudflared" "qnsc_apps" {
+  count      = var.tunnels_exist ? 1 : 0
   account_id = var.cloudflare_account_id
   name       = "qnsc-apps"
 }
 
-# Every app host → the tunnel. Proxied, no origin: the tunnel IS the origin.
-resource "cloudflare_record" "app_hosts" {
-  for_each = local.app_hosts
-
-  zone_id = var.cloudflare_zone_id
-  name    = each.key
-  type    = "CNAME"
-  value   = "${data.cloudflare_zero_trust_tunnel_cloudflared.qnsc_apps.id}.cfargotunnel.com"
-  proxied = true
-}
-
-# Admin hostnames → the qnsc-admin tunnel (door 2). Values from CI variables.
 data "cloudflare_zero_trust_tunnel_cloudflared" "qnsc_admin" {
+  count      = var.tunnels_exist ? 1 : 0
   account_id = var.cloudflare_account_id
   name       = "qnsc-admin"
 }
 
+# App hosts → the qnsc-apps tunnel. A host enters cutover_hosts only inside
+# its move PR's apply; the Pages/legacy records for it are imported and
+# removed in the SAME apply (no CNAME conflict, no early switch).
+resource "cloudflare_record" "app_hosts" {
+  for_each = { for h, v in local.app_hosts : h => v if var.tunnels_exist && contains(var.cutover_hosts, h) }
+
+  zone_id = var.cloudflare_zone_id
+  name    = each.key
+  type    = "CNAME"
+  value   = "${data.cloudflare_zero_trust_tunnel_cloudflared.qnsc_apps[0].id}.cfargotunnel.com"
+  proxied = true
+}
+
 resource "cloudflare_record" "admin_hosts" {
-  for_each = toset(var.admin_hostnames)
+  for_each = toset(var.tunnels_exist ? var.admin_hostnames : [])
 
   zone_id = var.cloudflare_zone_id
   name    = each.value
   type    = "CNAME"
-  value   = "${data.cloudflare_zero_trust_tunnel_cloudflared.qnsc_admin.id}.cfargotunnel.com"
+  value   = "${data.cloudflare_zero_trust_tunnel_cloudflared.qnsc_admin[0].id}.cfargotunnel.com"
   proxied = true
 }
 
-# ── Access (v5 shape: policies attach to their application via application_id)
-# Entra ID is THE login method. The IdP client secret is a value — fed as a
-# sensitive CI variable; the Entra app behind it is created out-of-band (owner,
-# stdin, kv-qnsc-platform).
+# ── Access (v4 shape) ────────────────────────────────────────────────────────
+# Entra ID is THE login method. The IdP client secret is a value and lands in
+# the CF state — THE one documented exception (plan §7 records it); the state
+# backend stays private + encrypted. The Entra app behind it is created
+# out-of-band (owner, stdin, kv-qnsc-platform).
 resource "cloudflare_zero_trust_access_identity_provider" "entra" {
   account_id = var.cloudflare_account_id
   name       = "entra"
   type       = "azureAD"
+
   config {
-    client_id     = var.entra_idp_client_id
-    client_secret = var.entra_idp_client_secret
-    directory_id  = var.entra_tenant_id
+    client_id      = var.entra_idp_client_id
+    client_secret  = var.entra_idp_client_secret
+    directory_id   = var.entra_tenant_id
+    support_groups = true # so Access can match Entra groups in policies
   }
 }
 
 # Admin doors: Allow grp-qnsc-platform-admins requiring MFA. Interim until
-# FIDO2 keys exist: Entra Security Defaults + Authenticator still satisfy
-# amr=mfa. No bypass.
+# FIDO2 keys exist: Entra Security Defaults + Authenticator still satisfies
+# amr=mfa. Session ≤ 8 h.
 resource "cloudflare_zero_trust_access_application" "admin" {
   for_each = toset(var.admin_hostnames)
 
   account_id       = var.cloudflare_account_id
-  zone_id          = var.cloudflare_zone_id
   name             = each.value
   domain           = "${each.value}/*"
-  session_duration = "12h"
+  session_duration = "8h"
+  allowed_idps     = [cloudflare_zero_trust_access_identity_provider.entra.id]
 }
 
 resource "cloudflare_zero_trust_access_policy" "admin_allow" {
   for_each = cloudflare_zero_trust_access_application.admin
 
   account_id       = var.cloudflare_account_id
-  zone_id          = var.cloudflare_zone_id
   application_id   = each.value.id
   name             = "platform-admins-mfa"
   decision         = "allow"
   precedence       = 1
-  session_duration = "12h"
+  session_duration = "8h"
 
   include {
-    group = [var.grp_platform_admins_id]
+    azure {
+      id                   = [var.grp_platform_admins_id]
+      identity_provider_id = cloudflare_zero_trust_access_identity_provider.entra.id
+    }
   }
   require {
     auth_method = "mfa"
@@ -114,17 +125,16 @@ resource "cloudflare_zero_trust_access_application" "dev" {
   for_each = { for h, v in local.app_hosts : h => v if v.env == "dev" }
 
   account_id       = var.cloudflare_account_id
-  zone_id          = var.cloudflare_zone_id
   name             = each.key
   domain           = "${each.key}/*"
   session_duration = "12h"
+  allowed_idps     = [cloudflare_zero_trust_access_identity_provider.entra.id]
 }
 
 resource "cloudflare_zero_trust_access_policy" "dev_allow" {
   for_each = cloudflare_zero_trust_access_application.dev
 
   account_id       = var.cloudflare_account_id
-  zone_id          = var.cloudflare_zone_id
   application_id   = each.value.id
   name             = "developers"
   decision         = "allow"
@@ -132,30 +142,29 @@ resource "cloudflare_zero_trust_access_policy" "dev_allow" {
   session_duration = "12h"
 
   include {
-    group = [var.grp_developers_id]
+    azure {
+      id                   = [var.grp_developers_id]
+      identity_provider_id = cloudflare_zero_trust_access_identity_provider.entra.id
+    }
   }
 }
 
-# Bypass: /readyz on every dev host (Synthetic Monitoring) and the rova-dev
-# GitHub webhook (GitHub cannot pass Access; the app verifies the signature).
+# Bypass: <dev>/readyz (Synthetic Monitoring) and the rova-dev webhook.
 resource "cloudflare_zero_trust_access_application" "dev_bypass" {
-  for_each = toset(flatten([
-    for h in compact([for h, v in local.app_hosts : v.env == "dev" ? h : null]) : [
-      for p in local.api_paths : "${h}${replace(p, "/*", "")}"
-    ]
-  ]))
+  for_each = merge(
+    { for p in keys(local.bypass_paths) : p => local.bypass_paths[p] },
+    { (local.webhook_bypass) = "rova-dev" },
+  )
 
   account_id = var.cloudflare_account_id
-  zone_id    = var.cloudflare_zone_id
-  name       = "bypass ${each.value}"
-  domain     = each.value
+  name       = "bypass ${each.key}"
+  domain     = each.key
 }
 
 resource "cloudflare_zero_trust_access_policy" "dev_bypass" {
   for_each = cloudflare_zero_trust_access_application.dev_bypass
 
   account_id     = var.cloudflare_account_id
-  zone_id        = var.cloudflare_zone_id
   application_id = each.value.id
   name           = "everyone-bypass"
   decision       = "bypass"
@@ -166,15 +175,12 @@ resource "cloudflare_zero_trust_access_policy" "dev_bypass" {
   }
 }
 
-# ── Workers routes (§8.2): SPA on /*, API paths run NO worker ───────────────
-# The Worker scripts themselves are deployed by the product repos (cf-ci-web);
-# these routes only bind the zone. script = "" on the API paths is the
-# no-Worker route — VERIFY at plan time that the v5 attribute is script_name; an empty
-# script_name creates the no-Worker route. VERIFY at plan time that the API
-# accepts it — if it rejects an empty name, the alternative (a dedicated
-# pass-through Worker) gets recorded here.
+# ── Workers routes (§8.2), gated on cutover_hosts like the DNS ──────────────
+# SPA script on `<host>/*`; the API paths are no-Worker routes (script_name
+# omitted — the route exists with no script, so the traffic falls through to
+# the tunnel).
 resource "cloudflare_workers_route" "spa" {
-  for_each = local.app_hosts
+  for_each = { for h, v in local.app_hosts : h => v if contains(var.cutover_hosts, h) }
 
   zone_id     = var.cloudflare_zone_id
   pattern     = "${each.key}/*"
@@ -184,7 +190,7 @@ resource "cloudflare_workers_route" "spa" {
 resource "cloudflare_workers_route" "api_no_worker" {
   for_each = {
     for pair in flatten([
-      for h, v in local.app_hosts : [
+      for h in var.cutover_hosts : [
         for p in local.api_paths : { host = h, path = p }
       ]
     ]) : "${pair.host}${pair.path}" => pair
@@ -192,5 +198,5 @@ resource "cloudflare_workers_route" "api_no_worker" {
 
   zone_id     = var.cloudflare_zone_id
   pattern     = "${each.value.host}${each.value.path}"
-  script_name = ""
+  script_name = null
 }
