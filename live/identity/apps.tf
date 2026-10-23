@@ -12,8 +12,9 @@
 #     loopbacks use the real local ports (rova 5175, opshub 5174, KB 8000)
 #     plus the KB connector callbacks.
 #   - client-secret VALUES never touch state (§7, main.tf): the owner rotates
-#     with scripts/rotate-signin-secret.sh (az ad app credential reset --years
-#     0.5, piped straight into the vault, nothing printed) and the weekly
+#     with scripts/rotate-signin-secret.sh (az ad app credential reset --append
+#     --end-date +6 months, piped straight into the vault, nothing printed)
+#     and the weekly
 #     expiry-check watches the vault's expires tag. Tofu owns shape only.
 #   - app_role_assignment_required = FALSE everywhere, deliberately: flipping
 #     it on without assignments would lock out current sign-ins — including
@@ -134,35 +135,35 @@ resource "azuread_application" "signin" {
 # ── Adoption: import the existing registrations, do not create new ones ─────
 import {
   to = azuread_application.signin["rova_prod"]
-  id = var.existing_object_ids.rova_prod
+  id = "/applications/${var.existing_object_ids.rova_prod}"
 }
 import {
   to = azuread_application.signin["rova_dev"]
-  id = var.existing_object_ids.rova_dev
+  id = "/applications/${var.existing_object_ids.rova_dev}"
 }
 import {
   to = azuread_application.signin["opshub_dev"]
-  id = var.existing_object_ids.opshub_dev
+  id = "/applications/${var.existing_object_ids.opshub_dev}"
 }
 import {
   to = azuread_application.signin["kb_dev"]
-  id = var.existing_object_ids.kb_dev
+  id = "/applications/${var.existing_object_ids.kb_dev}"
 }
 import {
   to = azuread_service_principal.signin["rova_prod"]
-  id = var.existing_sp_object_ids.rova_prod
+  id = "/servicePrincipals/${var.existing_sp_object_ids.rova_prod}"
 }
 import {
   to = azuread_service_principal.signin["rova_dev"]
-  id = var.existing_sp_object_ids.rova_dev
+  id = "/servicePrincipals/${var.existing_sp_object_ids.rova_dev}"
 }
 import {
   to = azuread_service_principal.signin["opshub_dev"]
-  id = var.existing_sp_object_ids.opshub_dev
+  id = "/servicePrincipals/${var.existing_sp_object_ids.opshub_dev}"
 }
 import {
   to = azuread_service_principal.signin["kb_dev"]
-  id = var.existing_sp_object_ids.kb_dev
+  id = "/servicePrincipals/${var.existing_sp_object_ids.kb_dev}"
 }
 
 resource "azuread_service_principal" "signin" {
