@@ -62,11 +62,10 @@ resource "cloudflare_record" "admin_hosts" {
   proxied = true
 }
 
-# ── Access ───────────────────────────────────────────────────────────────────
-# Entra ID is THE login method. The IdP client secret is a value — it is fed as
-# a sensitive CI variable and lands in the CF state like every other CF
-# resource; the Entra app it belongs to is created out-of-band (owner, stdin,
-# kv-qnsc-platform).
+# ── Access (v5 shape: policies attach to their application via application_id)
+# Entra ID is THE login method. The IdP client secret is a value — fed as a
+# sensitive CI variable; the Entra app behind it is created out-of-band (owner,
+# stdin, kv-qnsc-platform).
 resource "cloudflare_zero_trust_access_identity_provider" "entra" {
   account_id = var.cloudflare_account_id
   name       = "entra"
@@ -80,7 +79,7 @@ resource "cloudflare_zero_trust_access_identity_provider" "entra" {
 
 # Admin doors: Allow grp-qnsc-platform-admins requiring MFA. Interim until
 # FIDO2 keys exist: Entra Security Defaults + Authenticator still satisfy
-# amr=mfa. Session 12 h. No bypass.
+# amr=mfa. No bypass.
 resource "cloudflare_zero_trust_access_application" "admin" {
   for_each = toset(var.admin_hostnames)
 
@@ -89,22 +88,25 @@ resource "cloudflare_zero_trust_access_application" "admin" {
   name             = each.value
   domain           = "${each.value}/*"
   session_duration = "12h"
-
-  # subject created below
-  depends_on = [cloudflare_zero_trust_access_policy.admin_allow]
 }
 
 resource "cloudflare_zero_trust_access_policy" "admin_allow" {
-  account_id = var.cloudflare_account_id
-  name       = "platform-admins-mfa"
-  decision   = "allow"
+  for_each = cloudflare_zero_trust_access_application.admin
+
+  account_id       = var.cloudflare_account_id
+  zone_id          = var.cloudflare_zone_id
+  application_id   = each.value.id
+  name             = "platform-admins-mfa"
+  decision         = "allow"
+  precedence       = 1
+  session_duration = "12h"
+
   include {
     group = [var.grp_platform_admins_id]
   }
   require {
-    authentication_method = "mfa"
+    auth_method = "mfa"
   }
-  session_duration = "12h"
 }
 
 # Dev hosts: one Access app per host (§8.2), Allow grp-qnsc-developers.
@@ -119,33 +121,46 @@ resource "cloudflare_zero_trust_access_application" "dev" {
 }
 
 resource "cloudflare_zero_trust_access_policy" "dev_allow" {
-  account_id = var.cloudflare_account_id
-  name       = "developers"
-  decision   = "allow"
+  for_each = cloudflare_zero_trust_access_application.dev
+
+  account_id       = var.cloudflare_account_id
+  zone_id          = var.cloudflare_zone_id
+  application_id   = each.value.id
+  name             = "developers"
+  decision         = "allow"
+  precedence       = 1
+  session_duration = "12h"
+
   include {
     group = [var.grp_developers_id]
   }
-  session_duration = "12h"
 }
 
 # Bypass: /readyz on every dev host (Synthetic Monitoring) and the rova-dev
 # GitHub webhook (GitHub cannot pass Access; the app verifies the signature).
 resource "cloudflare_zero_trust_access_application" "dev_bypass" {
   for_each = toset(flatten([
-    for h in keys(local.app_hosts) : [for p in local.api_paths : "${h}${replace(p, "/*", "")}"]
+    for h in [for h, v in local.app_hosts : v.env == "dev" ? h : null] : [
+      for p in local.api_paths : "${h}${replace(p, "/*", "")}"
+    ]
   ]))
 
   account_id = var.cloudflare_account_id
   zone_id    = var.cloudflare_zone_id
   name       = "bypass ${each.value}"
   domain     = each.value
-  # readyz + webhook bypass, no session
 }
 
 resource "cloudflare_zero_trust_access_policy" "dev_bypass" {
-  account_id = var.cloudflare_account_id
-  name       = "everyone-bypass"
-  decision   = "bypass"
+  for_each = cloudflare_zero_trust_access_application.dev_bypass
+
+  account_id     = var.cloudflare_account_id
+  zone_id        = var.cloudflare_zone_id
+  application_id = each.value.id
+  name           = "everyone-bypass"
+  decision       = "bypass"
+  precedence     = 1
+
   include {
     everyone = true
   }
@@ -154,16 +169,16 @@ resource "cloudflare_zero_trust_access_policy" "dev_bypass" {
 # ── Workers routes (§8.2): SPA on /*, API paths run NO worker ───────────────
 # The Worker scripts themselves are deployed by the product repos (cf-ci-web);
 # these routes only bind the zone. script = "" on the API paths is the
-# no-Worker route — VERIFY at plan time that the v5 provider accepts an empty
-# script (the zone-routes API takes an empty script name as "no worker"; if it
-# rejects it, switch to cloudflare_custom_pages / zone-level route suppression
-# and record the shape here).
+# no-Worker route — VERIFY at plan time that the v5 attribute is script_name; an empty
+# script_name creates the no-Worker route. VERIFY at plan time that the API
+# accepts it — if it rejects an empty name, the alternative (a dedicated
+# pass-through Worker) gets recorded here.
 resource "cloudflare_workers_route" "spa" {
   for_each = local.app_hosts
 
-  zone_id = var.cloudflare_zone_id
-  pattern = "${each.key}/*"
-  script  = "${each.value.product}-${each.value.env == "dev" ? "dev" : "prod"}-web"
+  zone_id     = var.cloudflare_zone_id
+  pattern     = "${each.key}/*"
+  script_name = "${each.value.product}-${each.value.env == "dev" ? "dev" : "prod"}-web"
 }
 
 resource "cloudflare_workers_route" "api_no_worker" {
@@ -175,7 +190,7 @@ resource "cloudflare_workers_route" "api_no_worker" {
     ]) : "${pair.host}${pair.path}" => pair
   }
 
-  zone_id = var.cloudflare_zone_id
-  pattern = "${each.value.host}${each.value.path}"
-  script  = ""
+  zone_id     = var.cloudflare_zone_id
+  pattern     = "${each.value.host}${each.value.path}"
+  script_name = ""
 }
