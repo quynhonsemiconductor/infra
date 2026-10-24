@@ -499,7 +499,17 @@ jobs:
       - name: tofu apply
         if: steps.plan.outputs.exitcode == '2'
         working-directory: live/observability-alerting
-        run: tofu apply -input=false tfplan
+        run: |
+          # UUID redaction: same reason as the plan step — healthchecksio check
+          # ids/ping_urls are not sensitive per the provider but ARE working
+          # ping URLs (UUID pings stay accepted) and this log is public.
+          set -o pipefail
+          tofu apply -input=false tfplan 2>&1 \
+            | sed -E 's/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/<redacted>/g' \
+            | tee apply.txt
+          ec=${PIPESTATUS[0]}
+          echo "tofu apply exit: $ec"
+          exit "$ec"
 
   apply-runtime-prod:
     name: Apply runtime-prod

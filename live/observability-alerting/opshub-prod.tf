@@ -8,8 +8,9 @@
 # configures those clients — the same rule the two-stack split relies on.
 #
 # DISABLED UNTIL CUTOVER. Every resource is `count = var.opshub_prod_live ? 1 : 0`,
-# so a plan today shows NOTHING (and the nightly drift job sees nothing — this
-# stack is in its list). ONE flip mechanism: a one-word PR that changes the
+# so a plan today shows NOTHING (drift-detection does not cover this stack; the
+# PR plan matrix's "Plan observability-alerting — no changes" is the standing
+# proof). ONE flip mechanism: a one-word PR that changes the
 # `opshub_prod_live` default to `true` in the D2 window, SA-reviewed like any
 # change, which also sets `sm_probe_id` (default null; the SM probe id is only
 # knowable with a live SM token) and the Healthchecks channel UUIDs. There is
@@ -21,11 +22,14 @@
 #     https://hc-ping.com/<ping-key>/<slug>
 # The ping key lives ONLY in `kv-qnsc-prod` and reaches the batch CronJobs via
 # ESO (§7.1) — never in Git, never in tofu. THE REASON: in healthchecksio
-# v2.3.0 the resource's `id` and `ping_url` are NOT sensitive, so this stack's
-# plan/apply output in public Actions logs would otherwise publish a working
-# ping URL. Slug-based pings make every tofu-computed value publishable:
-# nothing in tofu output needs to be secret. That is also why every check
-# below pins its `slug` explicitly instead of letting the provider derive one.
+# v2.3.0 the resource's `id` and `ping_url` are NOT sensitive, and Healthchecks
+# keeps ACCEPTING pings on the check UUID even when jobs ping by ping-key +
+# slug — so a UUID reaching plan.txt, the Actions log or the PR plan comment
+# WOULD publish a working ping URL. Two controls make that impossible: every
+# check pins its `slug` (deterministic, no UUID in the ping path jobs use),
+# and the observability-alerting plan/apply jobs in infra-plan.yml /
+# infra-apply.yml pipe all tofu output through a UUID redactor before it hits
+# plan.txt/apply.txt, the logs, or the PR plan comment. Never weaken either.
 #
 # ── SCHEDULES (plan §10.2, §10.3, §10.4, §12 — opshub = rova's slots +15 min) ─
 # dump        01:45 daily   (§10.2: rova 01:30, batch runs one job at a time)
@@ -63,15 +67,20 @@ locals {
 
 # ── Synthetic Monitoring ────────────────────────────────────────────────────
 # The aliased grafana.sm and healthchecksio providers live in
-# monitoring-providers.tf (shared with rova-prod.tf). Alert routing: §12's
-# existing pipeline — grafana_notification_policy.root in main.tf sends
-# env=production to Teams + devops@. No new contact point or rule.
+# monitoring-providers.tf (shared with rova-prod.tf).
+#
+# ALERT ROUTE (§12: prod → Teams + devops@): SM check labels do NOT become
+# alert labels and alert_sensitivity creates no rules by itself, so routing
+# runs through the grafana_rule_group below: it fires on
+# probe_success{job="opshub-prod-readyz"} == 0 and carries rule labels
+# env=production + product=opshub, which is exactly what
+# grafana_notification_policy.root matches (Teams for prod, devops@ always).
 
 # The opshub-prod slot of §12's SIX-check budget (rova+opshub prod+dev, kb-dev,
 # + one spare) — this PR fills a budgeted slot, it does not grow it. 5-minute
 # HTTP GET per §12. /readyz has no Access on opshub prod (§8.2: "no Access on
-# prod"). alert_sensitivity = "high" + these labels route the managed alert
-# through grafana_notification_policy.root (env=production → Teams + devops@).
+# prod"). alert_sensitivity = "high" records sensitivity on the SM side; the
+# ALERT itself is the flag-gated rule group below.
 resource "grafana_synthetic_monitoring_check" "opshub_prod_readyz" {
   count = local.opshub_live ? 1 : 0
   # the sm alias never configures while count is 0 (no instances)
@@ -103,6 +112,86 @@ resource "grafana_synthetic_monitoring_check" "opshub_prod_readyz" {
   }
 }
 
+# ── Synthetic Monitoring alert rule ─────────────────────────────────────────
+# §12's prod routing as code: fires when the check's probe reports failure
+# (probe_success == 0) for 5 minutes. Rule labels env=production + product=opshub
+# route it through grafana_notification_policy.root — Teams for prod, devops@
+# always — the same policy every other rule in this stack uses. Same datasource
+# (the stack's managed Prometheus, where SM publishes probe_success) as
+# series_near_cap in main.tf.
+resource "grafana_rule_group" "opshub_prod_readyz_down" {
+  count            = local.opshub_live ? 1 : 0
+  name             = "opshub (prod readyz)"
+  folder_uid       = grafana_folder.alerts.uid
+  interval_seconds = 60
+
+  rule {
+    name           = "opshub-prod-readyz-down"
+    condition      = "B"
+    for            = "5m"
+    no_data_state  = "OK"
+    exec_err_state = "Error"
+
+    data {
+      ref_id         = "A"
+      query_type     = "instant"
+      datasource_uid = data.grafana_data_source.prometheus.uid
+
+      relative_time_range {
+        from = 300
+        to   = 0
+      }
+
+      model = jsonencode({
+        refId         = "A"
+        datasource    = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
+        expr          = "probe_success{job=\"opshub-prod-readyz\"}"
+        instant       = true
+        range         = false
+        intervalMs    = 1000
+        maxDataPoints = 43200
+      })
+    }
+
+    data {
+      ref_id         = "B"
+      datasource_uid = "__expr__"
+
+      relative_time_range {
+        from = 0
+        to   = 0
+      }
+
+      model = jsonencode({
+        refId      = "B"
+        type       = "threshold"
+        datasource = { type = "__expr__", uid = "__expr__" }
+        expression = "A"
+        conditions = [
+          {
+            evaluator = {
+              type   = "lt"
+              params = [1]
+            }
+          }
+        ]
+        intervalMs    = 1000
+        maxDataPoints = 43200
+      })
+    }
+
+    labels = {
+      product  = "opshub"
+      env      = "production" # matches the notification policy matcher, NOT "prod"
+      severity = "critical"
+    }
+
+    annotations = {
+      summary = "Synthetic check opshub-prod-readyz failing: https://opshub.qnsc.vn/readyz has returned non-2xx/3xx (or timed out) from the SM probe for 5 minutes (§12)."
+    }
+  }
+}
+
 # ── Healthchecks.io — the batch-job pings (§12 external row) ────────────────
 
 # Nightly pg_dump of pg-opshub → R2 dumps/pg-opshub/daily/ (§10.2: 01:45 =
@@ -130,11 +219,11 @@ resource "healthchecksio_check" "opshub_prod_dump" {
 
 # Weekly restore test, SECOND pass (§10.4: ONE Sun 04:00 job, rova pass then
 # opshub pass — batch runs one job at a time; this check pings on the opshub
-# pass). Schedule at the job start, 04:00; grace 1 h is sized for BOTH passes
-# (2 × ~15 min per §5.7's restore-test size + margin). The job pings /start at
-# the beginning of its opshub pass, success or /fail at the end — /start makes
-# the 45-min-per-pass over-run alert (§12) the job's own responsibility; this
-# check covers "failed or missed". CUTOVER D2.6: green BEFORE any announcement.
+# pass). Schedule at the job start, 04:00; grace 45 MIN (§10.4: "running >
+# 45 min" per pass). The job pings /start at the beginning of its opshub pass,
+# success or /fail at the end — /start makes the over-run alert the job's own
+# responsibility; this check covers "failed or missed". CUTOVER D2.6: green
+# BEFORE any announcement.
 resource "healthchecksio_check" "opshub_prod_restore" {
   count    = local.opshub_live ? 1 : 0
   name     = "opshub-prod-restore"
@@ -144,7 +233,7 @@ resource "healthchecksio_check" "opshub_prod_restore" {
   channels = var.healthchecks_channel_ids
   schedule = "0 4 * * 0"
   timezone = "Asia/Ho_Chi_Minh"
-  grace    = 3600
+  grace    = 2700 # 45 min, §10.4
 
   lifecycle {
     precondition {

@@ -331,8 +331,18 @@ jobs:
           # permission, so it cannot acquire the state lock. Plan never mutates
           # state, so run lock-free (apply still locks via the admin apply role).
           # PIPESTATUS[0] captures tofu's real exit past the `tee` pipe.
+          # UUID REDACTION (review round 2): healthchecksio check ids (and any
+          # other resource UUIDs, e.g. ping_url) print in this output, and
+          # Healthchecks keeps accepting pings on the UUID even when jobs ping
+          # by ping-key + slug — so a UUID in plan.txt, this log or the PR plan
+          # comment (which reads plan.txt) would publish a working ping URL.
+          # Everything downstream (artifact, comment) reads the REDACTED text.
+          # PIPESTATUS[0] + pipefail keep tofu's real exit code through sed.
+          set -o pipefail
           set +e
-          tofu plan -input=false -lock=false -no-color -detailed-exitcode -out=tfplan 2>&1 | tee plan.txt
+          tofu plan -input=false -lock=false -no-color -detailed-exitcode -out=tfplan 2>&1 \
+            | sed -E 's/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/<redacted>/g' \
+            | tee plan.txt
           echo "exitcode=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
         env:
           # Stack-specific inputs. Vars a stack doesn't declare are ignored
