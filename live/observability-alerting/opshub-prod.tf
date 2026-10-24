@@ -3,10 +3,9 @@
 # Hosted in `observability-alerting` — the plan's home for alerting-as-code
 # (§12: "Grafana Alerting → Teams (prod) + devops@qnsc.vn, as code in
 # observability-alerting"), and the one of the two Grafana stacks that plans
-# and applies today. This stack does NOT hold the SM/HC credentials problem
-# the `observability` stack does; the SM alias below is configured from
-# variables, and with zero live resource instances tofu never configures the
-# client — the same rule the two-stack split itself relies on.
+# and applies today. The SM/HC providers and shared variables live in
+# monitoring-providers.tf; with zero live resource instances tofu never
+# configures those clients — the same rule the two-stack split relies on.
 #
 # DISABLED UNTIL CUTOVER. Every resource is `count = var.opshub_prod_live ? 1 : 0`,
 # so a plan today shows NOTHING (and the nightly drift job sees nothing — this
@@ -58,54 +57,15 @@ variable "opshub_prod_live" {
   default     = false
 }
 
-variable "grafana_sm_url" {
-  description = "Grafana Synthetic Monitoring API root (global, not the stack URL)."
-  type        = string
-  default     = "https://synthetic-monitoring-api.grafana.net"
-}
-
-variable "grafana_sm_token" {
-  description = "Synthetic Monitoring API token — repo secret GRAFANA_SM_TOKEN, mapped in infra-plan.yml (matrix-scoped) and infra-apply.yml (apply-observability-alerting only). Empty until the owner adds it; harmless while everything is culled."
-  type        = string
-  default     = ""
-  sensitive   = true
-}
-
-variable "sm_probe_id" {
-  description = "Synthetic Monitoring probe id for the single allowed probe (§12: cap 1 probe, ≤ 10 checks). default null — the id is only knowable with a live SM token; the flip PR sets it."
-  type        = number
-  default     = null
-}
-
-variable "healthchecks_api_token" {
-  description = "Healthchecks.io API token (team account) — repo secret HEALTHCHECKS_API_TOKEN, same mappings as the SM token."
-  type        = string
-  default     = ""
-  sensitive   = true
-}
-
-variable "healthchecks_channel_ids" {
-  description = "Healthchecks.io channel UUIDs that receive the alerts (the Teams + devops@ integrations, §12). Set by the flip PR; the preconditions enforce it."
-  type        = list(string)
-  default     = []
-}
-
 locals {
   opshub_live = var.opshub_prod_live
 }
 
 # ── Synthetic Monitoring ────────────────────────────────────────────────────
-# A SECOND, aliased grafana provider: SM resources authenticate with the SM API
-# token (sm_url/sm_access_token), NOT the org-level GRAFANA_CLOUD_API_KEY the
-# default provider uses. With opshub_prod_live = false the alias has zero
-# resource instances, so the client never configures and the empty token is
-# never sent — the same "no instances, no configuration" rule the observability
-# split exploited in reverse (see the header of main.tf).
-provider "grafana" {
-  alias           = "sm"
-  sm_url          = var.grafana_sm_url
-  sm_access_token = var.grafana_sm_token
-}
+# The aliased grafana.sm and healthchecksio providers live in
+# monitoring-providers.tf (shared with rova-prod.tf). Alert routing: §12's
+# existing pipeline — grafana_notification_policy.root in main.tf sends
+# env=production to Teams + devops@. No new contact point or rule.
 
 # The opshub-prod slot of §12's SIX-check budget (rova+opshub prod+dev, kb-dev,
 # + one spare) — this PR fills a budgeted slot, it does not grow it. 5-minute
@@ -144,11 +104,6 @@ resource "grafana_synthetic_monitoring_check" "opshub_prod_readyz" {
 }
 
 # ── Healthchecks.io — the batch-job pings (§12 external row) ────────────────
-provider "healthchecksio" {
-  # Empty key with every check culled = the client never configures; the same
-  # rule as the SM alias above.
-  api_key = var.healthchecks_api_token
-}
 
 # Nightly pg_dump of pg-opshub → R2 dumps/pg-opshub/daily/ (§10.2: 01:45 =
 # rova's 01:30 slot + 15 min). Grace 2 h ≈ §12's "Dump > 26 h" alert.
