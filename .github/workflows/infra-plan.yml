@@ -372,6 +372,7 @@ jobs:
           # procedure. Scoped to the hosting stack's matrix entry.
           TF_VAR_grafana_sm_token:       ${{ matrix.stack == 'observability-alerting' && secrets.GRAFANA_SM_TOKEN || '' }}
           TF_VAR_adaptive_metrics_api_key: ${{ matrix.stack == 'adaptive-metrics' && secrets.GRAFANA_ADAPTIVE_METRICS_API_TOKEN || '' }}
+          TF_VAR_adaptive_metrics_url:   ${{ matrix.stack == 'adaptive-metrics' && vars.AM_METRICS_URL || '' }}
           TF_VAR_healthchecks_api_token: ${{ matrix.stack == 'observability-alerting' && secrets.HEALTHCHECKS_API_TOKEN || '' }}
 
       # TASK 0.3 / §17b — refuse a plan that would lose data, before anyone reads
