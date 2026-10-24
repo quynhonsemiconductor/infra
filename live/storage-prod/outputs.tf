@@ -66,12 +66,6 @@ output "rova_public_assets_base_url" {
   description = "Alias of rally_public_assets_base_url for the rebranded product stack."
 }
 
-# Consumed by ceo-suite CI (web-deploy `d1_backup_bucket`) — durable archive of
-# pre-migration D1 exports. null when applied plan-only (no cloudflare_account_id).
-output "ceo_suite_db_backups_name" {
-  value       = one(module.ceo_suite_db_backups[*].name)
-  description = "ceo-suite D1 backup R2 bucket name (set as web-deploy d1_backup_bucket)."
-}
 
 # Consumed by the qnsc-kb prod stack via terraform_remote_state (platform/storage-prod) —
 # injected as SOURCE_STORAGE_BUCKET + S3_ENDPOINT_URL alongside SOURCE_STORAGE_BACKEND="r2".
