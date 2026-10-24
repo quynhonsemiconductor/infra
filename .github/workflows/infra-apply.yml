@@ -480,6 +480,11 @@ jobs:
           if [ "$ec" = "1" ]; then exit 1; fi
         env:
           TF_VAR_teams_webhook_url: ${{ secrets.TEAMS_ALERTS_WEBHOOK_URL }}
+          # opshub prod monitoring (live/observability-alerting/opshub-prod.tf) —
+          # scoped to THIS stack's apply job only; empty until the Stage D2
+          # cutover, see that file's header for the flip procedure.
+          TF_VAR_grafana_sm_token:       ${{ secrets.GRAFANA_SM_TOKEN }}
+          TF_VAR_healthchecks_api_token: ${{ secrets.HEALTHCHECKS_API_TOKEN }}
 
       # A provider bump, a lock-file change or an empty variable can turn a plan into "replace every DNS record" (2026-10-09).
       # The plan is applied unreviewed here, so it is read first: deleting or replacing a DNS/identity resource needs the
@@ -494,7 +499,17 @@ jobs:
       - name: tofu apply
         if: steps.plan.outputs.exitcode == '2'
         working-directory: live/observability-alerting
-        run: tofu apply -input=false tfplan
+        run: |
+          # UUID redaction: same reason as the plan step — healthchecksio check
+          # ids/ping_urls are not sensitive per the provider but ARE working
+          # ping URLs (UUID pings stay accepted) and this log is public.
+          set -o pipefail
+          tofu apply -input=false tfplan 2>&1 \
+            | sed -E 's/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/<redacted>/g' \
+            | tee apply.txt
+          ec=${PIPESTATUS[0]}
+          echo "tofu apply exit: $ec"
+          exit "$ec"
 
   apply-runtime-prod:
     name: Apply runtime-prod
