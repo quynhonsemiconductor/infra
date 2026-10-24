@@ -6,12 +6,26 @@
 #
 # PROVIDER: grafana/grafana-adaptive-metrics — pinned EXACTLY 0.4.0 (young
 # provider, v0.4.0 2026-09-24; the same single-maintainer logic as the
-# healthchecksio pin). Auth = a Grafana Cloud ACCESS POLICY token with the
-# `metrics:write` scope (AM rules are the write path of the metrics API),
-# formatted `<metrics-tenant-id>:<token>` — repo secret
-# GRAFANA_ADAPTIVE_METRICS_API_TOKEN, created by the OWNER, mapped in
+# healthchecksio pin). Auth = the owner's DEDICATED access policy
+# `terraform-adaptive-metrics` (realm qnsc, scope `adaptive-metrics-config:read+write`
+# ONLY — no metrics:write), formatted `<metrics-instance-id>:<token>` — repo
+# secret GRAFANA_ADAPTIVE_METRICS_API_TOKEN, created by the OWNER, mapped in
 # infra-plan.yml (matrix-scoped) + infra-apply.yml (apply-observability-alerting
-# only) as TF_VAR_adaptive_metrics_api_key.
+# only) as TF_VAR_adaptive_metrics_api_key. The Prometheus URL is NOT secret:
+# plain variable below.
+#
+# WHY ITS OWN STACK, NOT observability-alerting: this provider CALLS the AM
+# API while configuring — even with zero resource instances — so the stack's
+# plan cannot pass without GRAFANA_ADAPTIVE_METRICS_API_TOKEN (401 at
+# configure; proven in CI on the first cut, which lived inside
+# observability-alerting). A count-gate keeps the plan EMPTY but not green.
+# So this is a deliberately EXCLUDED stack, exactly like `observability`:
+# infra-plan.yml lists `adaptive-metrics` in NOT_PLANNABLE (with this
+# reason), infra-apply.yml does not manage it yet, and drift does not watch
+# it. THE FLIP PR: owner adds the repo secret, then one PR that (a) flips
+# `adaptive_metrics_live`, (b) removes `adaptive-metrics` from NOT_PLANNABLE,
+# (c) adds it to infra-apply's selection loop and drift's matrix — the plan
+# then shows exactly the three creates below, in CI, with no secrets.
 #
 # RULESET vs RULE — why individual `_rule` resources: `grafana-adaptive-metrics_ruleset`
 # REPLACES the complete rule list of a segment on every apply, so it would
@@ -22,6 +36,14 @@
 # reviewable in the PR instead of resolved at apply time. Consequence: if a
 # ruleset is ever introduced, it must absorb these rules first (the docs'
 # merge pattern).
+#
+# GATING LIMITATION (differs from the product toggles): this provider CALLS
+# the AM API while configuring — even with zero resource instances — so the
+# stack's plan CANNOT pass until the owner adds the repo secret
+# GRAFANA_ADAPTIVE_METRICS_API_TOKEN (401 "no credentials" otherwise; seen in
+# CI on the PR that introduced this file). The count-gate still keeps the
+# plan SHOWING nothing (no rules are created until the flip), but the green
+# check needs the secret first. That is the provider's shape, not a choice.
 #
 # KEEP-LABELS, not drop-lists: any FUTURE label (the next semconv migration,
 # a new resource attribute) collapses automatically instead of silently
@@ -49,6 +71,24 @@
 # if the token variable is still empty. Owner adds the repo secret first.
 # =============================================================================
 
+terraform {
+  required_version = ">= 1.9"
+  required_providers {
+    grafana-adaptive-metrics = {
+      source  = "grafana/grafana-adaptive-metrics"
+      version = "0.4.0"
+    }
+  }
+
+  backend "s3" {
+    bucket         = "qnsc-tofu-state"
+    key            = "platform/adaptive-metrics/terraform.tfstate"
+    region         = "ap-southeast-1"
+    encrypt        = true
+    dynamodb_table = "qnsc-tofu-locks"
+  }
+}
+
 variable "adaptive_metrics_live" {
   description = "Flip via a PR changing this default — the ONLY flip mechanism. false = every rule below is culled and plans show nothing."
   type        = bool
@@ -56,7 +96,7 @@ variable "adaptive_metrics_live" {
 }
 
 variable "adaptive_metrics_api_key" {
-  description = "Grafana Cloud access-policy token with `metrics:write`, in the provider's '<metrics-tenant-id>:<token>' format — repo secret GRAFANA_ADAPTIVE_METRICS_API_TOKEN, created by the owner, mapped in infra-plan.yml (matrix-scoped) + infra-apply.yml (apply-observability-alerting only). Empty until added; harmless while every rule is culled."
+  description = "The owner's dedicated access policy `terraform-adaptive-metrics` (realm qnsc, scope adaptive-metrics-config:read+write ONLY), in the provider's '<metrics-instance-id>:<token>' format — repo secret GRAFANA_ADAPTIVE_METRICS_API_TOKEN, created by the owner, mapped in infra-plan.yml (matrix-scoped) + infra-apply.yml (apply-observability-alerting only). No wider scope."
   type        = string
   default     = ""
   sensitive   = true

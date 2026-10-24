@@ -484,7 +484,6 @@ jobs:
           # scoped to THIS stack's apply job only; empty until the Stage D2
           # cutover, see that file's header for the flip procedure.
           TF_VAR_grafana_sm_token:       ${{ secrets.GRAFANA_SM_TOKEN }}
-          TF_VAR_adaptive_metrics_api_key: ${{ secrets.GRAFANA_ADAPTIVE_METRICS_API_TOKEN }}
           TF_VAR_healthchecks_api_token: ${{ secrets.HEALTHCHECKS_API_TOKEN }}
 
       # A provider bump, a lock-file change or an empty variable can turn a plan into "replace every DNS record" (2026-10-09).
