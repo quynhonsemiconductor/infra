@@ -13,8 +13,9 @@
 # exact plan lines.
 #
 # DISABLED UNTIL CUTOVER. Every resource is `count = var.rova_prod_live ? 1 : 0`,
-# so a plan today shows NOTHING (and the nightly drift job sees nothing — this
-# stack is in its list). ONE flip mechanism: a one-word PR that changes the
+# so a plan today shows NOTHING (drift-detection does not cover this stack; the
+# PR plan matrix's "Plan observability-alerting — no changes" is the standing
+# proof). ONE flip mechanism: a one-word PR that changes the
 # `rova_prod_live` default to `true` in the Stage D window, SA-reviewed like
 # any change, which also sets `sm_probe_id` (default null; the SM probe id is
 # only knowable with a live SM token) and the Healthchecks channel UUIDs.
@@ -26,11 +27,14 @@
 #     https://hc-ping.com/<ping-key>/<slug>
 # The ping key lives ONLY in `kv-qnsc-prod` and reaches the batch CronJobs via
 # ESO (§7.1) — never in Git, never in tofu. THE REASON: in healthchecksio
-# v2.3.0 the resource's `id` and `ping_url` are NOT sensitive, so this stack's
-# plan/apply output in public Actions logs would otherwise publish a working
-# ping URL. Slug-based pings make every tofu-computed value publishable:
-# nothing in tofu output needs to be secret. That is also why every check
-# below pins its `slug` explicitly instead of letting the provider derive one.
+# v2.3.0 the resource's `id` and `ping_url` are NOT sensitive, and Healthchecks
+# keeps ACCEPTING pings on the check UUID even when jobs ping by ping-key +
+# slug — so a UUID reaching plan.txt, the Actions log or the PR plan comment
+# WOULD publish a working ping URL. Two controls make that impossible: every
+# check pins its `slug` (deterministic, no UUID in the ping path jobs use),
+# and the observability-alerting plan/apply jobs in infra-plan.yml /
+# infra-apply.yml pipe all tofu output through a UUID redactor before it hits
+# plan.txt/apply.txt, the logs, or the PR plan comment. Never weaken either.
 #
 # ── SCHEDULES (plan §10.2, §10.3, §10.4, §12) ────────────────────────────────
 # dump        01:30 daily   (§10.2: batch runs one job at a time; opshub +15 min)
@@ -50,10 +54,11 @@
 #  3. Stage D's gates read these checks: Synthetic green (D5) and the restore
 #     pass green (§10.4) before any announcement.
 #
-# NOTE ON THE SM ALERT ROUTE: alert_sensitivity = "high" turns on SM's managed
-# alerts for the check; its labels (product=rova, env=production) match the
-# existing grafana_notification_policy.root child policy here (env=production →
-# Teams + devops@), which is §12's routing. No new contact point or rule.
+# NOTE ON THE SM ALERT ROUTE: alert_sensitivity creates no rules by itself and
+# SM check labels do not become alert labels — the real alert is the
+# flag-gated grafana_rule_group below (probe_success == 0 for 5m, rule labels
+# env=production + product=rova), routed by grafana_notification_policy.root
+# (Teams for prod, devops@ always) — §12's routing.
 # =============================================================================
 
 variable "rova_prod_live" {
@@ -68,9 +73,8 @@ locals {
 
 # The rova-prod slot of §12's SIX-check budget (rova+opshub prod+dev, kb-dev,
 # + one spare) — this PR fills a budgeted slot, it does not grow it. 5-minute
-# HTTP GET per §12. alert_sensitivity = "high" + these labels route the
-# managed alert through grafana_notification_policy.root (env=production →
-# Teams + devops@).
+# HTTP GET per §12. alert_sensitivity = "high" records sensitivity on the SM
+# side; the ALERT itself is the flag-gated rule group below.
 resource "grafana_synthetic_monitoring_check" "rova_prod_readyz" {
   count = local.rova_live ? 1 : 0
   # the grafana.sm alias never configures while count is 0 (no instances)
@@ -98,6 +102,86 @@ resource "grafana_synthetic_monitoring_check" "rova_prod_readyz" {
     precondition {
       condition     = var.sm_probe_id != null
       error_message = "sm_probe_id is null — the flip PR must set it (GET <sm_url>/api/v1/probes with GRAFANA_SM_TOKEN; §12 caps at 1 probe)."
+    }
+  }
+}
+
+# ── Synthetic Monitoring alert rule ─────────────────────────────────────────
+# §12's prod routing as code: fires when the check's probe reports failure
+# (probe_success == 0) for 5 minutes. Rule labels env=production + product=rova
+# route it through grafana_notification_policy.root — Teams for prod, devops@
+# always — the same policy every other rule in this stack uses. Same datasource
+# (the stack's managed Prometheus, where SM publishes probe_success) as
+# series_near_cap in main.tf.
+resource "grafana_rule_group" "rova_prod_readyz_down" {
+  count            = local.rova_live ? 1 : 0
+  name             = "rova (prod readyz)"
+  folder_uid       = grafana_folder.alerts.uid
+  interval_seconds = 60
+
+  rule {
+    name           = "rova-prod-readyz-down"
+    condition      = "B"
+    for            = "5m"
+    no_data_state  = "OK"
+    exec_err_state = "Error"
+
+    data {
+      ref_id         = "A"
+      query_type     = "instant"
+      datasource_uid = data.grafana_data_source.prometheus.uid
+
+      relative_time_range {
+        from = 300
+        to   = 0
+      }
+
+      model = jsonencode({
+        refId         = "A"
+        datasource    = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
+        expr          = "probe_success{job=\"rova-prod-readyz\"}"
+        instant       = true
+        range         = false
+        intervalMs    = 1000
+        maxDataPoints = 43200
+      })
+    }
+
+    data {
+      ref_id         = "B"
+      datasource_uid = "__expr__"
+
+      relative_time_range {
+        from = 0
+        to   = 0
+      }
+
+      model = jsonencode({
+        refId      = "B"
+        type       = "threshold"
+        datasource = { type = "__expr__", uid = "__expr__" }
+        expression = "A"
+        conditions = [
+          {
+            evaluator = {
+              type   = "lt"
+              params = [1]
+            }
+          }
+        ]
+        intervalMs    = 1000
+        maxDataPoints = 43200
+      })
+    }
+
+    labels = {
+      product  = "rova"
+      env      = "production" # matches the notification policy matcher, NOT "prod"
+      severity = "critical"
+    }
+
+    annotations = {
+      summary = "Synthetic check rova-prod-readyz failing: https://rova.qnsc.vn/readyz has returned non-2xx/3xx (or timed out) from the SM probe for 5 minutes (§12)."
     }
   }
 }
@@ -130,11 +214,10 @@ resource "healthchecksio_check" "rova_prod_dump" {
 
 # Weekly restore test, FIRST pass (§10.4: ONE Sun 04:00 job, rova pass then
 # opshub pass — batch runs one job at a time; this check pings on the rova
-# pass). Schedule at the job start, 04:00; grace 1 h is sized for BOTH passes
-# (2 × ~15 min per §5.7's restore-test size + margin). The job pings /start at
-# the beginning of its rova pass, success or /fail at the end — /start makes
-# the 45-min-per-pass over-run alert (§12) the job's own responsibility; this
-# check covers "failed or missed".
+# pass). Schedule at the job start, 04:00; grace 45 MIN (§10.4: "running >
+# 45 min" per pass). The job pings /start at the beginning of its rova pass,
+# success or /fail at the end — /start makes the over-run alert the job's own
+# responsibility; this check covers "failed or missed".
 resource "healthchecksio_check" "rova_prod_restore" {
   count    = local.rova_live ? 1 : 0
   name     = "rova-prod-restore"
@@ -144,7 +227,7 @@ resource "healthchecksio_check" "rova_prod_restore" {
   channels = var.healthchecks_channel_ids
   schedule = "0 4 * * 0"
   timezone = "Asia/Ho_Chi_Minh"
-  grace    = 3600
+  grace    = 2700 # 45 min, §10.4
 
   lifecycle {
     precondition {
