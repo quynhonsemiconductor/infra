@@ -304,10 +304,6 @@ jobs:
           TF_VAR_entra_tenant_id: ${{ vars.ENTRA_TENANT_ID }}
           TF_VAR_entra_idp_client_id: ${{ vars.ENTRA_IDP_CLIENT_ID }}
           TF_VAR_entra_idp_client_secret: ${{ secrets.ENTRA_IDP_CLIENT_SECRET }}
-          # opshub prod monitoring (live/observability/opshub-prod.tf) — empty until
-          # the Stage D2 cutover; see that file's header for the flip procedure.
-          TF_VAR_grafana_sm_token:      ${{ secrets.GRAFANA_SM_TOKEN }}
-          TF_VAR_healthchecks_api_token: ${{ secrets.HEALTHCHECKS_API_TOKEN }}
 
       # A provider bump, a lock-file change or an empty variable can turn a plan into "replace every DNS record" (2026-10-09).
       # The plan is applied unreviewed here, so it is read first: deleting or replacing a DNS/identity resource needs the
@@ -484,6 +480,11 @@ jobs:
           if [ "$ec" = "1" ]; then exit 1; fi
         env:
           TF_VAR_teams_webhook_url: ${{ secrets.TEAMS_ALERTS_WEBHOOK_URL }}
+          # opshub prod monitoring (live/observability-alerting/opshub-prod.tf) —
+          # scoped to THIS stack's apply job only; empty until the Stage D2
+          # cutover, see that file's header for the flip procedure.
+          TF_VAR_grafana_sm_token:       ${{ secrets.GRAFANA_SM_TOKEN }}
+          TF_VAR_healthchecks_api_token: ${{ secrets.HEALTHCHECKS_API_TOKEN }}
 
       # A provider bump, a lock-file change or an empty variable can turn a plan into "replace every DNS record" (2026-10-09).
       # The plan is applied unreviewed here, so it is read first: deleting or replacing a DNS/identity resource needs the
