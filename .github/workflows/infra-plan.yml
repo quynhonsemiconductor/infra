@@ -364,6 +364,7 @@ jobs:
           # empty until the Stage D2 cutover; see that file's header for the flip
           # procedure. Scoped to the hosting stack's matrix entry.
           TF_VAR_grafana_sm_token:       ${{ matrix.stack == 'observability-alerting' && secrets.GRAFANA_SM_TOKEN || '' }}
+          TF_VAR_adaptive_metrics_api_key: ${{ matrix.stack == 'observability-alerting' && secrets.GRAFANA_ADAPTIVE_METRICS_API_TOKEN || '' }}
           TF_VAR_healthchecks_api_token: ${{ matrix.stack == 'observability-alerting' && secrets.HEALTHCHECKS_API_TOKEN || '' }}
 
       # TASK 0.3 / §17b — refuse a plan that would lose data, before anyone reads
