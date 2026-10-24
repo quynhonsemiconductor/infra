@@ -48,6 +48,14 @@ terraform {
   required_version = ">= 1.9"
   required_providers {
     grafana = { source = "grafana/grafana", version = "~> 3.0" }
+    # opshub prod monitoring (opshub-prod.tf, H-D23 / CUTOVER Stage D2 prereq):
+    # Healthchecks.io — the batch-job ping targets (dump, restore test, Azure
+    # copy, door terminal). The SM check reuses the grafana provider via an
+    # alias in opshub-prod.tf.
+    healthchecksio = {
+      source  = "kristofferahl/healthchecksio"
+      version = "~> 2.3"
+    }
   }
 
   backend "s3" {
