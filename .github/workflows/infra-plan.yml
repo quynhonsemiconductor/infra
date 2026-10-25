@@ -412,6 +412,35 @@ jobs:
           AM_URL:   ${{ vars.AM_METRICS_URL }}
           AM_TOKEN: ${{ secrets.GRAFANA_ADAPTIVE_METRICS_API_TOKEN }}
 
+      # AGGREGATION-STRING PROBE (adaptive-metrics only): the apply round rejected
+      # sum:histogram and max:gauge (400 invalid aggregation) and the recommendations
+      # list is empty for these metrics, so enumerate the API's accepted vocabulary
+      # empirically: POST one SCRATCH rule per candidate string, record the status,
+      # DELETE it. Probes are exact-match on zz-am-probe-* names and always cleaned
+      # up; output is status codes + accepted strings only (no secrets).
+      - name: AM aggregation-string probe
+        if: matrix.stack == 'adaptive-metrics'
+        run: |
+          set -o pipefail
+          probe() {
+            name="zz-am-probe-$1"; cand="$2"
+            body="{\"match_type\":\"exact\",\"aggregations\":[\"$cand\"]}"
+            code=$(curl -sS -o /tmp/probe-body -w '%{http_code}' -u "$AM_TOKEN" \
+              -X POST -H 'Content-Type: application/json' -d "$body" \
+              "$AM_URL/aggregations/rule/$name")
+            echo "aggregations=[$cand] → POST /aggregations/rule/$name → HTTP $code $(head -c 120 /tmp/probe-body)"
+            delcode=$(curl -sS -o /dev/null -w '%{http_code}' -u "$AM_TOKEN" \
+              -X DELETE "$AM_URL/aggregations/rule/$name")
+            echo "  cleanup DELETE → HTTP $delcode"
+          }
+          for cand in "sum:counter" "sum:histogram" "sum" "max" "min" "count" "avg" "max:gauge" "avg:gauge" "last:gauge"; do
+            slug=$(echo "$cand" | tr ':_' '--')
+            probe "$slug" "$cand"
+          done
+        env:
+          AM_URL:   ${{ vars.AM_METRICS_URL }}
+          AM_TOKEN: ${{ secrets.GRAFANA_ADAPTIVE_METRICS_API_TOKEN }}
+
       - name: Post plan comment
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
         env:
