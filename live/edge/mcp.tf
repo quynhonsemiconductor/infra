@@ -74,3 +74,11 @@ resource "cloudflare_zero_trust_access_policy" "rova_dev_mcp_allow" {
 #   curl -s https://rova-dev.qnsc.vn/mcp/.well-known/oauth-authorization-server | jq .
 #   → JSON metadata (NOT index.html, NOT an Access login page). The 401
 #   WWW-Authenticate resource_metadata carries the protected-resource metadata.
+
+# The AUD tag the rova app must verify (MCP-PLAN §5: JWKS + iss + aud). The
+# cutover config (agent C) consumes this output — put it in the rova-dev app
+# bundle as the MCP audience, alongside the CF-Access team domain.
+output "rova_dev_mcp_aud" {
+  description = "AUD tag of the rova-dev /mcp Access app — the audience the app's Access-JWT verifier pins. Consumed at cutover (agent C)."
+  value       = one(cloudflare_zero_trust_access_application.rova_dev_mcp[*].aud)
+}
