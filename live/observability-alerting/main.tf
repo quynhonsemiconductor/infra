@@ -26,7 +26,7 @@
 terraform {
   required_version = ">= 1.9"
   required_providers {
-    grafana = { source = "grafana/grafana", version = "~> 3.0" }
+    grafana = { source = "grafana/grafana", version = "~> 4.0" }
     # product-prod monitoring (opshub-prod.tf — H-D23 / CUTOVER Stage D2
     # prereq; rova-prod.tf from its own PR): Healthchecks.io — the batch-job
     # ping targets (dump, restore, Azure copy, door terminal). Pinned EXACTLY:
