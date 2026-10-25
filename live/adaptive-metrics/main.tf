@@ -52,32 +52,20 @@
 #   exist today; if a future SDK emits them they get their own exact rule —
 #   the inventory above is re-checked at every flip.)
 #
-# ── AGGREGATION NAMES (evidence) ─────────────────────────────────────────────
-# The provider passes `aggregations` through to the AM API verbatim (no
-# validation in 0.4.0 — internal/model AggregationRule.Aggregations []string)
-# in the AM API's `<fn>:<family>` grammar.
-# EVIDENCE: provider 0.4.0's own examples establish `sum:counter`
-# (examples/resources/grafana-adaptive-metrics_rule/resource.tf) and
-# `sum:counter` + `avg:gauge` in ONE list
-# (examples/.../merge_recommendations_with_custom_rules.tf — so a list MAY
-# mix families). Docs: Grafana Cloud Adaptive Metrics API page
-# https://grafana.com/docs/grafana-cloud/send-data/metrics/metrics-management/adaptive-metrics/adaptive-metrics-api/
-# (SPA — needs JS; not machine-readable from here). `sum:histogram` (additive
-# across _bucket/_sum/_count; quantiles keep working) and `sum:gauge` follow
-# the same grammar. FLIP-PR DELIVERABLE: attach the
-# `GET <url>/aggregations/recommendations` output FOR THESE EXACT METRICS
-# (needs the token) — if `sum:histogram` or `sum:gauge` is rejected, the
-# fallback is exact-match rules per series with the accepted names.
-#
-# COUNTER RESETS (pod restarts) + rate(): sum:counter emits a real counter
-# series for the aggregate; per Mimir's aggregation semantics the per-input
-# deltas are summed within each aggregation window, and an input reset is
-# detected per-series BEFORE summation, so the aggregate only jumps by the
-# surviving series' delta — rate() math on the aggregated series stays valid
-# for the SLO recordings. VERIFY AT FLIP anyway: compare rate() on the
-# aggregated http_server_requests_total against the raw series for one
-# restart window before pointing any SLO at the aggregated series.
-#
+# ── AGGREGATION NAMES (verified against the LIVE AM API, 2026-10-25) ────────
+# The provider passes `aggregations` through to the AM API verbatim. Empirical
+# probe (exact-match scratch rules POSTed and DELETEd against
+# /aggregations/rule/*, etag-gated; local transcript, deliberately not
+# committed):
+#   ACCEPTED (HTTP 200): sum:counter, sum, max, min, count
+#   REJECTED (400 invalid aggregation): sum:histogram, avg, max:gauge,
+#             avg:gauge, last:gauge
+# Classic histogram _bucket/_sum/_count series are COUNTERS, so every
+# histogram family below aggregates with sum:counter (quantiles keep
+# working on the aggregated series). The connection gauges take the plain
+# gauge functions: sum = pool total across pods (Runtime panel), max =
+# per-pod ceiling (saturation alerting).
+
 # ── KEEP-LABELS (allowlists — future labels collapse automatically) ─────────
 # Sets verified against LIVE consumers: every product dashboard (rova
 # overview+runtime, prod+develop; opshub overview+runtime) filters ONLY on
@@ -153,7 +141,7 @@ resource "grafana-adaptive-metrics_rule" "http_server" {
 
   keep_labels = concat(local.am_keep_http, ["route"])
 
-  aggregations = ["sum:histogram", "sum:counter"]
+  aggregations = ["sum:counter"]
 
   lifecycle {
     precondition {
@@ -175,7 +163,7 @@ resource "grafana-adaptive-metrics_rule" "http_client" {
 
   keep_labels = local.am_keep_http
 
-  aggregations = ["sum:histogram", "sum:counter"]
+  aggregations = ["sum:counter"]
 
   lifecycle {
     precondition {
@@ -193,7 +181,7 @@ resource "grafana-adaptive-metrics_rule" "db_client_operation_duration" {
 
   keep_labels = concat(local.am_keep_db, ["le"])
 
-  aggregations = ["sum:histogram"]
+  aggregations = ["sum:counter"]
 
   lifecycle {
     precondition {
@@ -216,7 +204,7 @@ resource "grafana-adaptive-metrics_rule" "db_client_connection" {
 
   keep_labels = local.am_keep_db
 
-  aggregations = ["sum:gauge", "max:gauge"]
+  aggregations = ["sum", "max"]
 
   lifecycle {
     precondition {
