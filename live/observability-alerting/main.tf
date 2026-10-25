@@ -449,12 +449,12 @@ resource "grafana_rule_group" "series_near_cap" {
 # finding, not this rule's — this rule must fire on a POSITIVE signal, a
 # fail-open line, never on absence.
 #
-# DORMANT until on-prem: on AWS no app log reaches Loki (app logs go to
-# CloudWatch; the tf-modules observability-agent ships metrics and traces
-# only, and the apps have no OTel log exporter), so these rules can never
-# fire there. They land for real with on-prem log collection (Alloy pod
-# logs carrying the same env labels). The CloudWatch filters + alarms in
-# the product stacks are the AWS-era coverage.
+# LIVE NOW, not dormant: app logs DO reach Loki on AWS — opshub's worker/api
+# ship structured JSON logs through the Loki pipeline today (verified by
+# querying {service_name="opshub-worker"} directly), so these rules fire on
+# merge the moment a control fails open. On-prem keeps the same shape: Alloy
+# pod logs carry the same labels, so nothing about the rule changes at the
+# cutover.
 resource "grafana_rule_group" "security_fail_open" {
   name             = "security (stack-wide)"
   folder_uid       = grafana_folder.alerts.uid
@@ -488,7 +488,7 @@ resource "grafana_rule_group" "security_fail_open" {
         model = jsonencode({
           refId      = "A"
           datasource = { type = "loki", uid = data.grafana_data_source.logs.uid }
-          expr       = "sum(count_over_time({service_namespace=~\".+\", deployment_environment_name=\"${env_rule.value.env}\"} | json | securityFailOpen != \"\" [5m]))"
+          expr       = "sum by (service_namespace) (count_over_time({service_namespace=~\".+\", deployment_environment_name=\"${env_rule.value.env}\"} | json | securityFailOpen != \"\" [5m]))"
           queryType  = "instant"
           instant    = true
           intervalMs = 1000
@@ -547,7 +547,7 @@ resource "grafana_rule_group" "security_fail_open" {
       }
 
       annotations = {
-        summary = "A security control failed open in ${env_rule.value.env}. Check Valkey health."
+        summary = "A security control failed open in ${env_rule.value.env} — service $${labels.service_namespace}. Check Valkey health."
       }
     }
   }
