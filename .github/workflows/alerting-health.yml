@@ -66,7 +66,7 @@ jobs:
       # subscriptions, budgets and EventBridge rules and mutates nothing — confirming a
       # subscription requires the emailed link and cannot be done with an API call, which is
       # the whole reason pending confirmations are a finding rather than something to fix here.
-      - uses: quynhonsemiconductor/ci/actions/setup-aws-oidc@691668f7a1bd4f4a3416f9224ae7ff7ebe831a3a # v1.23.0
+      - uses: quynhonsemiconductor/ci/actions/setup-aws-oidc@0feca69debe06835300c1e28cf14ac5723577a51 # v1.24.0
         with:
           role-arn: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/qnsc-github-infra-plan
           # `region`, not `aws-region`: the action has no such input, so the old name was ignored with a warning.
