@@ -177,6 +177,11 @@ jobs:
           #                       Cloudflare token with Tunnel scope. init would
           #                       fail on the azurerm backend for both. Remove
           #                       from this list in the PR that applies them first.
+          # `adaptive-metrics` WAS in this list (its provider calls the AM API at configure,
+          # 401 without the token). Included 2026-10-25: the owner added
+          # GRAFANA_ADAPTIVE_METRICS_API_TOKEN (access policy terraform-adaptive-metrics,
+          # realm qnsc, scope adaptive-metrics-config:read+write) and repo variable
+          # AM_METRICS_URL. It is planned here and applied by the apply-adaptive-metrics job.
           NOT_PLANNABLE="observability organization identity onprem"
 
           SKIPPED=""
@@ -331,8 +336,18 @@ jobs:
           # permission, so it cannot acquire the state lock. Plan never mutates
           # state, so run lock-free (apply still locks via the admin apply role).
           # PIPESTATUS[0] captures tofu's real exit past the `tee` pipe.
+          # UUID REDACTION (review round 2): healthchecksio check ids (and any
+          # other resource UUIDs, e.g. ping_url) print in this output, and
+          # Healthchecks keeps accepting pings on the UUID even when jobs ping
+          # by ping-key + slug — so a UUID in plan.txt, this log or the PR plan
+          # comment (which reads plan.txt) would publish a working ping URL.
+          # Everything downstream (artifact, comment) reads the REDACTED text.
+          # PIPESTATUS[0] + pipefail keep tofu's real exit code through sed.
+          set -o pipefail
           set +e
-          tofu plan -input=false -lock=false -no-color -detailed-exitcode -out=tfplan 2>&1 | tee plan.txt
+          tofu plan -input=false -lock=false -no-color -detailed-exitcode -out=tfplan 2>&1 \
+            | sed -E 's/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/<redacted>/g' \
+            | tee plan.txt
           echo "exitcode=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
         env:
           # Stack-specific inputs. Vars a stack doesn't declare are ignored
@@ -350,6 +365,13 @@ jobs:
           TF_VAR_entra_tenant_id:       ${{ vars.ENTRA_TENANT_ID }}
           TF_VAR_entra_idp_client_id:   ${{ vars.ENTRA_IDP_CLIENT_ID }}
           TF_VAR_entra_idp_client_secret: ${{ secrets.ENTRA_IDP_CLIENT_SECRET }}
+          # opshub prod monitoring (live/observability-alerting/opshub-prod.tf) —
+          # empty until the Stage D2 cutover; see that file's header for the flip
+          # procedure. Scoped to the hosting stack's matrix entry.
+          TF_VAR_grafana_sm_token:       ${{ matrix.stack == 'observability-alerting' && secrets.GRAFANA_SM_TOKEN || '' }}
+          TF_VAR_adaptive_metrics_api_key: ${{ matrix.stack == 'adaptive-metrics' && secrets.GRAFANA_ADAPTIVE_METRICS_API_TOKEN || '' }}
+          TF_VAR_adaptive_metrics_url:   ${{ matrix.stack == 'adaptive-metrics' && vars.AM_METRICS_URL || '' }}
+          TF_VAR_healthchecks_api_token: ${{ matrix.stack == 'observability-alerting' && secrets.HEALTHCHECKS_API_TOKEN || '' }}
 
       # TASK 0.3 / §17b — refuse a plan that would lose data, before anyone reads
       # it. Runs BEFORE the plan comment on purpose: if the answer is "this deletes
@@ -364,6 +386,31 @@ jobs:
         with:
           plan-file: tfplan
           working-directory: live/${{ matrix.stack }}
+
+      # Mask the AM host (review round 2): a runner-injected value, masked via
+      # env — never ${{ }} inline in `run`, which lands in the log's command line.
+      - name: Mask the AM host
+        if: matrix.stack == 'adaptive-metrics'
+        run: echo "::add-mask::$AM_URL"
+        env:
+          AM_URL: ${{ vars.AM_METRICS_URL }}
+
+      # AM API EVIDENCE (adaptive-metrics only, review deliverable b): project the
+      # recommendations + existing rules down to METRIC NAMES + aggregation lists —
+      # proves the token works against /aggregations/* and shows the accepted
+      # aggregation grammar for exactly these metrics. pipefail + -f: a 401/403
+      # fails the step instead of publishing an error body.
+      - name: AM recommendations evidence
+        if: matrix.stack == 'adaptive-metrics'
+        run: |
+          set -o pipefail
+          echo "recommendations (metric + aggregations only):"
+          curl -fsS -u "$AM_TOKEN" "$AM_URL/aggregations/recommendations"             | jq -c '[.data?.recommendations[]? | {metric: (.metric // .name), aggregations: (.aggregations // [])}]'
+          echo "existing aggregation rules:"
+          curl -fsS -u "$AM_TOKEN" "$AM_URL/aggregations/rules"             | jq -c '[.data?.rules[]? | {metric: (.metric // .name), aggregations: (.aggregations // [])}]'
+        env:
+          AM_URL:   ${{ vars.AM_METRICS_URL }}
+          AM_TOKEN: ${{ secrets.GRAFANA_ADAPTIVE_METRICS_API_TOKEN }}
 
       - name: Post plan comment
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
