@@ -94,6 +94,10 @@ jobs:
           - edge
           - storage-dev
           - storage-prod
+          # Included 2026-10-25 with the flip (GRAFANA_ADAPTIVE_METRICS_API_TOKEN +
+          # AM_METRICS_URL exist); see live/adaptive-metrics/main.tf for why this
+          # stack was previously excluded from planning entirely.
+          - adaptive-metrics
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -143,6 +147,11 @@ jobs:
           TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           # Read-only token, and only for the stacks that talk to Cloudflare. Empty elsewhere on purpose.
           TF_VAR_cloudflare_api_token:  ${{ contains(fromJSON('["edge","storage-dev","storage-prod"]'), matrix.stack) && secrets.CLOUDFLARE_API_TOKEN_READONLY || '' }}
+          # adaptive-metrics: the provider configures by calling the AM API, so the
+          # nightly plan needs the token + URL here too (matrix-scoped, same form
+          # as infra-plan.yml). Empty for every other stack.
+          TF_VAR_adaptive_metrics_url:   ${{ matrix.stack == 'adaptive-metrics' && vars.AM_METRICS_URL || '' }}
+          TF_VAR_adaptive_metrics_api_key: ${{ matrix.stack == 'adaptive-metrics' && secrets.GRAFANA_ADAPTIVE_METRICS_API_TOKEN || '' }}
         run: |
           set +e
           tofu plan -refresh-only -input=false -lock=false -no-color -detailed-exitcode -out=refresh.tfplan 2>&1 | tee refresh.txt
@@ -156,6 +165,11 @@ jobs:
           TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           # Read-only token, and only for the stacks that talk to Cloudflare. Empty elsewhere on purpose.
           TF_VAR_cloudflare_api_token:  ${{ contains(fromJSON('["edge","storage-dev","storage-prod"]'), matrix.stack) && secrets.CLOUDFLARE_API_TOKEN_READONLY || '' }}
+          # adaptive-metrics: the provider configures by calling the AM API, so the
+          # nightly plan needs the token + URL here too (matrix-scoped, same form
+          # as infra-plan.yml). Empty for every other stack.
+          TF_VAR_adaptive_metrics_url:   ${{ matrix.stack == 'adaptive-metrics' && vars.AM_METRICS_URL || '' }}
+          TF_VAR_adaptive_metrics_api_key: ${{ matrix.stack == 'adaptive-metrics' && secrets.GRAFANA_ADAPTIVE_METRICS_API_TOKEN || '' }}
         run: |
           set +e
           tofu plan -input=false -lock=false -no-color -detailed-exitcode 2>&1 | tee plan.txt

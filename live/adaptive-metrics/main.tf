@@ -22,14 +22,11 @@
 # plan cannot pass without GRAFANA_ADAPTIVE_METRICS_API_TOKEN (401 at
 # configure; proven in CI on the first cut, which lived inside
 # observability-alerting). A count-gate keeps the plan EMPTY but not green.
-# So this is a deliberately EXCLUDED stack, exactly like `observability`:
-# infra-plan.yml lists `adaptive-metrics` in NOT_PLANNABLE (with this
-# reason), infra-apply.yml does not manage it yet, and drift does not watch
-# it. THE FLIP PR: owner adds the repo secret + the AM_METRICS_URL variable,
-# then one PR that (a) flips `adaptive_metrics_live`, (b) removes
-# `adaptive-metrics` from NOT_PLANNABLE, (c) adds it to infra-apply's
-# selection loop and drift's matrix — the plan then shows exactly the four
-# creates below, in CI, with no secrets.
+# The exclusion was LIFTED by infra#215 (2026-10-25, this change): the owner
+# added the repo secret + AM_METRICS_URL, the flag below flipped to true, and
+# the stack is now planned (plan matrix + the AM recommendations evidence
+# step), applied (apply-adaptive-metrics on merge to main) and drift-watched
+# like every other stack.
 #
 # RULESET vs RULE — why individual `_rule` resources: `grafana-adaptive-metrics_ruleset`
 # REPLACES the complete rule list of a segment on every apply, so it would
@@ -113,13 +110,13 @@ terraform {
 }
 
 variable "adaptive_metrics_live" {
-  description = "Flip via a PR changing this default — the ONLY flip mechanism. false = every rule below is culled and plans show nothing."
+  description = "Flipped 2026-10-25 (this PR). false = every rule below is culled and plans show nothing."
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "adaptive_metrics_api_key" {
-  description = "The owner's dedicated access policy `terraform-adaptive-metrics` (realm qnsc, scope adaptive-metrics-config:read+write ONLY — nothing wider), in the provider's '<metrics-instance-id>:<token>' format — repo secret GRAFANA_ADAPTIVE_METRICS_API_TOKEN, created by the owner, mapped in infra-plan.yml (matrix-scoped to this stack). The infra-apply mapping will be added by the flip PR, together with this stack's selection loop."
+  description = "The owner's dedicated access policy `terraform-adaptive-metrics` (realm qnsc, scope adaptive-metrics-config:read+write ONLY — nothing wider), in the provider's '<metrics-instance-id>:<token>' format — repo secret GRAFANA_ADAPTIVE_METRICS_API_TOKEN, created by the owner, mapped in infra-plan.yml (matrix-scoped to this stack). The infra-apply mapping was added with the inclusion (infra#215: the apply-adaptive-metrics job)."
   type        = string
   default     = ""
   sensitive   = true
