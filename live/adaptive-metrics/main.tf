@@ -58,14 +58,19 @@
 # ── AGGREGATION NAMES (evidence) ─────────────────────────────────────────────
 # The provider passes `aggregations` through to the AM API verbatim (no
 # validation in 0.4.0 — internal/model AggregationRule.Aggregations []string)
-# in the AM API's `<fn>:<family>` grammar. Provider 0.4.0's own examples
-# establish `sum:counter` (counters) and `avg:gauge` (gauges); histogram
-# families are covered by `sum:histogram` (additive across _bucket/_sum/_count,
-# quantiles keep working). FINAL VERIFICATION AT FLIP: attach the
-# `GET <url>/aggregations/recommendations` output (needs the token) to the
-# flip PR — the API was unreachable pre-token (the current access policy
-# carries no metrics scopes; the 401-vs-404 probe on /aggregations/* is what
-# located the base URL).
+# in the AM API's `<fn>:<family>` grammar.
+# EVIDENCE: provider 0.4.0's own examples establish `sum:counter`
+# (examples/resources/grafana-adaptive-metrics_rule/resource.tf) and
+# `sum:counter` + `avg:gauge` in ONE list
+# (examples/.../merge_recommendations_with_custom_rules.tf — so a list MAY
+# mix families). Docs: Grafana Cloud Adaptive Metrics API page
+# https://grafana.com/docs/grafana-cloud/send-data/metrics/metrics-management/adaptive-metrics/adaptive-metrics-api/
+# (SPA — needs JS; not machine-readable from here). `sum:histogram` (additive
+# across _bucket/_sum/_count; quantiles keep working) and `sum:gauge` follow
+# the same grammar. FLIP-PR DELIVERABLE: attach the
+# `GET <url>/aggregations/recommendations` output FOR THESE EXACT METRICS
+# (needs the token) — if `sum:histogram` or `sum:gauge` is rejected, the
+# fallback is exact-match rules per series with the accepted names.
 #
 # COUNTER RESETS (pod restarts) + rate(): sum:counter emits a real counter
 # series for the aggregate; per Mimir's aggregation semantics the per-input
@@ -130,8 +135,11 @@ locals {
 
   # Labels every rule keeps: identity + env separation + (where they exist)
   # the HTTP semconv dimensions the products query.
+  # `le` HERE, not just on the per-rule concat: BOTH http families are
+  # histograms — a keep set without `le` aggregates the buckets away and
+  # histogram_quantile() breaks (review round 2).
   am_keep_common = ["job", "service_namespace", "service_name", "deployment_environment_name"]
-  am_keep_http   = concat(local.am_keep_common, ["method", "status_class"])
+  am_keep_http   = concat(local.am_keep_common, ["method", "status_class", "le"])
   am_keep_db     = concat(local.am_keep_common, ["db_namespace", "db_operation_name", "db_system_name", "db_system", "server_address"])
 }
 
@@ -146,7 +154,7 @@ resource "grafana-adaptive-metrics_rule" "http_server" {
   metric     = "http_server_"
   match_type = "prefix"
 
-  keep_labels = concat(local.am_keep_http, ["route", "le"])
+  keep_labels = concat(local.am_keep_http, ["route"])
 
   aggregations = ["sum:histogram", "sum:counter"]
 
@@ -199,8 +207,11 @@ resource "grafana-adaptive-metrics_rule" "db_client_operation_duration" {
 }
 
 # DB connection gauges (connection_count, connection_pending_requests,
-# connection_max — no `le`; max:gauge is the correct aggregate for restart-
-# prone gauge series).
+# connection_max — no `le`). BOTH aggregates on purpose: the Runtime &
+# Dependencies panel reads the POOL TOTAL as sum() across pods → sum:gauge;
+# saturation alerting wants the per-pod ceiling → max:gauge. The provider's
+# own example already mixes families in one list; acceptance of both gauge
+# functions together is verified at flip (see AGGREGATION NAMES).
 resource "grafana-adaptive-metrics_rule" "db_client_connection" {
   count      = local.am_live ? 1 : 0
   metric     = "db_client_connection"
@@ -208,7 +219,7 @@ resource "grafana-adaptive-metrics_rule" "db_client_connection" {
 
   keep_labels = local.am_keep_db
 
-  aggregations = ["max:gauge"]
+  aggregations = ["sum:gauge", "max:gauge"]
 
   lifecycle {
     precondition {
