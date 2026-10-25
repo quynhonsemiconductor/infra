@@ -113,9 +113,9 @@ terraform {
 }
 
 variable "adaptive_metrics_live" {
-  description = "Flip via a PR changing this default — the ONLY flip mechanism. false = every rule below is culled and plans show nothing."
+  description = "Flipped 2026-10-25 (this PR). false = every rule below is culled and plans show nothing."
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "adaptive_metrics_api_key" {

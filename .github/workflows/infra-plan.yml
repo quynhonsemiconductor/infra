@@ -177,14 +177,12 @@ jobs:
           #                       Cloudflare token with Tunnel scope. init would
           #                       fail on the azurerm backend for both. Remove
           #                       from this list in the PR that applies them first.
-          # `adaptive-metrics` is EXCLUDED like `observability`, with a reason: its provider
-          # (grafana/grafana-adaptive-metrics) CALLS the AM API while configuring — even with
-          # zero resources (flag off) — so the plan fails 401 until the owner adds the repo
-          # secret GRAFANA_ADAPTIVE_METRICS_API_TOKEN (access policy terraform-adaptive-metrics,
-          # realm qnsc, scope adaptive-metrics-config:read+write). The flip PR removes it from
-          # this list and adds it to infra-apply's selection loop; that plan shows the three
-          # grafana-adaptive-metrics_rule creates. See live/adaptive-metrics/main.tf.
-          NOT_PLANNABLE="observability organization identity onprem adaptive-metrics"
+          # `adaptive-metrics` WAS in this list (its provider calls the AM API at configure,
+          # 401 without the token). Included 2026-10-25: the owner added
+          # GRAFANA_ADAPTIVE_METRICS_API_TOKEN (access policy terraform-adaptive-metrics,
+          # realm qnsc, scope adaptive-metrics-config:read+write) and repo variable
+          # AM_METRICS_URL. It is planned here and applied by the apply-adaptive-metrics job.
+          NOT_PLANNABLE="observability organization identity onprem"
 
           SKIPPED=""
           PLANNABLE=""
@@ -388,6 +386,21 @@ jobs:
         with:
           plan-file: tfplan
           working-directory: live/${{ matrix.stack }}
+
+      # AM API EVIDENCE (adaptive-metrics only, review deliverable b): print the
+      # recommendations the service itself computes for our metric prefixes — proves the
+      # token works against /aggregations/* and shows the accepted aggregation grammar
+      # for exactly these metrics. No secret material in the output (metric names only).
+      - name: AM recommendations evidence
+        if: matrix.stack == 'adaptive-metrics'
+        run: |
+          curl -sS -u "$AM_TOKEN" "$AM_URL/aggregations/recommendations" | head -c 4000
+          echo
+          echo "--- existing aggregation rules:"
+          curl -sS -u "$AM_TOKEN" "$AM_URL/aggregations/rules" | head -c 4000
+        env:
+          AM_URL:   ${{ vars.AM_METRICS_URL }}
+          AM_TOKEN: ${{ secrets.GRAFANA_ADAPTIVE_METRICS_API_TOKEN }}
 
       - name: Post plan comment
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0

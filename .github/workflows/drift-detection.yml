@@ -94,6 +94,10 @@ jobs:
           - edge
           - storage-dev
           - storage-prod
+          # Included 2026-10-25 with the flip (GRAFANA_ADAPTIVE_METRICS_API_TOKEN +
+          # AM_METRICS_URL exist); see live/adaptive-metrics/main.tf for why this
+          # stack was previously excluded from planning entirely.
+          - adaptive-metrics
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
