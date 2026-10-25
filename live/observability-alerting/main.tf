@@ -364,7 +364,7 @@ resource "grafana_rule_group" "series_near_cap" {
     condition      = "B"
     for            = "15m"
     no_data_state  = "OK"
-    exec_err_state = "Error"
+    exec_err_state = "KeepLast"
 
     data {
       ref_id         = "A"
@@ -472,8 +472,10 @@ resource "grafana_rule_group" "security_fail_open" {
       for           = "0m"
       no_data_state = "OK"
       # A Loki or pipeline error is an alerting-infrastructure fault, not a
-      # fail-open: report it as an error state rather than paging on it.
-      exec_err_state = "Error"
+      # fail-open. KeepLast holds the previous state instead of raising an
+      # Error-state notification — a datasource fault must not page; the
+      # alerting-health job watches for that class instead.
+      exec_err_state = "KeepLast"
 
       data {
         ref_id         = "A"
