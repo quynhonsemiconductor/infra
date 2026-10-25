@@ -387,17 +387,27 @@ jobs:
           plan-file: tfplan
           working-directory: live/${{ matrix.stack }}
 
-      # AM API EVIDENCE (adaptive-metrics only, review deliverable b): print the
-      # recommendations the service itself computes for our metric prefixes — proves the
-      # token works against /aggregations/* and shows the accepted aggregation grammar
-      # for exactly these metrics. No secret material in the output (metric names only).
+      # Mask the AM host (review round 2): a runner-injected value, masked via
+      # env — never ${{ }} inline in `run`, which lands in the log's command line.
+      - name: Mask the AM host
+        if: matrix.stack == 'adaptive-metrics'
+        run: echo "::add-mask::$AM_URL"
+        env:
+          AM_URL: ${{ vars.AM_METRICS_URL }}
+
+      # AM API EVIDENCE (adaptive-metrics only, review deliverable b): project the
+      # recommendations + existing rules down to METRIC NAMES + aggregation lists —
+      # proves the token works against /aggregations/* and shows the accepted
+      # aggregation grammar for exactly these metrics. pipefail + -f: a 401/403
+      # fails the step instead of publishing an error body.
       - name: AM recommendations evidence
         if: matrix.stack == 'adaptive-metrics'
         run: |
-          curl -sS -u "$AM_TOKEN" "$AM_URL/aggregations/recommendations" | head -c 4000
-          echo
-          echo "--- existing aggregation rules:"
-          curl -sS -u "$AM_TOKEN" "$AM_URL/aggregations/rules" | head -c 4000
+          set -o pipefail
+          echo "recommendations (metric + aggregations only):"
+          curl -fsS -u "$AM_TOKEN" "$AM_URL/aggregations/recommendations"             | jq -c '[.data?.recommendations[]? | {metric: (.metric // .name), aggregations: (.aggregations // [])}]'
+          echo "existing aggregation rules:"
+          curl -fsS -u "$AM_TOKEN" "$AM_URL/aggregations/rules"             | jq -c '[.data?.rules[]? | {metric: (.metric // .name), aggregations: (.aggregations // [])}]'
         env:
           AM_URL:   ${{ vars.AM_METRICS_URL }}
           AM_TOKEN: ${{ secrets.GRAFANA_ADAPTIVE_METRICS_API_TOKEN }}

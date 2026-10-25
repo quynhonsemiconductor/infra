@@ -10,7 +10,8 @@
 # Each stack runs under a GitHub Environment that doubles as the OIDC trust
 # boundary AND the reviewer gate, mapped to the three tiers the infra-apply
 # role trusts (see tf-modules/modules/iam-oidc infra_apply_subjects):
-#   • shared     → bootstrap, security-baseline, edge, observability (account/platform-wide)
+#   • shared     → bootstrap, security-baseline, edge, observability,
+#                  observability-alerting, adaptive-metrics (account/platform-wide)
 #   • develop    → runtime-dev, storage-dev
 #   • production → runtime-prod, storage-prod (protect with required reviewers)
 #
@@ -134,7 +135,7 @@ jobs:
     if: ${{ contains(fromJson(needs.detect.outputs.stacks), 'bootstrap') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    environment: shared   # platform blast radius — gate with required reviewers
+    environment: shared   # platform blast radius — auto-apply on merge (parity with observability-alerting); the PR review is the gate
     permissions:
       contents: read
       id-token: write
@@ -390,7 +391,7 @@ jobs:
     if: ${{ contains(fromJson(needs.detect.outputs.stacks), 'observability') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    environment: shared   # platform blast radius — gate with required reviewers
+    environment: shared   # platform blast radius — auto-apply on merge (parity with observability-alerting); the PR review is the gate
     permissions:
       contents: read
       id-token: write
@@ -447,7 +448,7 @@ jobs:
     if: ${{ always() && contains(fromJson(needs.detect.outputs.stacks), 'observability-alerting') && needs.apply-observability.result != 'failure' && needs.apply-observability.result != 'cancelled' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    environment: shared   # platform blast radius — gate with required reviewers
+    environment: shared   # platform blast radius — auto-apply on merge (parity with observability-alerting); the PR review is the gate
     permissions:
       contents: read
       id-token: write
@@ -517,7 +518,7 @@ jobs:
     if: ${{ contains(fromJson(needs.detect.outputs.stacks), 'adaptive-metrics') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    environment: shared   # platform blast radius — gate with required reviewers
+    environment: shared   # platform blast radius — auto-apply on merge (parity with observability-alerting); the PR review is the gate
     permissions:
       contents: read
       id-token: write
