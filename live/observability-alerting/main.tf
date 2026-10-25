@@ -547,7 +547,7 @@ resource "grafana_rule_group" "security_fail_open" {
       }
 
       annotations = {
-        summary = "A security control failed open in ${env_rule.value.env} — service $${labels.service_namespace}. Check Valkey health."
+        summary = "A security control failed open in ${env_rule.value.env} — service {{ $labels.service_namespace }}. Check Valkey health."
       }
     }
   }
