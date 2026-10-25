@@ -100,6 +100,16 @@ resource "grafana_cloud_access_policy" "otlp_push" {
     type       = "stack"
     identifier = grafana_cloud_stack.qnsc.id
   }
+
+  # Office-IP allowlist — ONLY when the office line has a static IP
+  # (TF_VAR_office_ip; empty = no condition, current token-only posture).
+  # Kept in sync with the KV allowlists (live/identity).
+  dynamic "conditions" {
+    for_each = var.office_ip != "" ? [1] : []
+    content {
+      allowed_subnets = ["${var.office_ip}/32"]
+    }
+  }
 }
 
 resource "grafana_cloud_access_policy_token" "otlp_push" {
@@ -161,4 +171,23 @@ resource "grafana_cloud_stack_service_account_token" "alerting" {
   # management credential for the alerting surface, analogous to otlp_push's
   # token never rotating on a timer. Rotate by tainting this resource if it
   # ever needs to change, same as any other provider credential would.
+}
+
+# ── Office-IP restriction on the push policy (OPTIONAL, owner 2026-10-25) ───
+# Only when the office line has a STATIC IP (TF_VAR_office_ip, CI variable —
+# never committed here). Empty = the policy stays open to any source IP (the
+# token itself is the secret). With an office IP the policy gains an
+# `allowed_subnets` condition restricted to that /32; without, no condition
+# = no change. Kept in sync with the KV allowlists (live/identity) and the
+# same runbook (ONPREM-PLAN §7.7) applies.
+
+variable "office_ip" {
+  type        = string
+  default     = ""
+  description = "Office static IP for the OTLP push allowlist. Empty = unrestricted (token-only). TF_VAR_office_ip."
+
+  validation {
+    condition     = var.office_ip == "" || can(regex("^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)(\\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)){3}$", var.office_ip))
+    error_message = "office_ip must be a dotted IPv4 address (no IPv6, no CIDR suffix), or empty."
+  }
 }

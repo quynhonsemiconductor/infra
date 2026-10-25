@@ -166,3 +166,11 @@ output "qnsc_backups_bucket" {
   description = "Bucket name for the backup CronJobs' env (r2-backup-rw / r2-backup-dev-rw tokens are scoped to this bucket, §10.3)."
   value       = cloudflare_r2_bucket.qnsc_backups.name
 }
+
+# ── Office-IP allowlist (OPTIONAL, owner 2026-10-25) ────────────────────────
+# When the stqnscbackup storage account lands (its own PR — written once the
+# subscription exists), it carries the SAME guarded shape as the KV
+# allowlists (live/identity/main.tf): storage_account_network_rules with
+# default_action Deny, bypass ["AzureServices"], ip_rules = [TF_VAR_office_ip]
+# — machine credentials only; humans stay on Entra + MFA; enable only after
+# the line is stable. The variable lives with that resource.
