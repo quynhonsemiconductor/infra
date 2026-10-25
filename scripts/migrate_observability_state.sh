@@ -96,7 +96,16 @@ say "2. Importing ${#PRESENT[@]} object(s) into $TO_DIR"
 for i in "${!PRESENT[@]}"; do
   addr="${PRESENT[$i]}"; id="${IMPORT_IDS[$i]}"
   if ( cd "$TO_DIR" && tofu state list 2>/dev/null | grep -qxF "$addr" ); then
-    printf '  already  %s\n' "$addr"; continue
+    # Already owned by the target: the IDs must agree, or the two states
+    # disagree about what this object IS — stop instead of rm-ing the old
+    # entry and silently adopting something different.
+    existing_id=$( cd "$TO_DIR" && tofu state show -no-color "$addr" 2>/dev/null \
+          | awk -F'= ' '/^[[:space:]]+id[[:space:]]+=/ {gsub(/"/,"",$2); print $2; exit}' )
+    if [ "$existing_id" != "$id" ]; then
+      die "ID mismatch for $addr: old state=$id, target state=$existing_id. Resolve before migrating."
+    fi
+    printf '  already  %-38s id matches — will be state-rm-ed from %s\n' "$addr" "$FROM_DIR"
+    continue
   fi
   if [ "$APPLY" = "true" ]; then
     printf '  import   %s\n' "$addr"
