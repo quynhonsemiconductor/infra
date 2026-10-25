@@ -15,12 +15,16 @@
 #   post-reduction re-measure shows billable under the allowance — until
 #   then the warning tier carries the signal.
 #
-# BOTH rules use `no_data_state = "Alerting"` deliberately: if the usage
-# series ever disappears (datasource renamed, token revoked), the rules FIRE
-# instead of silently disarming the guard. The Usage Insights datasource
-# (grafanacloud-usage) is org-level — it has no product or env dimensions,
-# so the labels on each rule are static, which is exactly what makes the
-# routing deterministic.
+# NO-DATA POLICY (measured 2026-10-25): the usage series samples every 5 min
+# with zero gaps over a 24-h window, so a 300-s evaluation with
+# no_data_state = Alerting (WARNING tier, email-only) cannot false-fire on
+# routine gaps — it fires only if the series truly disappears (datasource
+# renamed, token revoked), which is the fail-safe we want for the
+# email tier. The CRITICAL tier (Teams) uses no_data_state = OK so a
+# datasource gap pages no one via Teams; the warning tier covers it. The
+# usage datasource is org-level — no product or env dimensions exist, so the
+# labels on each rule are static, which is exactly what makes the routing
+# deterministic.
 # =============================================================================
 
 data "grafana_data_source" "usage" {
@@ -116,10 +120,12 @@ resource "grafana_rule_group" "billable_series_critical" {
   interval_seconds = 300
 
   rule {
-    name           = "org-billable-series-over-allowance"
-    condition      = "B"
-    for            = "1h"
-    no_data_state  = "Alerting"
+    name      = "org-billable-series-over-allowance"
+    condition = "B"
+    for       = "1h"
+    # OK, not Alerting (round 3): a usage-datasource gap must not page Teams;
+    # the WARNING tier keeps no_data_state = Alerting (email-only, fail-safe).
+    no_data_state  = "OK"
     exec_err_state = "Error"
 
     data {
