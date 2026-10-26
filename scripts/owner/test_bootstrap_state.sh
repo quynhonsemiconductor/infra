@@ -54,11 +54,11 @@ if [[ "\$1 \$2 \$3" == "role assignment create" ]]; then
   exit 0
 fi
 if [[ "\$1 \$2 \$3" == "storage container exists" ]]; then
-  # tsv output of --query exists: az prints booleans capitalised
+  # tsv output of --query exists: az prints lowercase true/false
   if [[ "\${STUB_CONTAINER:-}" == "false" ]]; then
-    echo 'False'
+    echo 'false'
   else
-    echo 'True'
+    echo 'true'
   fi
   exit 0
 fi
