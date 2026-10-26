@@ -1,27 +1,25 @@
 # ── live/identity — Entra ID + Key Vault (§7, §11.3) ────────────────────────
 #
-# PREPARATION: applies nothing yet — there is no subscription. This file pins
-# the concrete, decided resources; the Entra application objects land as real
-# blocks in Phase 1 once the tenant objects can be created and read back.
-#
 # What this stack OWNS (applied in this order once the subscription exists):
 #
 #   done below   the resource group, the four Key Vaults with the §7.1
-#                properties, the $10 subscription budget alert
+#                properties, the $10 subscription budget alert, the two CI
+#                identities ("QNSC CI Infra" / "QNSC CI Infra Read", §7.4)
 #
 #   Phase 1      azuread: groups (grp-qnsc-platform-admins, grp-qnsc-developers,
 #                grp-qnsc-rova-vendors, grp-qnsc-kv-dev-officers); the ESO SP
 #                apps x3 (certificate only — public certs committed in infra/),
-#                CI apps x2 (QNSC CI Infra / Read with federated credentials on
-#                the infra GitHub environment), the Backup Prod app; product
-#                sign-in apps' redirect URIs per §8.2 (loopback on dev only);
-#                Key Vault RBAC role assignments (ESO Secrets User, CI Reader)
+#                the Backup Prod app; product sign-in apps' redirect URIs per
+#                §8.2 (loopback on dev only); Key Vault RBAC role assignments
+#                (ESO Secrets User, CI Reader)
 #
-#   imported     rg-qnsc-platform AND stqnsctfstate — both created BY HAND
-#                (pre-work (e); the state backend and its resource group must
-#                exist before TF can hold any state), then `tofu import`ed into
-#                this stack. The resource group block below is therefore an
-#                import target, never a creation path.
+#   imported     rg-qnsc-platform, stqnsctfstate (+ its tfstate container and
+#                management policy) and the qnsc-platform-monthly budget —
+#                all created BY HAND (pre-work (e); the state backend and its
+#                resource group must exist before TF can hold any state), then
+#                imported via the blocks in imports.tf. Each block here is an
+#                import target, never a creation path: a plan after import
+#                must show NO change on any imported resource.
 #
 # Rules this stack never breaks (§7):
 #   - OpenTofu owns SHAPE and ACCESS, never values. No secret, token, key or
@@ -30,13 +28,17 @@
 #   - Client secrets are created outside state (dashboard/az) and piped into
 #     the vaults through stdin with expiry + owner/rotate-by tags.
 
-# Import target:
-#   tofu import azurerm_resource_group.platform '/subscriptions/<sub>/resourceGroups/rg-qnsc-platform'
-# after pre-work (e) creates it by hand (the backend needs it first).
+# Import target (imports.tf): the backend needs it before tofu can hold any
+# state, so it was created by hand. prevent_destroy — deleting it would take
+# the state backend with it.
 resource "azurerm_resource_group" "platform" {
   name     = "rg-qnsc-platform"
   location = var.location
   tags     = local.tags
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 # ── The four vaults (§7.1) ──────────────────────────────────────────────────
@@ -133,11 +135,13 @@ data "azuread_client_config" "current" {}
 
 # ── The budget alert (pre-work (e)) ─────────────────────────────────────────
 #
-# $10/month on the subscription; alert to Teams + devops@ via the action group
-# that live/observability-alerting owns. The budget is on the SUBSCRIPTION,
-# not the resource group — the point is "Azure is spending money at all".
-resource "azurerm_consumption_budget_subscription" "ten_dollars" {
-  name            = "budget-qnsc-10usd"
+# $10/month on the subscription; alert to devops@qnsc.vn. The budget is on the
+# SUBSCRIPTION, not the resource group — the point is "Azure is spending money
+# at all". Created by hand as `qnsc-platform-monthly` (pre-work (e)) and
+# imported (imports.tf): the name matches so the import is in-place, never a
+# duplicate or a replace.
+resource "azurerm_consumption_budget_subscription" "monthly" {
+  name            = "qnsc-platform-monthly"
   subscription_id = var.subscription_id
   amount          = 10
   time_grain      = "Monthly"
@@ -145,6 +149,13 @@ resource "azurerm_consumption_budget_subscription" "ten_dollars" {
   time_period {
     # must be the first of a month, ≤ 12 months out (provider rule)
     start_date = var.budget_period_start
+  }
+
+  notification {
+    enabled        = true
+    threshold      = 50
+    operator       = "GreaterThanOrEqualTo"
+    contact_emails = ["devops@qnsc.vn"]
   }
 
   notification {

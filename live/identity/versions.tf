@@ -17,10 +17,14 @@ terraform {
     storage_account_name = "stqnsctfstate"
     container_name       = "tfstate"
     key                  = "infra/identity/terraform.tfstate"
-    use_oidc             = true
-    use_azuread_auth     = true
+    # stqnsctfstate has SHARED KEYS DISABLED (imported in state_backend.tf), so
+    # the data plane MUST authenticate with Microsoft Entra — hardcoding this
+    # here is correct for both CI (ARM_USE_OIDC=true) and a local `az login`.
+    use_azuread_auth = true
   }
 }
 
-# Auth everywhere is GitHub OIDC in CI ("QNSC CI Infra" / "QNSC CI Infra Read",
-# §7.4) and az login --use-oidc for operators. No client secrets anywhere.
+# Auth everywhere: GitHub OIDC in CI ("QNSC CI Infra" / "QNSC CI Infra Read",
+# §7.4) — the workflow exports ARM_USE_OIDC=true and the subscription ID — and
+# `az login --tenant <tenant-domain>` for an operator at the laptop. No client
+# secrets anywhere.
