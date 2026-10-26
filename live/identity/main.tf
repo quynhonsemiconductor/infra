@@ -13,13 +13,15 @@
 #                §8.2 (loopback on dev only); Key Vault RBAC role assignments
 #                (ESO Secrets User, CI Reader)
 #
-#   imported     rg-qnsc-platform, stqnsctfstate (+ its tfstate container and
-#                management policy) and the qnsc-platform-monthly budget —
+#   imported     rg-qnsc-platform, stqnsctfstate and its `tfstate` container
+#                (blob-service properties live on the account resource) and
+#                the qnsc-platform-monthly budget —
 #                all created BY HAND (pre-work (e); the state backend and its
 #                resource group must exist before TF can hold any state), then
 #                imported via the blocks in imports.tf. Each block here is an
 #                import target, never a creation path: a plan after import
-#                must show NO change on any imported resource.
+#                must show NO change on any imported resource. The RG and the
+#                storage account carry no tags in Azure — code matches.
 #
 # Rules this stack never breaks (§7):
 #   - OpenTofu owns SHAPE and ACCESS, never values. No secret, token, key or
@@ -30,11 +32,11 @@
 
 # Import target (imports.tf): the backend needs it before tofu can hold any
 # state, so it was created by hand. prevent_destroy — deleting it would take
-# the state backend with it.
+# the state backend with it. NO tags: the hand-created RG has none, and the
+# first plan must be a clean no-change.
 resource "azurerm_resource_group" "platform" {
   name     = "rg-qnsc-platform"
   location = var.location
-  tags     = local.tags
 
   lifecycle {
     prevent_destroy = true
@@ -139,7 +141,10 @@ data "azuread_client_config" "current" {}
 # SUBSCRIPTION, not the resource group — the point is "Azure is spending money
 # at all". Created by hand as `qnsc-platform-monthly` (pre-work (e)) and
 # imported (imports.tf): the name matches so the import is in-place, never a
-# duplicate or a replace.
+# duplicate or a replace. Every field below mirrors the hand-created budget
+# EXACTLY (Cost budget — the provider always writes category Cost —,
+# GreaterThan on all four alerts, 2026-10-01 → 2028-09-30 window): the first
+# plan must show no change on it.
 resource "azurerm_consumption_budget_subscription" "monthly" {
   name            = "qnsc-platform-monthly"
   subscription_id = var.subscription_id
@@ -147,21 +152,28 @@ resource "azurerm_consumption_budget_subscription" "monthly" {
   time_grain      = "Monthly"
 
   time_period {
-    # must be the first of a month, ≤ 12 months out (provider rule)
     start_date = var.budget_period_start
+    end_date   = var.budget_period_end
   }
 
   notification {
     enabled        = true
     threshold      = 50
-    operator       = "GreaterThanOrEqualTo"
+    operator       = "GreaterThan"
     contact_emails = ["devops@qnsc.vn"]
   }
 
   notification {
     enabled        = true
     threshold      = 80
-    operator       = "GreaterThanOrEqualTo"
+    operator       = "GreaterThan"
+    contact_emails = ["devops@qnsc.vn"]
+  }
+
+  notification {
+    enabled        = true
+    threshold      = 100
+    operator       = "GreaterThan"
     contact_emails = ["devops@qnsc.vn"]
   }
 
@@ -169,7 +181,7 @@ resource "azurerm_consumption_budget_subscription" "monthly" {
     enabled        = true
     threshold_type = "Forecasted"
     threshold      = 100
-    operator       = "GreaterThanOrEqualTo"
+    operator       = "GreaterThan"
     contact_emails = ["devops@qnsc.vn"]
   }
 }

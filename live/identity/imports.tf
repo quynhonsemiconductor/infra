@@ -22,7 +22,7 @@ import {
 
 import {
   to = azurerm_storage_container.tfstate
-  id = "https://stqnsctfstate.blob.core.windows.net/tfstate"
+  id = "/subscriptions/${var.subscription_id}/resourceGroups/rg-qnsc-platform/providers/Microsoft.Storage/storageAccounts/stqnsctfstate/blobServices/default/containers/tfstate"
 }
 
 import {

@@ -55,6 +55,12 @@ check '.enableHttpsTrafficOnly'            'true'         'HTTPS-only: on'
 check '.minimumTlsVersion'                 'TLS1_2'       'min TLS: 1.2'
 check '.allowSharedKeyAccess'              'false'        'shared keys: disabled (backend uses Entra)'
 check '.publicNetworkAccess // "Enabled"'  'Enabled'      'public network: enabled (RBAC is the boundary)'
+# azurerm 5.x plans "" -> "Enabled" when Azure leaves publicNetworkAccess unset;
+# say so instead of letting the first plan surprise the operator.
+if [[ "$(echo "$SA_JSON" | jq -r '.publicNetworkAccess // "unset"')" == "unset" ]]; then
+  echo "note: publicNetworkAccess is unset in Azure — run once before the first plan:" >&2
+  echo "      az storage account update -g $STORAGE_RG -n $STORAGE_ACCOUNT --public-network-access Enabled" >&2
+fi
 
 # ── 3. The one role the backend data plane needs (idempotent grant) ─────────
 # use_azuread_auth=true (versions.tf) talks to the blob endpoint as the signed
@@ -80,9 +86,14 @@ FOUND="$(az storage container exists --account-name "$STORAGE_ACCOUNT" \
 ok "container: $CONTAINER (reachable over Entra auth)"
 
 # ── 5. Data protection: versioning + 30-day blob/container soft delete ─────
-BP="$(echo "$SA_JSON" | jq '.blobProperties // {}')"
+# These live on the BLOB SERVICE, not on `az storage account show` — read them
+# from the blob-service properties (the same object azurerm's blob_properties
+# block maps to).
+BP="$(az storage account blob-service-properties show --resource-group "$STORAGE_RG" \
+  --account-name "$STORAGE_ACCOUNT" --output json)" \
+  || fail "cannot read blob-service properties of $STORAGE_ACCOUNT"
 check_is() { [[ "$(echo "$BP" | jq -r "$1")" == "$2" ]] || fail "$3 — set it in the portal's Data protection blade (or az) BEFORE the first apply"; }
-check_is '.versioning // .versioningEnabled'                     'true' 'versioning is off'
+check_is '.isVersioningEnabled'                                  'true' 'versioning is off'
 check_is '.deleteRetentionPolicy.enabled'                        'true' 'blob soft delete is off'
 check_is '.deleteRetentionPolicy.days'                           '30'   'blob soft delete is not 30 days'
 check_is '.containerDeleteRetentionPolicy.enabled'               'true' 'container soft delete is off'
@@ -102,4 +113,5 @@ echo "  export TF_VAR_budget_period_start=<first-day-of-this-month YYYY-MM-DD>"
 echo "  export TF_VAR_break_glass_upn_domain=<tenant-primary-domain>"
 echo "  export ARM_SUBSCRIPTION_ID=\$TF_VAR_subscription_id"
 echo "  tofu init && tofu plan && tofu apply"
-echo "Plan must show: 4 imports, the 4 vaults, the 2 CI identities, their roles — and NO change on any imported resource."
+echo "Plan must show: 4 imports (no change), 23 to add, 0 to change, 0 to destroy, 0 replace."
+echo "Also export TF_VAR_budget_period_end=<budget end date YYYY-MM-DD> (hand-created budget: 2028-09-30)."

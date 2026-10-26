@@ -29,10 +29,16 @@ if [[ "\$1 \$2 \$3" == "storage account show" ]]; then
   sed "s/\${STUB_BAD:-NONE}/\${STUB_GOOD:-NONE}/" <<'JSON'
 {"id":"$STORAGE_ID","sku":{"name":"Standard_LRS"},"kind":"StorageV2",
  "enableHttpsTrafficOnly":true,"minimumTlsVersion":"TLS1_2",
- "allowSharedKeyAccess":false,"publicNetworkAccess":"Enabled",
- "blobProperties":{"versioning":true,
-   "deleteRetentionPolicy":{"enabled":true,"days":30},
-   "containerDeleteRetentionPolicy":{"enabled":true,"days":30}}}
+ "allowSharedKeyAccess":false,"publicNetworkAccess":"Enabled"}
+JSON
+  exit 0
+fi
+if [[ "\$1 \$2 \$3 \$4" == "storage account blob-service-properties show" ]]; then
+  # the data-protection fields live on the blob service, not the account
+  sed "s/\${STUB_BAD:-NONE}/\${STUB_GOOD:-NONE}/" <<'JSON'
+{"isVersioningEnabled":true,
+ "deleteRetentionPolicy":{"enabled":true,"days":30,"allowPermanentDelete":false},
+ "containerDeleteRetentionPolicy":{"enabled":true,"days":30}}
 JSON
   exit 0
 fi
@@ -77,6 +83,7 @@ grep -q '^ok: min TLS: 1.2$' <<<"$OUT" || { echo "FAIL: TLS check missing from o
 
 CREATE_CALLS="$(grep -c '^role assignment create' "$LOG" || true)"
 [[ "$CREATE_CALLS" == "1" ]] || { echo "FAIL: expected exactly 1 role create, got $CREATE_CALLS"; exit 1; }
+grep -q '^storage account blob-service-properties show ' "$LOG" || { echo "FAIL: data protection not read via blob-service-properties"; exit 1; }
 grep -q -- '--auth-mode login' "$LOG" || { echo "FAIL: container check did not use --auth-mode login"; exit 1; }
 grep -q -- '--role Storage Blob Data Contributor' "$LOG" || { echo "FAIL: role grant used the wrong role"; exit 1; }
 echo "ok: happy path passes, role assigned once, container checked over Entra auth"
@@ -107,9 +114,11 @@ must_fail "wrong replication" \
 must_fail "shared keys enabled" \
   STUB_BAD='"allowSharedKeyAccess":false' STUB_GOOD='"allowSharedKeyAccess":true'
 must_fail "versioning off" \
-  STUB_BAD='"versioning":true' STUB_GOOD='"versioning":false'
+  STUB_BAD='"isVersioningEnabled":true' STUB_GOOD='"isVersioningEnabled":false'
 must_fail "soft delete 7 days" \
   STUB_BAD='"days":30' STUB_GOOD='"days":7'
+must_fail "container soft delete 7 days" \
+  STUB_BAD='"containerDeleteRetentionPolicy":{"enabled":true,"days":30}' STUB_GOOD='"containerDeleteRetentionPolicy":{"enabled":true,"days":7}'
 must_fail "container missing" STUB_CONTAINER=false
 must_fail "budget missing" STUB_BUDGET=missing
 

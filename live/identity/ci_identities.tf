@@ -1,31 +1,35 @@
 # ── The two CI identities (§7.4) ────────────────────────────────────────────
 #
-# "QNSC CI Infra" applies; "QNSC CI Infra Read" plans, drifts and checks
-# expiry. Both are workload identities: GitHub OIDC in, no client secret EVER
-# (they only ever EXIST here — tofu prints their client IDs, which are public
-# identifiers, not secrets).
+# "QNSC CI Infra" applies the OTHER stacks; "QNSC CI Infra Read" plans, drifts
+# and checks expiry — including THIS stack. Both are workload identities:
+# GitHub OIDC in, no client secret EVER (they only ever EXIST here — tofu
+# prints their client IDs, which are public identifiers, not secrets).
 #
-#   Apply  — federated credential on the infra repo environment `prod` (the
-#            required-reviewer gate), because only a merged, reviewed run may
-#            change anything.
+# THIS stack (live/identity) is applied ONLY by the owner, locally, with their
+# own `az login`. CI never applies it: an identity that can apply live/identity
+# could grant itself anything in the tenant, so CI "QNSC CI Infra" is given NO
+# Entra directory role and NO right to assign Azure roles.
+#
+#   Apply  — federated credential on the infra repo environment `production`
+#            (the required-reviewer gate; the GitHub environment is named
+#            `production`, so the OIDC subject is environment:production),
+#            because only a merged, reviewed run may change anything.
 #   Read   — federated credentials for pull_request (every PR plan) and
 #            ref:refs/heads/main (the scheduled drift + expiry jobs).
 #
 # Least privilege, and why each role is on the list:
-#   Apply (Azure RBAC, subscription): Contributor (create/update the vaults,
-#     budgets and other resources the stack owns) + User Access Administrator
-#     (the stack assigns Key Vault RBAC roles — Contributor cannot). Scope is
-#     the ONE platform subscription, nothing tenant-wide. Plus Storage Blob
-#     Data Contributor on stqnsctfstate — the state data plane.
-#   Apply (Entra directory roles): Application Administrator (apps + SPs +
-#     federated credentials), Groups Administrator (grp-qnsc-* groups),
-#     User Administrator (break-glass users), Privileged Role Administrator
-#     (the break-glass Global Administrator assignment is IN this stack, so a
-#     hand-change must stay plannable — this is the one deliberately
-#     privileged grant; audited quarterly §16.2).
-#   Read — Reader (subscription), Storage Blob Data Reader (stqnsctfstate,
-#     state files are blobs) and Key Vault Reader (metadata only — it must
-#     never read a value, §7).
+#   Apply (Azure RBAC): Contributor on the ONE platform subscription (the
+#     other stacks create/update resources) + Storage Blob Data Contributor
+#     on stqnsctfstate (the state data plane). Deliberately NOT granted:
+#     User Access Administrator / RBAC Administrator (no other stack assigns
+#     Azure roles; if one ever must assign DATA roles, add "Role Based Access
+#     Control Administrator" with a condition limiting the assignable roles —
+#     never User Access Administrator) and any Entra directory role
+#     (Privileged Role / Application / User Administrator).
+#   Read — Directory Readers (Entra: plan can read apps, groups, users and
+#     role assignments), Reader (subscription), Storage Blob Data Reader
+#     (stqnsctfstate, state files are blobs) and Key Vault Reader (metadata
+#     only — it must never read a value, §7).
 
 locals {
   github_oidc_issuer = "https://token.actions.githubusercontent.com"
@@ -43,11 +47,11 @@ resource "azuread_service_principal" "ci_infra_apply" {
 
 resource "azuread_application_federated_identity_credential" "ci_infra_apply" {
   application_id = azuread_application.ci_infra_apply.id
-  display_name   = "infra-environment-prod"
-  description    = "infra repo environment prod (required reviewer gate) — apply runs"
+  display_name   = "infra-environment-production"
+  description    = "infra repo environment production (required reviewer gate) — apply runs"
   audiences      = ["api://AzureADTokenExchange"]
   issuer         = local.github_oidc_issuer
-  subject        = "${local.infra_subject_base}:environment:prod"
+  subject        = "${local.infra_subject_base}:environment:production"
 }
 
 resource "azuread_application" "ci_infra_read" {
@@ -77,17 +81,11 @@ resource "azuread_application_federated_identity_credential" "ci_infra_read_main
   subject        = "${local.infra_subject_base}:ref:refs/heads/main"
 }
 
-# Azure RBAC — apply: Contributor + User Access Administrator on the
-# subscription, Storage Blob Data Contributor on the state account.
+# Azure RBAC — apply: Contributor on the subscription, Storage Blob Data
+# Contributor on the state account. No role-assignment rights (see header).
 resource "azurerm_role_assignment" "ci_apply_contributor" {
   scope                = "/subscriptions/${var.subscription_id}"
   role_definition_name = "Contributor"
-  principal_id         = azuread_service_principal.ci_infra_apply.object_id
-}
-
-resource "azurerm_role_assignment" "ci_apply_user_access_admin" {
-  scope                = "/subscriptions/${var.subscription_id}"
-  role_definition_name = "User Access Administrator"
   principal_id         = azuread_service_principal.ci_infra_apply.object_id
 }
 
@@ -116,27 +114,23 @@ resource "azurerm_role_assignment" "ci_read_kv_metadata" {
   principal_id         = azuread_service_principal.ci_infra_read.object_id
 }
 
-# Entra directory roles — apply only (Read never writes the tenant).
-locals {
-  ci_apply_directory_roles = [
-    "Application Administrator",
-    "Groups Administrator",
-    "User Administrator",
-    "Privileged Role Administrator",
-  ]
+# Entra directory role — READ identity only: Directory Readers (the plan reads
+# applications, groups, users and directory role assignments). The apply
+# identity holds NO directory role. `azuread_directory_role` activates the
+# role in the tenant if it is not yet (idempotent).
+resource "azuread_directory_role" "directory_readers" {
+  display_name = "Directory Readers"
 }
 
-resource "azuread_directory_role_assignment" "ci_apply" {
-  for_each = toset(local.ci_apply_directory_roles)
-
-  role_id             = [for r in data.azuread_directory_roles.all.roles : r.template_id if r.display_name == each.value][0]
-  principal_object_id = azuread_service_principal.ci_infra_apply.object_id
+resource "azuread_directory_role_assignment" "ci_read_directory_readers" {
+  role_id             = azuread_directory_role.directory_readers.template_id
+  principal_object_id = azuread_service_principal.ci_infra_read.object_id
 }
 
 # Client IDs are public identifiers — safe to print; the workflows need them
 # (repo variables set after the first apply, see README.md).
 output "ci_infra_apply_client_id" {
-  description = "QNSC CI Infra client ID — repo variable for apply workflows."
+  description = "QNSC CI Infra client ID — repo variable for the other stacks' apply workflows."
   value       = azuread_application.ci_infra_apply.client_id
 }
 

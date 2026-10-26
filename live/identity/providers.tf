@@ -6,6 +6,9 @@
 #              up the Azure CLI session.
 provider "azurerm" {
   features {}
+  # stqnsctfstate has SHARED KEYS DISABLED, so every storage data-plane call
+  # (the backend included, versions.tf) authenticates with Microsoft Entra.
+  storage_use_azuread = true
   # Key Vault secrets are NEVER read by this stack (values never in state, §7);
   # the CI read identity holds Key Vault READER — metadata only.
 }

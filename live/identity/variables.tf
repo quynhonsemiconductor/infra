@@ -14,6 +14,11 @@ variable "budget_period_start" {
   description = "Budget window start, YYYY-MM-DD — the first day of the month the subscription was created."
 }
 
+variable "budget_period_end" {
+  type        = string
+  description = "Budget window end, YYYY-MM-DD — the hand-created budget reads 2028-09-30; keep both ends in sync with Azure."
+}
+
 variable "office_ip" {
   type        = string
   default     = ""
