@@ -2,11 +2,12 @@
 
 Entra ID + Azure Key Vault for the whole platform, plus the two CI workload
 identities (§7.4). **This stack is applied ONLY by the owner, locally, with
-their own `az login` — every apply, not just the first.** CI only PLANS it
-(read identity "QNSC CI Infra Read"); no CI workflow applies `live/identity`
-(it is not in `infra-apply.yml`'s stack list). An identity able to apply this
-stack could grant itself any role in the tenant, so the CI apply identity is
-kept unable to.
+their own `az login` — every plan and every apply, not just the first.** CI
+neither plans nor applies it. The repository is public, and plan output (PR
+comments, Actions logs) would publish the break-glass UPNs and the Entra role
+layout, so the owner runs `tofu plan` and `tofu apply` locally. An identity
+able to apply this stack could grant itself any role in the tenant, so no CI
+identity is given that ability.
 
 ## Owns
 
@@ -23,16 +24,14 @@ kept unable to.
   - "QNSC CI Infra Read" (plan/drift): Directory Readers (Entra), Reader
     (subscription), Storage Blob Data Reader (`stqnsctfstate`), Key Vault
     Reader (metadata only).
+    TODO: the Directory Readers role is kept for drift tooling run privately
+    or in future; if nothing uses it, remove it.
 - Phase 1: the Entra groups, ESO/CI/Backup SP apps with certificate auth,
   product sign-in app redirect URIs, vault RBAC.
 
 ## Auth (no client secrets anywhere)
 
-- **CI** (plan only for this stack): the workflow exports `ARM_USE_OIDC=true`,
-  `ARM_CLIENT_ID` (the Read identity's client ID), `ARM_TENANT_ID` and the
-  subscription ID — all four are needed for GitHub OIDC federation. The
-  backend is configured from the `backend` block plus those env vars; nothing
-  OIDC-specific is hardcoded in the stack.
+- **CI: none for this stack.**
 - **Operators**: `az login` first — both providers and the backend pick up the
   Azure CLI session.
 
@@ -100,11 +99,10 @@ never committed.
    - `AZURE_CLIENT_ID_READ` = `ci_infra_read_client_id`
    - `AZURE_TENANT_ID` = `<tenant-id>`
 
-   The plan workflow still lists `identity` as NOT_PLANNABLE until a follow-up
-   PR removes it (after this first owner apply, so the Read identity exists and
-   the three variables are set) — then CI PLANS this stack on every PR; it
-   never applies it. Every later change is again `tofu apply` by the owner,
-   locally.
+   The variables still serve other stacks and later OIDC use. `identity` stays
+   NOT_PLANNABLE in `infra-plan.yml` on purpose (public repo, see the top of
+   this file), so CI never plans this stack. Every change is `tofu plan` and
+   `tofu apply` by the owner, locally.
 
 ## Residual risk
 

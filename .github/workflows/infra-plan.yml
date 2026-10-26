@@ -182,6 +182,7 @@ jobs:
           # GRAFANA_ADAPTIVE_METRICS_API_TOKEN (access policy terraform-adaptive-metrics,
           # realm qnsc, scope adaptive-metrics-config:read+write) and repo variable
           # AM_METRICS_URL. It is planned here and applied by the apply-adaptive-metrics job.
+          # identity stays here on purpose: owner-only plan/apply (public repo; plan output would expose break-glass UPNs and the Entra role layout).
           NOT_PLANNABLE="observability organization identity onprem"
 
           SKIPPED=""
