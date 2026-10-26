@@ -66,7 +66,7 @@ if [[ "\$1 \$2 \$3" == "consumption budget show" ]]; then
   if [[ "\${STUB_BUDGET:-}" == "missing" ]]; then
     exit 1
   fi
-  echo '{"name":"qnsc-platform-monthly"}'
+  echo '{"name":"qnsc-platform-monthly","timePeriod":{"startDate":"2026-10-01T00:00:00Z","endDate":"2028-09-30T00:00:00Z"}}'
   exit 0
 fi
 echo "stub az: unexpected call: \$*" >&2
@@ -80,6 +80,8 @@ export PATH="$T/bin:$PATH"
 OUT="$("$SCRIPT" operator@qnsc.vn)"
 echo "$OUT" | grep -q '^READY\.' || { echo "FAIL: no READY line"; exit 1; }
 grep -q '^ok: min TLS: 1.2$' <<<"$OUT" || { echo "FAIL: TLS check missing from output"; exit 1; }
+
+grep -q 'budget_period_start=2026-10-01T00:00:00Z' <<<"$OUT" && grep -q 'budget_period_end=2028-09-30T00:00:00Z' <<<"$OUT" || { echo "FAIL: READY output lacks the live RFC3339 budget dates"; exit 1; }
 
 CREATE_CALLS="$(grep -c '^role assignment create' "$LOG" || true)"
 [[ "$CREATE_CALLS" == "1" ]] || { echo "FAIL: expected exactly 1 role create, got $CREATE_CALLS"; exit 1; }

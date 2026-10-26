@@ -69,8 +69,8 @@ never committed.
    ```sh
    export TF_VAR_subscription_id=<subscription-id>
    export ARM_SUBSCRIPTION_ID=$TF_VAR_subscription_id   # tofu init (backend) reads this one
-   export TF_VAR_budget_period_start=2026-10-01         # first day of the month the subscription was created
-   export TF_VAR_budget_period_end=2028-09-30           # the hand-created budget's end date (must match Azure)
+   export TF_VAR_budget_period_start=2026-10-01T00:00:00Z  # RFC3339, copy from the live budget (bootstrap script prints it)
+   export TF_VAR_budget_period_end=2028-09-30T00:00:00Z    # RFC3339, the hand-created budget's end (must match Azure exactly)
    export TF_VAR_break_glass_upn_domain=<tenant-primary-domain>
    ```
 
@@ -105,6 +105,14 @@ never committed.
    the three variables are set) — then CI PLANS this stack on every PR; it
    never applies it. Every later change is again `tofu apply` by the owner,
    locally.
+
+## Residual risk
+
+"QNSC CI Infra" (Contributor + Storage Blob Data Contributor on `stqnsctfstate`)
+can WRITE the blob `infra/identity/terraform.tfstate`, i.e. tamper with this
+stack's state even though it cannot apply the stack. Follow-up: replace the
+account-wide Blob Data Contributor with an ABAC condition that excludes
+`infra/identity/*` (and give the Read identity the same view it has today).
 
 ## Never does
 

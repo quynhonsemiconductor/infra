@@ -109,7 +109,7 @@ resource "azurerm_role_assignment" "ci_read_state_blob" {
 }
 
 resource "azurerm_role_assignment" "ci_read_kv_metadata" {
-  scope                = "/subscriptions/${var.subscription_id}"
+  scope                = azurerm_resource_group.platform.id # the vaults live here; not the whole subscription
   role_definition_name = "Key Vault Reader"
   principal_id         = azuread_service_principal.ci_infra_read.object_id
 }

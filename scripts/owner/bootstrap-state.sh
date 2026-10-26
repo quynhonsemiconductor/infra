@@ -101,17 +101,20 @@ check_is '.containerDeleteRetentionPolicy.days'                  '30'   'contain
 ok "data protection: versioning on, blob + container soft delete 30 days"
 
 # ── 6. Budget exists under the imported name ────────────────────────────────
-BUDGET_OK="$(az consumption budget show --budget-name "$BUDGET" --output json 2>/dev/null | jq -r '.name // empty')" \
-  || true
+BUDGET_JSON="$(az consumption budget show --budget-name "$BUDGET" --output json 2>/dev/null)" || true
+BUDGET_OK="$(jq -r '.name // empty' <<<"$BUDGET_JSON" 2>/dev/null || true)"
 [[ "$BUDGET_OK" == "$BUDGET" ]] || fail "budget '$BUDGET' not found on this subscription — the import in imports.tf will fail"
 ok "budget: $BUDGET present"
+# azurerm 5.x needs RFC3339 for both dates; Azure returns exactly these strings.
+B_START="$(jq -r '.timePeriod.startDate // empty' <<<"$BUDGET_JSON")"
+B_END="$(jq -r '.timePeriod.endDate // empty' <<<"$BUDGET_JSON")"
 
 echo
 echo "READY. First apply, from live/identity:"
 echo "  export TF_VAR_subscription_id=<subscription-id>"
-echo "  export TF_VAR_budget_period_start=<first-day-of-this-month YYYY-MM-DD>"
+echo "  export TF_VAR_budget_period_start=${B_START:-<live budget timePeriod.startDate, RFC3339>}"
+echo "  export TF_VAR_budget_period_end=${B_END:-<live budget timePeriod.endDate, RFC3339>}"
 echo "  export TF_VAR_break_glass_upn_domain=<tenant-primary-domain>"
 echo "  export ARM_SUBSCRIPTION_ID=\$TF_VAR_subscription_id"
 echo "  tofu init && tofu plan && tofu apply"
 echo "Plan must show: 4 imports (no change), 23 to add, 0 to change, 0 to destroy, 0 replace."
-echo "Also export TF_VAR_budget_period_end=<budget end date YYYY-MM-DD> (hand-created budget: 2028-09-30)."
