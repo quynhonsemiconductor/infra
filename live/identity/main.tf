@@ -147,7 +147,7 @@ data "azuread_client_config" "current" {}
 # plan must show no change on it.
 resource "azurerm_consumption_budget_subscription" "monthly" {
   name            = "qnsc-platform-monthly"
-  subscription_id = var.subscription_id
+  subscription_id = "/subscriptions/${var.subscription_id}"
   amount          = 10
   time_grain      = "Monthly"
 

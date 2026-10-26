@@ -82,7 +82,7 @@ fi
 FOUND="$(az storage container exists --account-name "$STORAGE_ACCOUNT" \
   --auth-mode login --name "$CONTAINER" --query exists -o tsv)" \
   || fail "cannot reach the blob endpoint as $OPERATOR_UPN (role still propagating? wait a minute and re-run)"
-[[ "$FOUND" == "True" ]] || fail "container '$CONTAINER' missing — create it by hand: az storage container create --account-name $STORAGE_ACCOUNT --auth-mode login --name $CONTAINER"
+[[ "$FOUND" == "true" ]] || fail "container '$CONTAINER' missing — create it by hand: az storage container create --account-name $STORAGE_ACCOUNT --auth-mode login --name $CONTAINER"
 ok "container: $CONTAINER (reachable over Entra auth)"
 
 # ── 5. Data protection: versioning + 30-day blob/container soft delete ─────
