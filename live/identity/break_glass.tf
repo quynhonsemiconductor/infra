@@ -32,6 +32,10 @@ variable "break_glass_upn_domain" {
 # Throwaway provisioning credential: the OWNER immediately resets the
 # password in Entra (stores the real one in 1Password) — the value below is
 # never used for a real sign-in and is ignored by tofu afterwards.
+# Entra rejects a password that contains the username (or parts of the
+# display name), so the placeholder must NOT embed each.key (bg1/bg2 are the
+# usernames). A fixed placeholder meeting Entra complexity (upper, lower,
+# digit, symbol, 8-256 chars) is used for both accounts.
 resource "azuread_user" "break_glass" {
   for_each = { bg1 = "Break Glass 1", bg2 = "Break Glass 2" }
 
@@ -39,7 +43,7 @@ resource "azuread_user" "break_glass" {
   display_name        = each.value
   # NO job title, department or manager: an offboarding sweep must never
   # touch them.
-  password              = "CHANGE-AT-PROVISIONING-${each.key}"
+  password              = "Disabled-Placeholder-2026!"
   force_password_change = true
   account_enabled       = false # owner enables AFTER password + FIDO2 + 1Password
 
