@@ -1,0 +1,117 @@
+# =============================================================================
+# One-shot: migrate observability's orphaned grafana_* state objects into
+# observability-alerting (runbook: docs/runbooks/observability-state-migration.md,
+# script: scripts/migrate_observability_state.sh). Unblocks infra#159 — after
+# this runs, `observability` can leave NOT_PLANNABLE and plan (a small
+# follow-up PR removes it from the list and adds it to drift/apply).
+#
+# WHY A WORKFLOW: the script needs state WRITE on both backends (the apply
+# role's OIDC) and is designed to be read before it runs — a dispatch a human
+# presses is the review. NOTHING in Grafana is touched: only which state file
+# OWNS each object changes, and the script refuses to state rm anything until
+# the sibling's plan is empty. Failure mode is a duplicate or unmanaged
+# object, never a deleted one.
+#
+# AFTER IT SUCCEEDS: paste the two plan outputs into the follow-up PR that
+# removes `observability` from NOT_PLANNABLE / adds it to drift + apply.
+# =============================================================================
+
+name: Observability state migration
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: "Perform the migration (import + state rm). Leave FALSE for a dry run."
+        type: boolean
+        default: false
+
+# Shares the APPLY lock with infra-apply (this job writes both state files).
+concurrency:
+  group: infra-apply-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  TOFU_VERSION: "1.9.1"
+  AWS_REGION: ap-southeast-1
+
+jobs:
+  migrate:
+    name: Migrate observability state
+    # Trusted ref only: the apply-role OIDC does not cover feature branches
+    # (proven by the drift round), and this job writes both state files.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: shared
+
+    env:
+      # The script's empty-plan gate and the two post-plan steps run `tofu plan`
+      # in BOTH stacks — they need the same TF_VARs as apply-observability and
+      # apply-observability-alerting, or the gate fails on an unset variable
+      # instead of a real diff.
+      TF_VAR_grafana_cloud_api_key: ${{ secrets.GRAFANA_CLOUD_API_KEY }}
+      TF_VAR_teams_webhook_url:     ${{ secrets.TEAMS_ALERTS_WEBHOOK_URL }}
+      # Parity with infra-apply.yml (apply-observability-alerting): both stacks'
+      # plans reference the SM/HC credentials.
+      TF_VAR_grafana_sm_token:       ${{ secrets.GRAFANA_SM_TOKEN }}
+      TF_VAR_healthchecks_api_token: ${{ secrets.HEALTHCHECKS_API_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: quynhonsemiconductor/ci/actions/setup-tofu-aws@691668f7a1bd4f4a3416f9224ae7ff7ebe831a3a # v1.23.0
+        with:
+          role-arn:     arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/qnsc-github-infra-apply
+          aws-region:   ${{ env.AWS_REGION }}
+          tofu-version: ${{ env.TOFU_VERSION }}
+
+      - name: Dry run — list every import the migration would perform
+        run: ./scripts/migrate_observability_state.sh
+
+      - name: Migrate (import into observability-alerting, verify empty plan, state rm)
+        if: inputs.apply == true
+        run: APPLY=true ./scripts/migrate_observability_state.sh
+
+      - name: observability plan (must be clean, must destroy nothing)
+        if: always() && inputs.apply == true
+        working-directory: live/observability
+        run: |
+          set -o pipefail
+          set +e
+          tofu plan -input=false -lock=false -no-color -detailed-exitcode 2>&1 | tee /tmp/obs-post.txt
+          ec=${PIPESTATUS[0]}
+          echo "exitcode=$ec"
+          grep -qiE 'will be destroyed|[1-9][0-9]* to destroy' /tmp/obs-post.txt && {
+            echo "::error::observability proposes a DESTROY after the migration — do not apply; investigate."
+            exit 1
+          }
+          # An errored plan (exit 1) must fail the job: a clean-looking exit-0
+          # handler here would silently bless a broken migration.
+          [ "$ec" = "1" ] && exit 1
+          exit 0
+
+      # Only meaningful after the real migration: a dry run leaves the four
+      # AM rules culled, so this plan is empty BY DESIGN and would be red
+      # (exit 2) for the wrong reason.
+      - name: observability-alerting plan (must be empty post-migration)
+        if: always() && inputs.apply == true
+        working-directory: live/observability-alerting
+        run: |
+          set -o pipefail
+          set +e
+          # UUID redaction, same as infra-apply's apply step: healthchecksio
+          # check ids/ping_urls are working ping URLs and this log is public.
+          tofu plan -input=false -lock=false -no-color -detailed-exitcode 2>&1 \
+            | sed -E 's/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/<redacted>/g' \
+            | tee /tmp/obs-alerting-post.txt
+          ec=${PIPESTATUS[0]}
+          echo "exitcode=$ec"
+          [ "$ec" = "1" ] && exit 1
+          exit 0
