@@ -55,6 +55,7 @@ resource "azurerm_storage_account" "tfstate" {
 }
 
 resource "azurerm_storage_container" "tfstate" {
+  # checkov:skip=CKV2_AZURE_21:blob analytics logging is not wired (same posture as the account above); state access is audited through Entra + role assignments; diagnostics = §9 hardening trigger
   name                  = "tfstate"
   storage_account_id    = azurerm_storage_account.tfstate.id
   container_access_type = "private"
