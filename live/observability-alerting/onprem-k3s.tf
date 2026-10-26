@@ -1,33 +1,47 @@
 # =============================================================================
 # On-prem (k3s) alert rules — ONPREM-PLAN §12's "On-prem alert" table.
 #
-# DORMANT BY DESIGN, and honestly so: these expressions read series that only
-# exist once the k3s node joins with the Alloy agent — today they return no
-# data. Rules whose SIGNAL is absence (node down) use no_data_state =
-# "Alerting" (a vanished series IS the alert); presence rules (fs capacity,
-# CNPG) use no_data_state = "OK" so a not-yet-built cluster stays quiet.
-# They arm at the cutover without a flip: the series appear, the rules start
-# judging. env=production on each rule routes through the notification
-# policy's Teams child; product=platform keeps the grouping consistent with
-# the rest of the folder.
+# GATED: every group is `count = var.onprem_alerts_enabled ? 1 : 0` (default
+# false) — with the series absent pre-cutover, an ungated node-down rule
+# would page Teams from the moment the PR merges. Arming = a one-line PR at
+# the cutover; the rules themselves are written for the live estate and need
+# no further change.
 #
-# METRIC NAMES: node_* names are the node_exporter collectors the gitops
-# agent allowlist keeps (platform/alloy/agent.alloy — this repo's sibling
-# PR); cnpg_*/pg_stat_archiver* are CNPG's default instance-exporter set.
-# Both get verified against the live scrape at the cutover rehearsal
-# (Stage D2's checklist) — the allowlist above keeps exactly these families.
+# DORMANT-SHAPE: rules whose SIGNAL is absence (node down) use no_data_state
+# = "Alerting" (a vanished series IS the alert); presence rules use
+# no_data_state = "OK". All carry env=production (Teams child) +
+# product=platform, and exec_err_state = KeepLast (a Loki/pipeline fault
+# must not page — same decision as the fail-open rules).
+#
+# METRIC NAMES: node_* are the node_exporter collectors the gitops agent
+# allowlist keeps (platform/alloy/agent.alloy; the node scrape is labelled
+# job="node" there); cnpg_*/pg_stat_archiver* are CNPG's default
+# instance-exporter set. Both verified against the live scrape at the
+# cutover rehearsal (Stage D2 checklist).
 #
 # NOT here, deliberately: backup failed/missed (Healthchecks.io owns the
-# batch-job pings — dump, restore test, Azure copy), cert expiry (the weekly
-# expiry-check Action covers Entra/Cloudflare/GitHub credentials; CNPG
-# server certs renew automatically ~90 days), /readyz failing (Synthetic
-# Monitoring), tunnel down (covered by the readyz check + node down).
+# batch-job pings), cert expiry (weekly expiry-check Action; CNPG server
+# certs auto-renew ~90 d), /readyz failing and tunnel down (Synthetic
+# Monitoring's readyz check + the node-down rule), ZFS pool capacity/health
+# (the pools live on the pve01 HOST, not in the k3s VM this scrapes — the
+# host-metrics design is in the server-setup runbook, with the 80/90 tiers
+# documented there for the host textfile collector).
 # =============================================================================
+
+variable "onprem_alerts_enabled" {
+  description = "Arms the on-prem rule groups. Flip via a one-line PR at the cutover (Stage D2 rehearsal arms it in rehearsal). false = the groups are culled and the plan shows nothing."
+  type        = bool
+  default     = false
+}
+
+locals {
+  onprem_live = var.onprem_alerts_enabled
+}
 
 # NODE DOWN — absence IS the signal: the node-exporter `up` series vanishing
 # (agent dead, node hung) must fire, so no_data_state = "Alerting".
 resource "grafana_rule_group" "onprem_node_down" {
-  count            = 1
+  count            = local.onprem_live ? 1 : 0
   name             = "onprem (k3s — node)"
   folder_uid       = grafana_folder.alerts.uid
   interval_seconds = 60
@@ -99,16 +113,16 @@ resource "grafana_rule_group" "onprem_node_down" {
   }
 }
 
-# ── Presence rules: quiet until the cluster exists, then armed ──────────────
-resource "grafana_rule_group" "onprem_disk_zfs" {
-  count            = 1
-  name             = "onprem (k3s — disk and ZFS)"
+# ── Filesystem capacity: warning at 80 %, critical at 90 % ──────────────────
+# fstype and mountpoint exclusions are the standard noise cut: pseudo-
+# filesystems (tmpfs/overlay/squashfs/devtmpfs/nsfs) and kubelet/runtime
+# ephemeral mounts are unbounded in count and meaningless in capacity.
+resource "grafana_rule_group" "onprem_fs" {
+  count            = local.onprem_live ? 1 : 0
+  name             = "onprem (k3s — filesystem)"
   folder_uid       = grafana_folder.alerts.uid
   interval_seconds = 300
 
-  # §12: "VM filesystem < 20% free". Fires per mountpoint that crosses 80 %
-  # used and stays there 10 m. no_data_state = OK: the cluster not existing
-  # is not an alert; the node-down rule owns absence.
   rule {
     name           = "k3s-filesystem-over-80-percent"
     condition      = "B"
@@ -129,7 +143,7 @@ resource "grafana_rule_group" "onprem_disk_zfs" {
       model = jsonencode({
         refId      = "A"
         datasource = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
-        expr       = "1 - (node_filesystem_avail_bytes{fstype!~\"tmpfs|overlay\"} / node_filesystem_size_bytes{fstype!~\"tmpfs|overlay\"})"
+        expr       = "1 - (node_filesystem_avail_bytes{fstype!~\"squashfs|devtmpfs|nsfs|tmpfs|overlay\",mountpoint!~\"/run(/.*)?|/var/lib/kubelet(/.*)?\"} / node_filesystem_size_bytes{fstype!~\"squashfs|devtmpfs|nsfs|tmpfs|overlay\",mountpoint!~\"/run(/.*)?|/var/lib/kubelet(/.*)?\"})"
         instant    = true
         range      = false
         intervalMs = 1000
@@ -166,7 +180,7 @@ resource "grafana_rule_group" "onprem_disk_zfs" {
     labels = {
       product  = "platform"
       env      = "production"
-      severity = "critical"
+      severity = "warning"
     }
 
     annotations = {
@@ -174,9 +188,8 @@ resource "grafana_rule_group" "onprem_disk_zfs" {
     }
   }
 
-  # ZFS pool over 80% — same ratio, on the pool series the allowlist keeps.
   rule {
-    name           = "k3s-zfs-pool-over-80-percent"
+    name           = "k3s-filesystem-over-90-percent"
     condition      = "B"
     for            = "10m"
     no_data_state  = "OK"
@@ -195,7 +208,7 @@ resource "grafana_rule_group" "onprem_disk_zfs" {
       model = jsonencode({
         refId      = "A"
         datasource = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
-        expr       = "node_zfs_zpool_used_bytes / node_zfs_zpool_size_bytes"
+        expr       = "1 - (node_filesystem_avail_bytes{fstype!~\"squashfs|devtmpfs|nsfs|tmpfs|overlay\",mountpoint!~\"/run(/.*)?|/var/lib/kubelet(/.*)?\"} / node_filesystem_size_bytes{fstype!~\"squashfs|devtmpfs|nsfs|tmpfs|overlay\",mountpoint!~\"/run(/.*)?|/var/lib/kubelet(/.*)?\"})"
         instant    = true
         range      = false
         intervalMs = 1000
@@ -220,7 +233,7 @@ resource "grafana_rule_group" "onprem_disk_zfs" {
           {
             evaluator = {
               type   = "gt"
-              params = [0.8]
+              params = [0.9]
             }
           }
         ]
@@ -236,13 +249,14 @@ resource "grafana_rule_group" "onprem_disk_zfs" {
     }
 
     annotations = {
-      summary = "ZFS pool {{ $labels.pool }} is over 80% used (§12: ZFS pool > 80%)."
+      summary = "Filesystem {{ $labels.mountpoint }} on the k3s node is over 90% used — data-loss territory; act now (§12)."
     }
   }
 }
 
+# ── CNPG: WAL archiving + replication lag ───────────────────────────────────
 resource "grafana_rule_group" "onprem_cnpg" {
-  count            = 1
+  count            = local.onprem_live ? 1 : 0
   name             = "onprem (k3s — CNPG)"
   folder_uid       = grafana_folder.alerts.uid
   interval_seconds = 300
@@ -377,7 +391,7 @@ resource "grafana_rule_group" "onprem_cnpg" {
     }
 
     annotations = {
-      summary = "CNPG replication lag over 10 units on {{ $labels.namespace }}/{{ $labels.cluster }} (§12: CNPG replication failure)."
+      summary = "CNPG replication lag over 10 units on {{ $labels.namespace }}/{{ $labels.cnpg_cluster }} (§12: CNPG replication failure)."
     }
   }
 }
