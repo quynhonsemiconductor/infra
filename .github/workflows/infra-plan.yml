@@ -353,6 +353,7 @@ jobs:
           # Stack-specific inputs. Vars a stack doesn't declare are ignored
           # (tofu just warns), so passing the full set to every stack is safe.
           TF_VAR_cloudflare_zone_id:    ${{ vars.CLOUDFLARE_ZONE_ID }}
+          TF_VAR_office_ip:             ${{ vars.OFFICE_IP }}
           TF_VAR_cloudflare_api_token:  ${{ secrets.CLOUDFLARE_API_TOKEN }}
           TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           TF_VAR_grafana_cloud_api_key: ${{ secrets.GRAFANA_CLOUD_API_KEY }}

@@ -88,6 +88,15 @@ resource "azurerm_key_vault" "purge_protected" {
   purge_protection_enabled      = true
   public_network_access_enabled = true
   tags                          = local.tags
+
+  # ALWAYS emitted: network_acls is Optional+Computed in azurerm — removing
+  # the block would leave the last Deny behind. Empty office_ip renders
+  # Allow + no rules = the pre-allowlist posture.
+  network_acls {
+    default_action = local.office_ip_enabled ? "Deny" : "Allow"
+    bypass         = "AzureServices"
+    ip_rules       = local.office_ip_enabled ? [var.office_ip] : []
+  }
 }
 
 # kv-qnsc-dev — purge protection deliberately OFF (§7.1): Phase 1 iterates on
@@ -109,6 +118,15 @@ resource "azurerm_key_vault" "dev" {
   purge_protection_enabled      = false
   public_network_access_enabled = true
   tags                          = local.tags
+
+  # ALWAYS emitted: network_acls is Optional+Computed in azurerm — removing
+  # the block would leave the last Deny behind. Empty office_ip renders
+  # Allow + no rules = the pre-allowlist posture.
+  network_acls {
+    default_action = local.office_ip_enabled ? "Deny" : "Allow"
+    bypass         = "AzureServices"
+    ip_rules       = local.office_ip_enabled ? [var.office_ip] : []
+  }
 }
 
 data "azuread_client_config" "current" {}
@@ -144,3 +162,16 @@ resource "azurerm_consumption_budget_subscription" "ten_dollars" {
     contact_emails = ["devops@qnsc.vn"]
   }
 }
+
+# ── Office-IP allowlists (OPTIONAL — owner decision 2026-10-25) ─────────────
+
+locals {
+  office_ip_enabled = var.office_ip != ""
+}
+
+# Variable lives in variables.tf. The network_acls blocks are ALWAYS emitted
+# (Optional+Computed — removing the block would leave the last Deny behind):
+# **Deny only when office_ip is set** — empty renders Allow + no rules, the
+# pre-allowlist posture. Data plane for machine credentials only; humans
+# stay on Entra + MFA. Enable only after the line is stable (CUTOVER §4.4
+# soak); runbook §7.7.

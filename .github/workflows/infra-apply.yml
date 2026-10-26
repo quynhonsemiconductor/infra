@@ -425,6 +425,7 @@ jobs:
         env:
           TF_VAR_grafana_cloud_api_key: ${{ secrets.GRAFANA_CLOUD_API_KEY }}
           TF_VAR_teams_webhook_url: ${{ secrets.TEAMS_ALERTS_WEBHOOK_URL }}
+          TF_VAR_office_ip: ${{ vars.OFFICE_IP }}
 
       # A provider bump, a lock-file change or an empty variable can turn a plan into "replace every DNS record" (2026-10-09).
       # The plan is applied unreviewed here, so it is read first: deleting or replacing a DNS/identity resource needs the
@@ -481,6 +482,7 @@ jobs:
           if [ "$ec" = "1" ]; then exit 1; fi
         env:
           TF_VAR_teams_webhook_url: ${{ secrets.TEAMS_ALERTS_WEBHOOK_URL }}
+          TF_VAR_office_ip: ${{ vars.OFFICE_IP }}
           # opshub prod monitoring (live/observability-alerting/opshub-prod.tf) —
           # scoped to THIS stack's apply job only; empty until the Stage D2
           # cutover, see that file's header for the flip procedure.
