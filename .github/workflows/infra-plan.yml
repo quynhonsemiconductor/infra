@@ -48,6 +48,7 @@ jobs:
         id: changes
         env:
           BASE_REF: ${{ github.base_ref }}
+          BREAK_GLASS_UPN_DOMAIN: ${{ vars.BREAK_GLASS_UPN_DOMAIN }}
         run: |
           set -euo pipefail
           git fetch --no-tags origin "$BASE_REF"
@@ -171,18 +172,30 @@ jobs:
           # Keeping the exclusions named in code rather than dropping the
           # derivation: any NEW stack is planned by default, and each gap is named
           # here instead of being absent from a list nobody compared to anything.
-          # identity / onprem (added 2026-10-20, Phase-1 skeletons): the Azure
-          #                       subscription and stqnsctfstate do not exist yet
-          #                       (pre-work (e)), and onprem additionally needs a
-          #                       Cloudflare token with Tunnel scope. init would
-          #                       fail on the azurerm backend for both. Remove
-          #                       from this list in the PR that applies them first.
+          # onprem (added 2026-10-20, Phase-1 skeleton): it additionally needs a
+          #                       Cloudflare token with Tunnel scope. Remove
+          #                       from this list in the PR that applies it first.
+          # identity: PLANNED on PRs with the read-only OIDC identity (see the plan
+          #                       job's Azure env). Off this list since the owner's
+          #                       first apply created the Read identity. Excluded
+          #                       again, with a warning, while the repo variable
+          #                       BREAK_GLASS_UPN_DOMAIN is unset: a required input.
           # `adaptive-metrics` WAS in this list (its provider calls the AM API at configure,
           # 401 without the token). Included 2026-10-25: the owner added
           # GRAFANA_ADAPTIVE_METRICS_API_TOKEN (access policy terraform-adaptive-metrics,
           # realm qnsc, scope adaptive-metrics-config:read+write) and repo variable
           # AM_METRICS_URL. It is planned here and applied by the apply-adaptive-metrics job.
-          NOT_PLANNABLE="observability organization identity onprem"
+          NOT_PLANNABLE="observability organization onprem"
+
+          # identity is planned only with its required input present. Gated on the
+          # repo variable, not a literal, so the list above does not need editing
+          # once the owner sets it. Warns only when this PR actually touches the stack.
+          if [ -z "${BREAK_GLASS_UPN_DOMAIN:-}" ]; then
+            NOT_PLANNABLE="$NOT_PLANNABLE identity"
+            if echo "$CHANGED" | grep -q '^live/identity/'; then
+              echo "::warning::live/identity changed but repo variable BREAK_GLASS_UPN_DOMAIN is unset (the tenant's onmicrosoft domain). The identity plan is SKIPPED until the owner sets it."
+            fi
+          fi
 
           SKIPPED=""
           PLANNABLE=""
@@ -298,6 +311,19 @@ jobs:
       matrix:
         stack: ${{ fromJson(needs.detect.outputs.stacks) }}
 
+    # Azure (live/identity only): plan-only, with the READ identity. There is no
+    # Azure login step: with ARM_USE_OIDC=true the azurerm and azuread providers and
+    # the azurerm backend exchange this job's GitHub OIDC token (id-token: write
+    # above) for an Entra token themselves. Every other stack gets empty values.
+    # This identity holds Blob Data READER only, hence -lock=false on the plan.
+    # The APPLY identity (AZURE_CLIENT_ID) is never referenced here, and no apply job
+    # runs live/identity.
+    env:
+      ARM_USE_OIDC:        ${{ matrix.stack == 'identity' && 'true' || '' }}
+      ARM_CLIENT_ID:       ${{ matrix.stack == 'identity' && vars.AZURE_CLIENT_ID_READ || '' }}
+      ARM_TENANT_ID:       ${{ matrix.stack == 'identity' && vars.AZURE_TENANT_ID || '' }}
+      ARM_SUBSCRIPTION_ID: ${{ matrix.stack == 'identity' && vars.AZURE_SUBSCRIPTION_ID || '' }}
+
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -373,6 +399,13 @@ jobs:
           TF_VAR_adaptive_metrics_api_key: ${{ matrix.stack == 'adaptive-metrics' && secrets.GRAFANA_ADAPTIVE_METRICS_API_TOKEN || '' }}
           TF_VAR_adaptive_metrics_url:   ${{ matrix.stack == 'adaptive-metrics' && vars.AM_METRICS_URL || '' }}
           TF_VAR_healthchecks_api_token: ${{ matrix.stack == 'observability-alerting' && secrets.HEALTHCHECKS_API_TOKEN || '' }}
+          # identity (live/identity/variables.tf, break_glass.tf). The budget window is
+          # not a secret; it must match the live budget in Azure exactly. BREAK_GLASS_UPN_DOMAIN
+          # is the tenant's onmicrosoft domain; detect skips this stack while it is unset.
+          TF_VAR_subscription_id:        ${{ matrix.stack == 'identity' && vars.AZURE_SUBSCRIPTION_ID || '' }}
+          TF_VAR_budget_period_start:    ${{ matrix.stack == 'identity' && '2026-10-01T00:00:00Z' || '' }}
+          TF_VAR_budget_period_end:      ${{ matrix.stack == 'identity' && '2028-09-30T00:00:00Z' || '' }}
+          TF_VAR_break_glass_upn_domain: ${{ matrix.stack == 'identity' && vars.BREAK_GLASS_UPN_DOMAIN || '' }}
 
       # TASK 0.3 / §17b — refuse a plan that would lose data, before anyone reads
       # it. Runs BEFORE the plan comment on purpose: if the answer is "this deletes
