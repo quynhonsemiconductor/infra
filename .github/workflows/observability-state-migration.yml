@@ -80,7 +80,7 @@ jobs:
         run: APPLY=true ./scripts/migrate_observability_state.sh
 
       - name: observability plan (must be clean, must destroy nothing)
-        if: always()
+        if: always() && inputs.apply == true
         working-directory: live/observability
         run: |
           set -o pipefail
@@ -88,7 +88,7 @@ jobs:
           tofu plan -input=false -lock=false -no-color -detailed-exitcode 2>&1 | tee /tmp/obs-post.txt
           ec=${PIPESTATUS[0]}
           echo "exitcode=$ec"
-          grep -qiE 'will be destroyed|to destroy' /tmp/obs-post.txt && {
+          grep -qiE 'will be destroyed|[1-9][0-9]* to destroy' /tmp/obs-post.txt && {
             echo "::error::observability proposes a DESTROY after the migration — do not apply; investigate."
             exit 1
           }

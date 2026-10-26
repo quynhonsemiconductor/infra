@@ -127,13 +127,13 @@ rc=$?
 set -e
 case $rc in
   0) echo "  empty plan — the imported objects match the committed configuration" ;;
-  2) tail -40 /tmp/obs-plan.txt
+  2) tail -40 /tmp/obs-plan.txt | sed -E 's/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/<redacted>/g'
      die "the plan is NOT empty. STOPPING BEFORE ANY state rm, so nothing is lost.
   A diff here means the committed configuration disagrees with what is live in
   Grafana — drift this split has just made visible. Resolve it deliberately: either
   correct the configuration to match, or decide the live object is wrong and let the
   plan change it. Then re-run." ;;
-  *) tail -40 /tmp/obs-plan.txt; die "the plan errored (exit $rc). Nothing removed." ;;
+  *) tail -40 /tmp/obs-plan.txt | sed -E 's/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/<redacted>/g'; die "the plan errored (exit $rc). Nothing removed." ;;
 esac
 
 say "4. Removing them from $FROM_DIR's state"
@@ -144,11 +144,11 @@ set +e
 ( cd "$FROM_DIR" && tofu plan -input=false -lock=false -detailed-exitcode -no-color >/tmp/obs-old-plan.txt 2>&1 )
 rc=$?
 set -e
-grep -qiE '^\s*#.*will be destroyed|to destroy' /tmp/obs-old-plan.txt && {
-  tail -40 /tmp/obs-old-plan.txt
+grep -qiE '^\s*#.*will be destroyed|[1-9][0-9]* to destroy' /tmp/obs-old-plan.txt && {
+  tail -40 /tmp/obs-old-plan.txt | sed -E 's/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/<redacted>/g'
   die "the old stack now proposes a DESTROY. Do not apply. Investigate before proceeding."
 }
-[ $rc -ne 1 ] || { tail -40 /tmp/obs-old-plan.txt; die "the old stack's plan errored"; }
+[ $rc -ne 1 ] || { tail -40 /tmp/obs-old-plan.txt | sed -E 's/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/<redacted>/g'; die "the old stack's plan errored"; }
 
 say "Done."
 cat <<'EOF'
