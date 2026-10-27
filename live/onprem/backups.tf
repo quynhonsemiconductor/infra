@@ -57,10 +57,11 @@ resource "cloudflare_r2_bucket_lock" "qnsc_backups" {
     },
     {
       # CUTOVER B9: the Phase-1 gate writes here to PROVE barman-cloud
-      # WAL/base backups survive a Bucket Lock. Lifecycle for this prefix
-      # (15 d, just above the lock) is in the lifecycle resource below.
+      # WAL/base backups survive a Bucket Lock. Own TOP-LEVEL prefix on
+      # purpose: under gate/ the 7-day gate/ lifecycle rule would shadow
+      # the 15-day delete below (both rules match, earliest wins).
       id      = "lock-gate-locked-test-14d"
-      prefix  = "gate/locked-test/"
+      prefix  = "gate-locked-test/"
       enabled = true
       condition = {
         type            = "Age"
@@ -107,6 +108,8 @@ resource "cloudflare_r2_bucket_lifecycle" "qnsc_backups" {
       }
     },
     {
+      # write-once in practice: the 14 d lock on files/ makes any rewrite
+      # impossible until expiry — uploads are append-only by key.
       id      = "files"
       enabled = true
       conditions = {
@@ -133,6 +136,8 @@ resource "cloudflare_r2_bucket_lifecycle" "qnsc_backups" {
       conditions = {
         prefix = "gate/"
       }
+      # gate-locked-test/ does NOT match this prefix (different top-level
+      # segment), so the 15-day rule below is not shadowed by this 7-day one.
       delete_objects_transition = {
         condition = { type = "Age", max_age = 604800 }
       }
@@ -143,7 +148,7 @@ resource "cloudflare_r2_bucket_lifecycle" "qnsc_backups" {
       id      = "gate-locked-test"
       enabled = true
       conditions = {
-        prefix = "gate/locked-test/"
+        prefix = "gate-locked-test/"
       }
       delete_objects_transition = {
         condition = { type = "Age", max_age = 1296000 } # 15 d
