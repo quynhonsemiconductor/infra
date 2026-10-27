@@ -171,19 +171,18 @@ jobs:
           # Keeping the exclusions named in code rather than dropping the
           # derivation: any NEW stack is planned by default, and each gap is named
           # here instead of being absent from a list nobody compared to anything.
-          # identity / onprem (added 2026-10-20, Phase-1 skeletons): the Azure
-          #                       subscription and stqnsctfstate do not exist yet
-          #                       (pre-work (e)), and onprem additionally needs a
-          #                       Cloudflare token with Tunnel scope. init would
-          #                       fail on the azurerm backend for both. Remove
-          #                       from this list in the PR that applies them first.
+          # identity (added 2026-10-20, Phase-1 skeleton): stays here on purpose,
+          #                       see below. onprem was here too (same origin);
+          #                       it LEFT with the Azure OIDC wiring below (the
+          #                       owner seeded the stqnsctfstate blob and added
+          #                       the Cloudflare Tunnel scopes to both tokens).
           # `adaptive-metrics` WAS in this list (its provider calls the AM API at configure,
           # 401 without the token). Included 2026-10-25: the owner added
           # GRAFANA_ADAPTIVE_METRICS_API_TOKEN (access policy terraform-adaptive-metrics,
           # realm qnsc, scope adaptive-metrics-config:read+write) and repo variable
           # AM_METRICS_URL. It is planned here and applied by the apply-adaptive-metrics job.
           # identity stays here on purpose: owner-only plan/apply (public repo; plan output would expose break-glass UPNs and the Entra role layout).
-          NOT_PLANNABLE="observability organization identity onprem"
+          NOT_PLANNABLE="observability organization identity"
 
           SKIPPED=""
           PLANNABLE=""
@@ -322,20 +321,46 @@ jobs:
           # Read-only: the installation can write org-wide; this job only reads modules.
           permission-contents: read
 
+      # AWS OIDC for the S3-backend stacks. live/onprem is the exception: its
+      # backend is the azurerm one (stqnsctfstate, Entra auth), so it gets NO AWS
+      # credentials — just tofu, then the ARM_* environment on its steps below
+      # (the read identity vars.AZURE_CLIENT_ID_READ; NO `environment:` here, its
+      # OIDC subjects are pull_request/main, see the job-level note).
       - uses: quynhonsemiconductor/ci/actions/setup-tofu-aws@691668f7a1bd4f4a3416f9224ae7ff7ebe831a3a # v1.23.0
+        if: matrix.stack != 'onprem'
         with:
           role-arn:     arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/qnsc-github-infra-plan
           aws-region:   ${{ env.AWS_REGION }}
           tofu-version: ${{ env.TOFU_VERSION }}
           git-token:    ${{ steps.module-token.outputs.token }}
 
+      - uses: quynhonsemiconductor/ci/actions/iac-lint@691668f7a1bd4f4a3416f9224ae7ff7ebe831a3a # v1.23.0
+        if: matrix.stack == 'onprem'
+        with:
+          tofu-version: ${{ env.TOFU_VERSION }}
+          fmt: 'false'   # install only — the gates run in the fmt job
+
       - name: tofu init
         working-directory: live/${{ matrix.stack }}
         run: tofu init -input=false
+        env:
+          # The `&& … || ''` ternary renders an EMPTY STRING, not an unset
+          # variable — harmless here (the azurerm backend and the cloudflare
+          # provider only run for onprem), but do not read "" as "absent".
+          ARM_CLIENT_ID:       ${{ matrix.stack == 'onprem' && vars.AZURE_CLIENT_ID_READ || '' }}
+          ARM_TENANT_ID:       ${{ matrix.stack == 'onprem' && vars.ENTRA_TENANT_ID || '' }}
+          ARM_USE_OIDC:        ${{ matrix.stack == 'onprem' && 'true' || '' }}
 
       - name: tofu validate
         working-directory: live/${{ matrix.stack }}
         run: tofu validate
+        env:
+          # The `&& … || ''` ternary renders an EMPTY STRING, not an unset
+          # variable — harmless here (the azurerm backend and the cloudflare
+          # provider only run for onprem), but do not read "" as "absent".
+          ARM_CLIENT_ID:       ${{ matrix.stack == 'onprem' && vars.AZURE_CLIENT_ID_READ || '' }}
+          ARM_TENANT_ID:       ${{ matrix.stack == 'onprem' && vars.ENTRA_TENANT_ID || '' }}
+          ARM_USE_OIDC:        ${{ matrix.stack == 'onprem' && 'true' || '' }}
 
       - name: tofu plan
         id: plan
@@ -359,6 +384,11 @@ jobs:
             | tee plan.txt
           echo "exitcode=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
         env:
+          # Azure OIDC for the onprem azurerm backend (read identity — this job
+          # plans lock-free, so write access is never needed).
+          ARM_CLIENT_ID:       ${{ matrix.stack == 'onprem' && vars.AZURE_CLIENT_ID_READ || '' }}
+          ARM_TENANT_ID:       ${{ matrix.stack == 'onprem' && vars.ENTRA_TENANT_ID || '' }}
+          ARM_USE_OIDC:        ${{ matrix.stack == 'onprem' && 'true' || '' }}
           # Stack-specific inputs. Vars a stack doesn't declare are ignored
           # (tofu just warns), so passing the full set to every stack is safe.
           TF_VAR_cloudflare_zone_id:    ${{ vars.CLOUDFLARE_ZONE_ID }}
@@ -382,6 +412,14 @@ jobs:
           TF_VAR_adaptive_metrics_api_key: ${{ matrix.stack == 'adaptive-metrics' && secrets.GRAFANA_ADAPTIVE_METRICS_API_TOKEN || '' }}
           TF_VAR_adaptive_metrics_url:   ${{ matrix.stack == 'adaptive-metrics' && vars.AM_METRICS_URL || '' }}
           TF_VAR_healthchecks_api_token: ${{ matrix.stack == 'observability-alerting' && secrets.HEALTHCHECKS_API_TOKEN || '' }}
+          # live/onprem — scoped to its matrix entry like adaptive-metrics above.
+          # SECRETS, not vars: they are passed through TF_VAR_ into plan logs and
+          # the PR plan comment, and a var's value is not masked. #236 marks the
+          # hostnames sensitive in the stack, and there is no admin_private_ip
+          # variable anymore.
+          TF_VAR_admin_private_cidr:     ${{ matrix.stack == 'onprem' && secrets.ADMIN_PRIVATE_CIDR || '' }}
+          TF_VAR_admin_pve_hostname:     ${{ matrix.stack == 'onprem' && secrets.ADMIN_PVE_HOSTNAME || '' }}
+          TF_VAR_admin_pbs_hostname:     ${{ matrix.stack == 'onprem' && secrets.ADMIN_PBS_HOSTNAME || '' }}
 
       # TASK 0.3 / §17b — refuse a plan that would lose data, before anyone reads
       # it. Runs BEFORE the plan comment on purpose: if the answer is "this deletes

@@ -88,7 +88,7 @@ jobs:
           # 2026-09-20 split removed, so every plan fails with "Provider configuration not present ... (orphan)"), and an all-stacks run
           # that includes it is red every time. A change under live/observability/ still selects it below, so that remains visible.
           # Put it back in this list with the state migration: docs/runbooks/observability-state-migration.md.
-          ALL='"bootstrap","security-baseline","runtime-dev","runtime-prod","edge","storage-dev","storage-prod","observability-alerting","adaptive-metrics"'
+          ALL='"bootstrap","security-baseline","runtime-dev","runtime-prod","edge","storage-dev","storage-prod","observability-alerting","adaptive-metrics","onprem"'
           # Manual dispatch or an unknown/zero base commit → apply everything.
           if [ -z "${BEFORE:-}" ] || [[ "$BEFORE" =~ ^0+$ ]] || ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
             echo "stacks=[$ALL]" >> "$GITHUB_OUTPUT"; exit 0
@@ -99,7 +99,7 @@ jobs:
             echo "stacks=[$ALL]" >> "$GITHUB_OUTPUT"; exit 0
           fi
           SEL=""
-          for s in bootstrap security-baseline runtime-dev runtime-prod edge storage-dev storage-prod observability observability-alerting adaptive-metrics; do
+          for s in bootstrap security-baseline runtime-dev runtime-prod edge storage-dev storage-prod observability observability-alerting adaptive-metrics onprem; do
             if echo "$CHANGED" | grep -qE "^live/$s/"; then SEL="$SEL\"$s\","; fi
           done
           echo "stacks=[${SEL%,}]" >> "$GITHUB_OUTPUT"
@@ -117,7 +117,7 @@ jobs:
           UNMANAGED=""
           for d in $(find live -name '*.tf' -not -path '*/.terraform/*' -exec dirname {} \; \
                        | sed 's|^live/||' | sort -u); do
-            case " bootstrap security-baseline runtime-dev runtime-prod edge storage-dev storage-prod observability observability-alerting adaptive-metrics " in
+            case " bootstrap security-baseline runtime-dev runtime-prod edge storage-dev storage-prod observability observability-alerting adaptive-metrics onprem " in
               *" $d "*) ;;
               *) UNMANAGED="$UNMANAGED $d" ;;
             esac
@@ -578,6 +578,93 @@ jobs:
         env:
           TF_VAR_adaptive_metrics_url:   ${{ vars.AM_METRICS_URL }}
           TF_VAR_adaptive_metrics_api_key: ${{ secrets.GRAFANA_ADAPTIVE_METRICS_API_TOKEN }}
+
+  # live/onprem — the on-prem doors (Cloudflare Tunnels). Azure OIDC ONLY: the
+  # azurerm backend (stqnsctfstate, Entra auth) and the cloudflare provider; the
+  # stack holds no AWS resources, so no AWS role is assumed here. The apply
+  # identity (vars.AZURE_CLIENT_ID) federates ONLY the `production` environment,
+  # which is why this job pins environment: production — its required reviewers
+  # are the human gate (the plan output is the PR review).
+  apply-onprem:
+    name: Apply onprem
+    needs: [detect]
+    if: ${{ contains(fromJson(needs.detect.outputs.stacks), 'onprem') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production   # PROTECT with required reviewers — the apply identity's OIDC subject
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: read   # destructive-guard reads the PR labels
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      # tofu only — no setup-tofu-aws: this stack never touches AWS, so the job
+      # must not hold AWS credentials it cannot use.
+      - uses: quynhonsemiconductor/ci/actions/iac-lint@691668f7a1bd4f4a3416f9224ae7ff7ebe831a3a # v1.23.0
+        with:
+          tofu-version: ${{ env.TOFU_VERSION }}
+          fmt: 'false'   # install only — the gates run in the plan workflow
+
+      - name: tofu init
+        working-directory: live/onprem
+        run: tofu init -input=false
+        env:
+          # The APPLY identity — environment:production above makes the OIDC
+          # subject match its federation. Apply keeps state LOCKING (unlike the
+          # lock-free plan/drift paths).
+          ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
+          ARM_USE_OIDC:        'true'
+
+      - name: tofu plan
+        id: plan
+        working-directory: live/onprem
+        run: |
+          set +e
+          tofu plan -input=false -detailed-exitcode -out tfplan -no-color 2>&1 | tee plan.txt
+          ec=${PIPESTATUS[0]}
+          echo "tofu plan detailed exit code: $ec (0=no change, 2=changes, 1=error)"
+          echo "exitcode=$ec" >> "$GITHUB_OUTPUT"
+          if [ "$ec" = "1" ]; then exit 1; fi
+        env:
+          ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
+          ARM_USE_OIDC:        'true'
+          TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          TF_VAR_cloudflare_api_token:  ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TF_VAR_admin_private_cidr:    ${{ secrets.ADMIN_PRIVATE_CIDR }}
+          TF_VAR_admin_pve_hostname:    ${{ secrets.ADMIN_PVE_HOSTNAME }}
+          TF_VAR_admin_pbs_hostname:    ${{ secrets.ADMIN_PBS_HOSTNAME }}
+
+      - name: Refuse destructive DNS / identity changes
+        if: steps.plan.outputs.exitcode == '2'
+        uses: quynhonsemiconductor/ci/actions/destructive-guard@691668f7a1bd4f4a3416f9224ae7ff7ebe831a3a # v1.23.0
+        with:
+          working-directory: live/onprem
+          dispatch-allow: ${{ inputs.allow_destructive }}
+
+      - name: tofu apply
+        if: steps.plan.outputs.exitcode == '2'
+        working-directory: live/onprem
+        run: |
+          set -o pipefail
+          tofu apply -input=false tfplan 2>&1 | tee apply.txt
+          ec=${PIPESTATUS[0]}
+          echo "tofu apply exit: $ec"
+          exit "$ec"
+        env:
+          ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
+          ARM_USE_OIDC:        'true'
+          TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          TF_VAR_cloudflare_api_token:  ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TF_VAR_admin_private_cidr:    ${{ secrets.ADMIN_PRIVATE_CIDR }}
+          TF_VAR_admin_pve_hostname:    ${{ secrets.ADMIN_PVE_HOSTNAME }}
+          TF_VAR_admin_pbs_hostname:    ${{ secrets.ADMIN_PBS_HOSTNAME }}
 
   apply-runtime-prod:
     name: Apply runtime-prod
