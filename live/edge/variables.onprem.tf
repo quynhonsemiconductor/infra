@@ -5,11 +5,13 @@
 
 variable "admin_hostnames" {
   type        = list(string)
+  sensitive   = true # public repo: real values (product-docs runbook §12.1) leak in plan text / PR comments otherwise
   description = "Door-2 hostnames (pve/pbs). TF_VAR_admin_hostnames (repo variable, JSON list)."
 }
 
 variable "cutover_hosts" {
   type        = list(string)
+  sensitive   = true # public repo: real values (product-docs runbook §12.1) leak in plan text / PR comments otherwise
   description = "App hosts whose DNS + Workers routes are LIVE. One host is added per product move PR apply; [] until then (rova prod stays on AWS). TF_VAR_cutover_hosts."
 }
 
