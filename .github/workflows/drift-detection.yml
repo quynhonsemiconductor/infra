@@ -98,6 +98,11 @@ jobs:
           # AM_METRICS_URL exist); see live/adaptive-metrics/main.tf for why this
           # stack was previously excluded from planning entirely.
           - adaptive-metrics
+          # The on-prem doors: azurerm backend (Entra OIDC, read identity), not
+          # the S3 one — the ARM_* env blocks below carry it and the AWS setup
+          # step is skipped for this stack. Talks to Cloudflare, so the read-only
+          # token check applies (contains lists updated with it).
+          - onprem
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -115,19 +120,33 @@ jobs:
           permission-contents: read
 
       # Read-only role, same as infra-plan. A detector never needs write credentials.
+      # live/onprem skips AWS entirely (azurerm backend, Entra OIDC below).
       - uses: quynhonsemiconductor/ci/actions/setup-tofu-aws@691668f7a1bd4f4a3416f9224ae7ff7ebe831a3a # v1.23.0
+        if: matrix.stack != 'onprem'
         with:
           role-arn:     arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/qnsc-github-infra-plan
           aws-region:   ${{ env.AWS_REGION }}
           tofu-version: ${{ env.TOFU_VERSION }}
           git-token:    ${{ steps.module-token.outputs.token }}
 
+      - uses: quynhonsemiconductor/ci/actions/iac-lint@691668f7a1bd4f4a3416f9224ae7ff7ebe831a3a # v1.23.0
+        if: matrix.stack == 'onprem'
+        with:
+          tofu-version: ${{ env.TOFU_VERSION }}
+          fmt: 'false'   # install only
+
       - name: tofu init
         working-directory: live/${{ matrix.stack }}
         run: tofu init -input=false
+        env:
+          # Read identity, lock-free below: a detector never writes state.
+          ARM_CLIENT_ID:       ${{ matrix.stack == 'onprem' && vars.AZURE_CLIENT_ID_READ || '' }}
+          ARM_TENANT_ID:       ${{ matrix.stack == 'onprem' && vars.ENTRA_TENANT_ID || '' }}
+          ARM_SUBSCRIPTION_ID: ${{ matrix.stack == 'onprem' && vars.AZURE_SUBSCRIPTION_ID || '' }}
+          ARM_USE_OIDC:        ${{ matrix.stack == 'onprem' && 'true' || '' }}
 
       - name: Require the read-only Cloudflare token
-        if: ${{ contains(fromJSON('["edge","storage-dev","storage-prod"]'), matrix.stack) }}
+        if: ${{ contains(fromJSON('["edge","storage-dev","storage-prod","onprem"]'), matrix.stack) }}
         env:
           HAVE_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN_READONLY != '' }}
         run: |
@@ -146,12 +165,17 @@ jobs:
           TF_VAR_cloudflare_zone_id:    ${{ vars.CLOUDFLARE_ZONE_ID }}
           TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           # Read-only token, and only for the stacks that talk to Cloudflare. Empty elsewhere on purpose.
-          TF_VAR_cloudflare_api_token:  ${{ contains(fromJSON('["edge","storage-dev","storage-prod"]'), matrix.stack) && secrets.CLOUDFLARE_API_TOKEN_READONLY || '' }}
+          TF_VAR_cloudflare_api_token:  ${{ contains(fromJSON('["edge","storage-dev","storage-prod","onprem"]'), matrix.stack) && secrets.CLOUDFLARE_API_TOKEN_READONLY || '' }}
           # adaptive-metrics: the provider configures by calling the AM API, so the
           # nightly plan needs the token + URL here too (matrix-scoped, same form
           # as infra-plan.yml). Empty for every other stack.
           TF_VAR_adaptive_metrics_url:   ${{ matrix.stack == 'adaptive-metrics' && vars.AM_METRICS_URL || '' }}
           TF_VAR_adaptive_metrics_api_key: ${{ matrix.stack == 'adaptive-metrics' && secrets.GRAFANA_ADAPTIVE_METRICS_API_TOKEN || '' }}
+          # onprem: Azure OIDC (read identity) for the azurerm backend.
+          ARM_CLIENT_ID:       ${{ matrix.stack == 'onprem' && vars.AZURE_CLIENT_ID_READ || '' }}
+          ARM_TENANT_ID:       ${{ matrix.stack == 'onprem' && vars.ENTRA_TENANT_ID || '' }}
+          ARM_SUBSCRIPTION_ID: ${{ matrix.stack == 'onprem' && vars.AZURE_SUBSCRIPTION_ID || '' }}
+          ARM_USE_OIDC:        ${{ matrix.stack == 'onprem' && 'true' || '' }}
         run: |
           set +e
           tofu plan -refresh-only -input=false -lock=false -no-color -detailed-exitcode -out=refresh.tfplan 2>&1 | tee refresh.txt
@@ -164,12 +188,22 @@ jobs:
           TF_VAR_cloudflare_zone_id:    ${{ vars.CLOUDFLARE_ZONE_ID }}
           TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           # Read-only token, and only for the stacks that talk to Cloudflare. Empty elsewhere on purpose.
-          TF_VAR_cloudflare_api_token:  ${{ contains(fromJSON('["edge","storage-dev","storage-prod"]'), matrix.stack) && secrets.CLOUDFLARE_API_TOKEN_READONLY || '' }}
+          TF_VAR_cloudflare_api_token:  ${{ contains(fromJSON('["edge","storage-dev","storage-prod","onprem"]'), matrix.stack) && secrets.CLOUDFLARE_API_TOKEN_READONLY || '' }}
           # adaptive-metrics: the provider configures by calling the AM API, so the
           # nightly plan needs the token + URL here too (matrix-scoped, same form
           # as infra-plan.yml). Empty for every other stack.
           TF_VAR_adaptive_metrics_url:   ${{ matrix.stack == 'adaptive-metrics' && vars.AM_METRICS_URL || '' }}
           TF_VAR_adaptive_metrics_api_key: ${{ matrix.stack == 'adaptive-metrics' && secrets.GRAFANA_ADAPTIVE_METRICS_API_TOKEN || '' }}
+          # onprem: Azure OIDC (read identity) for the azurerm backend, plus the
+          # stack's inputs (same vars the apply job uses).
+          ARM_CLIENT_ID:       ${{ matrix.stack == 'onprem' && vars.AZURE_CLIENT_ID_READ || '' }}
+          ARM_TENANT_ID:       ${{ matrix.stack == 'onprem' && vars.ENTRA_TENANT_ID || '' }}
+          ARM_SUBSCRIPTION_ID: ${{ matrix.stack == 'onprem' && vars.AZURE_SUBSCRIPTION_ID || '' }}
+          ARM_USE_OIDC:        ${{ matrix.stack == 'onprem' && 'true' || '' }}
+          TF_VAR_admin_private_cidr: ${{ matrix.stack == 'onprem' && vars.ADMIN_PRIVATE_CIDR || '' }}
+          TF_VAR_admin_private_ip:   ${{ matrix.stack == 'onprem' && vars.ADMIN_PRIVATE_IP || '' }}
+          TF_VAR_admin_pve_hostname: ${{ matrix.stack == 'onprem' && vars.ADMIN_PVE_HOSTNAME || '' }}
+          TF_VAR_admin_pbs_hostname: ${{ matrix.stack == 'onprem' && vars.ADMIN_PBS_HOSTNAME || '' }}
         run: |
           set +e
           tofu plan -input=false -lock=false -no-color -detailed-exitcode 2>&1 | tee plan.txt
