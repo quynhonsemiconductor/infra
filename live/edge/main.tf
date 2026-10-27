@@ -103,15 +103,12 @@ resource "aws_acm_certificate" "wildcard" {
 }
 
 resource "cloudflare_dns_record" "acm_validation" {
-  # `fqdn` is kept in the map because provider v5 dropped the `hostname`
-  # attribute (aws_acm_certificate_validation needs the full record name).
   for_each = {
     for dvo in aws_acm_certificate.wildcard.domain_validation_options :
     dvo.domain_name => {
       name    = trimsuffix(dvo.resource_record_name, ".")
       type    = dvo.resource_record_type
       content = trimsuffix(dvo.resource_record_value, ".")
-      fqdn    = trimsuffix(dvo.resource_record_name, ".")
     }
   }
 
@@ -140,7 +137,7 @@ resource "cloudflare_dns_record" "acm_validation" {
 
 resource "aws_acm_certificate_validation" "wildcard" {
   certificate_arn         = aws_acm_certificate.wildcard.arn
-  validation_record_fqdns = [for r in cloudflare_dns_record.acm_validation : r.value.fqdn]
+  validation_record_fqdns = [for r in cloudflare_dns_record.acm_validation : r.name]
 }
 
 # =============================================================================

@@ -4,9 +4,15 @@
 # hostname values are recorded in product-docs (runbook §12.1), never here.
 
 variable "admin_hostnames" {
-  type        = list(string)
+  type        = map(string)
   sensitive   = true # public repo: real values (product-docs runbook §12.1) leak in plan text / PR comments otherwise
-  description = "Door-2 hostnames (pve/pbs). TF_VAR_admin_hostnames (repo variable, JSON list)."
+  description = <<-EOT
+    Door-2 hostnames (pve/pbs): STATIC LABEL -> hostname map. Labels are the only part that appears in
+    resource addresses; the values stay sensitive end to end (tofu forbids iterating a sensitive value,
+    so for_each runs over the labels and the hostname lands in sensitive attributes only).
+    TF_VAR_admin_hostnames (repo variable, JSON object, e.g. {"pve": "<hostname>", "pbs": "<hostname>"}).
+    Labels are load-bearing: they are state addresses, so never rename one without a `tofu state mv`.
+  EOT
 }
 
 variable "cutover_hosts" {

@@ -56,10 +56,9 @@ data "cloudflare_zero_trust_tunnel_cloudflared" "qnsc_admin" {
 # its move PR's apply; the Pages/legacy records for it are imported and
 # removed in the SAME apply (no CNAME conflict, no early switch).
 # ttl = 1 (automatic): required in v5 and the only valid value while proxied.
-# nonsensitive() unwraps ONLY the for_each keys / membership tests: the keys
-# (hostnames) are already public in plan addresses and this file, and tofu
-# refuses to iterate a sensitive value. The sensitive flag is what keeps the
-# VALUES out of plan text and PR comments.
+# nonsensitive() only unwraps the cutover MEMBERSHIP test: its values are the
+# same hostnames already public in local.app_hosts above; tofu refuses to
+# touch a sensitive value in for_each.
 resource "cloudflare_dns_record" "app_hosts" {
   for_each = { for h, v in local.app_hosts : h => v if var.tunnels_exist && contains(nonsensitive(var.cutover_hosts), h) }
 
@@ -69,17 +68,40 @@ resource "cloudflare_dns_record" "app_hosts" {
   content = "${data.cloudflare_zero_trust_tunnel_cloudflared.qnsc_apps[0].id}.cfargotunnel.com"
   ttl     = 1
   proxied = true
+
+  lifecycle {
+    # Destroying the admin door's DNS takes the operator door offline until a manual re-create.
+    prevent_destroy = true # see docs/incidents/2026-10-09-edge-dns.md
+
+    precondition {
+      condition     = can(regex("^[0-9a-f]{32}$", var.cloudflare_zone_id))
+      error_message = "cloudflare_zone_id must be the 32-hex-character zone id of qnsc.vn: this resource's zone_id forces REPLACEMENT, so a null or empty value would destroy it."
+    }
+  }
 }
 
+# Admin doors → the qnsc-admin tunnel. for_each runs over the LABELS of
+# var.admin_hostnames (the only non-sensitive part); the hostname is a
+# sensitive attribute value, so plan text shows "(sensitive value)", never
+# the door hostname.
 resource "cloudflare_dns_record" "admin_hosts" {
-  for_each = toset(var.tunnels_exist ? nonsensitive(var.admin_hostnames) : [])
+  for_each = toset(var.tunnels_exist ? nonsensitive(keys(var.admin_hostnames)) : [])
 
   zone_id = var.cloudflare_zone_id
-  name    = each.value
+  name    = var.admin_hostnames[each.value]
   type    = "CNAME"
   content = "${data.cloudflare_zero_trust_tunnel_cloudflared.qnsc_admin[0].id}.cfargotunnel.com"
   ttl     = 1
   proxied = true
+
+  lifecycle {
+    prevent_destroy = true # see docs/incidents/2026-10-09-edge-dns.md
+
+    precondition {
+      condition     = can(regex("^[0-9a-f]{32}$", var.cloudflare_zone_id))
+      error_message = "cloudflare_zone_id must be the 32-hex-character zone id of qnsc.vn: this resource's zone_id forces REPLACEMENT, so a null or empty value would destroy it."
+    }
+  }
 }
 
 # ── Access (v5 shape) ────────────────────────────────────────────────────────
@@ -107,14 +129,15 @@ resource "cloudflare_zero_trust_access_identity_provider" "entra" {
 
 # Admin doors: Allow grp-qnsc-platform-admins requiring MFA. Interim until
 # FIDO2 keys exist: Entra Security Defaults + Authenticator still satisfies
-# amr=mfa. Session ≤ 8 h.
+# amr=mfa. Session ≤ 8 h. Addresses are keyed on the admin_hostnames LABELS;
+# the hostnames are sensitive attribute values.
 resource "cloudflare_zero_trust_access_application" "admin" {
-  for_each = toset(nonsensitive(var.admin_hostnames))
+  for_each = toset(nonsensitive(keys(var.admin_hostnames)))
 
   account_id       = var.cloudflare_account_id
   type             = "self_hosted" # v5: no default — required for session_duration
-  name             = each.value
-  domain           = "${each.value}/*"
+  name             = var.admin_hostnames[each.key]
+  domain           = "${var.admin_hostnames[each.key]}/*"
   session_duration = "8h"
   allowed_idps     = [cloudflare_zero_trust_access_identity_provider.entra.id]
 
@@ -122,10 +145,16 @@ resource "cloudflare_zero_trust_access_application" "admin" {
     id         = cloudflare_zero_trust_access_policy.admin_allow[each.key].id
     precedence = 1
   }]
+
+  lifecycle {
+    # Destroying the app drops Access from the operator door: the host is exposed (or, worse, the
+    # door appears missing) until a manual re-create. Replacements go through a reviewed change.
+    prevent_destroy = true
+  }
 }
 
 resource "cloudflare_zero_trust_access_policy" "admin_allow" {
-  for_each = toset(nonsensitive(var.admin_hostnames))
+  for_each = toset(nonsensitive(keys(var.admin_hostnames)))
 
   account_id       = var.cloudflare_account_id
   name             = "platform-admins-mfa"
@@ -141,6 +170,11 @@ resource "cloudflare_zero_trust_access_policy" "admin_allow" {
   require = [{
     auth_method = { auth_method = "mfa" }
   }]
+
+  lifecycle {
+    # Detaching the only allow policy on an admin door is the same exposure as deleting the app.
+    prevent_destroy = true
+  }
 }
 
 # Dev hosts: one Access app per host (§8.2), Allow grp-qnsc-developers —
