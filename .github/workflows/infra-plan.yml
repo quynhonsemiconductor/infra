@@ -344,18 +344,22 @@ jobs:
         working-directory: live/${{ matrix.stack }}
         run: tofu init -input=false
         env:
+          # The `&& … || ''` ternary renders an EMPTY STRING, not an unset
+          # variable — harmless here (the azurerm backend and the cloudflare
+          # provider only run for onprem), but do not read "" as "absent".
           ARM_CLIENT_ID:       ${{ matrix.stack == 'onprem' && vars.AZURE_CLIENT_ID_READ || '' }}
           ARM_TENANT_ID:       ${{ matrix.stack == 'onprem' && vars.ENTRA_TENANT_ID || '' }}
-          ARM_SUBSCRIPTION_ID: ${{ matrix.stack == 'onprem' && vars.AZURE_SUBSCRIPTION_ID || '' }}
           ARM_USE_OIDC:        ${{ matrix.stack == 'onprem' && 'true' || '' }}
 
       - name: tofu validate
         working-directory: live/${{ matrix.stack }}
         run: tofu validate
         env:
+          # The `&& … || ''` ternary renders an EMPTY STRING, not an unset
+          # variable — harmless here (the azurerm backend and the cloudflare
+          # provider only run for onprem), but do not read "" as "absent".
           ARM_CLIENT_ID:       ${{ matrix.stack == 'onprem' && vars.AZURE_CLIENT_ID_READ || '' }}
           ARM_TENANT_ID:       ${{ matrix.stack == 'onprem' && vars.ENTRA_TENANT_ID || '' }}
-          ARM_SUBSCRIPTION_ID: ${{ matrix.stack == 'onprem' && vars.AZURE_SUBSCRIPTION_ID || '' }}
           ARM_USE_OIDC:        ${{ matrix.stack == 'onprem' && 'true' || '' }}
 
       - name: tofu plan
@@ -381,12 +385,9 @@ jobs:
           echo "exitcode=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
         env:
           # Azure OIDC for the onprem azurerm backend (read identity — this job
-          # plans lock-free, so write access is never needed). ARM_SUBSCRIPTION_ID
-          # is the BACKEND's, not a resource input: the stack has no azurerm
-          # resources (the same value identity's README exports for its backend).
+          # plans lock-free, so write access is never needed).
           ARM_CLIENT_ID:       ${{ matrix.stack == 'onprem' && vars.AZURE_CLIENT_ID_READ || '' }}
           ARM_TENANT_ID:       ${{ matrix.stack == 'onprem' && vars.ENTRA_TENANT_ID || '' }}
-          ARM_SUBSCRIPTION_ID: ${{ matrix.stack == 'onprem' && vars.AZURE_SUBSCRIPTION_ID || '' }}
           ARM_USE_OIDC:        ${{ matrix.stack == 'onprem' && 'true' || '' }}
           # Stack-specific inputs. Vars a stack doesn't declare are ignored
           # (tofu just warns), so passing the full set to every stack is safe.
@@ -412,13 +413,13 @@ jobs:
           TF_VAR_adaptive_metrics_url:   ${{ matrix.stack == 'adaptive-metrics' && vars.AM_METRICS_URL || '' }}
           TF_VAR_healthchecks_api_token: ${{ matrix.stack == 'observability-alerting' && secrets.HEALTHCHECKS_API_TOKEN || '' }}
           # live/onprem — scoped to its matrix entry like adaptive-metrics above.
-          # ADMIN_PRIVATE_IP has no owner var listed in the seed steps; the plan
-          # fails with "required variable not set" until the owner adds it, which
-          # is the honest state pre-cluster.
-          TF_VAR_admin_private_cidr:     ${{ matrix.stack == 'onprem' && vars.ADMIN_PRIVATE_CIDR || '' }}
-          TF_VAR_admin_private_ip:       ${{ matrix.stack == 'onprem' && vars.ADMIN_PRIVATE_IP || '' }}
-          TF_VAR_admin_pve_hostname:     ${{ matrix.stack == 'onprem' && vars.ADMIN_PVE_HOSTNAME || '' }}
-          TF_VAR_admin_pbs_hostname:     ${{ matrix.stack == 'onprem' && vars.ADMIN_PBS_HOSTNAME || '' }}
+          # SECRETS, not vars: they are passed through TF_VAR_ into plan logs and
+          # the PR plan comment, and a var's value is not masked. #236 marks the
+          # hostnames sensitive in the stack, and there is no admin_private_ip
+          # variable anymore.
+          TF_VAR_admin_private_cidr:     ${{ matrix.stack == 'onprem' && secrets.ADMIN_PRIVATE_CIDR || '' }}
+          TF_VAR_admin_pve_hostname:     ${{ matrix.stack == 'onprem' && secrets.ADMIN_PVE_HOSTNAME || '' }}
+          TF_VAR_admin_pbs_hostname:     ${{ matrix.stack == 'onprem' && secrets.ADMIN_PBS_HOSTNAME || '' }}
 
       # TASK 0.3 / §17b — refuse a plan that would lose data, before anyone reads
       # it. Runs BEFORE the plan comment on purpose: if the answer is "this deletes

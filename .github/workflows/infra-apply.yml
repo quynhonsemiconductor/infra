@@ -618,7 +618,6 @@ jobs:
           # lock-free plan/drift paths).
           ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID }}
           ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
-          ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
           ARM_USE_OIDC:        'true'
 
       - name: tofu plan
@@ -634,14 +633,12 @@ jobs:
         env:
           ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID }}
           ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
-          ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
           ARM_USE_OIDC:        'true'
           TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           TF_VAR_cloudflare_api_token:  ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          TF_VAR_admin_private_cidr:    ${{ vars.ADMIN_PRIVATE_CIDR }}
-          TF_VAR_admin_private_ip:      ${{ vars.ADMIN_PRIVATE_IP }}
-          TF_VAR_admin_pve_hostname:    ${{ vars.ADMIN_PVE_HOSTNAME }}
-          TF_VAR_admin_pbs_hostname:    ${{ vars.ADMIN_PBS_HOSTNAME }}
+          TF_VAR_admin_private_cidr:    ${{ secrets.ADMIN_PRIVATE_CIDR }}
+          TF_VAR_admin_pve_hostname:    ${{ secrets.ADMIN_PVE_HOSTNAME }}
+          TF_VAR_admin_pbs_hostname:    ${{ secrets.ADMIN_PBS_HOSTNAME }}
 
       - name: Refuse destructive DNS / identity changes
         if: steps.plan.outputs.exitcode == '2'
@@ -662,14 +659,12 @@ jobs:
         env:
           ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID }}
           ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
-          ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
           ARM_USE_OIDC:        'true'
           TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           TF_VAR_cloudflare_api_token:  ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          TF_VAR_admin_private_cidr:    ${{ vars.ADMIN_PRIVATE_CIDR }}
-          TF_VAR_admin_private_ip:      ${{ vars.ADMIN_PRIVATE_IP }}
-          TF_VAR_admin_pve_hostname:    ${{ vars.ADMIN_PVE_HOSTNAME }}
-          TF_VAR_admin_pbs_hostname:    ${{ vars.ADMIN_PBS_HOSTNAME }}
+          TF_VAR_admin_private_cidr:    ${{ secrets.ADMIN_PRIVATE_CIDR }}
+          TF_VAR_admin_pve_hostname:    ${{ secrets.ADMIN_PVE_HOSTNAME }}
+          TF_VAR_admin_pbs_hostname:    ${{ secrets.ADMIN_PBS_HOSTNAME }}
 
   apply-runtime-prod:
     name: Apply runtime-prod
