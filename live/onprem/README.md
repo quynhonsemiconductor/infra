@@ -2,8 +2,11 @@
 
 The on-prem doors: the two Cloudflare Tunnels (`qnsc-apps`, `qnsc-admin`),
 their remotely-managed ingress config, and the backup targets.
-**Skeleton — applies nothing yet**: no state backend (no subscription) and no
-Cloudflare token with Tunnel scope.
+The state backend is wired (Azure: rg-qnsc-platform / stqnsctfstate / tfstate,
+OIDC — same backend as live/identity). What keeps it from a first apply is
+owner-side, not code: a Cloudflare token with Tunnel edit (see README "Token
+handling" below and the PR that adds the CI wiring) and the Azure OIDC app the
+CI plan/apply jobs log in with.
 
 ## Owns
 

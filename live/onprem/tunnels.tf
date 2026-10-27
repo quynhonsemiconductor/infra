@@ -22,9 +22,9 @@
 # The catch-all is the LAST rule with no hostname — anything unmatched gets
 # 404 at Cloudflare's edge, never a connection attempt at an origin.
 #
-# Applies nothing yet: no subscription (state backend), no Cloudflare tokens
-# with Tunnel scope (cf-ci-infra), and no cluster to point at. This file is
-# the Phase-1 preparation PR.
+# The state backend (Azure, stqnsctfstate) and the CI plan wiring land with
+# the stack's first CI-planned PR; the apply follows the owner's token-scope
+# check (see README). This file is the Phase-1 preparation PR.
 
 locals {
   qnsc_apps_ingress = [
@@ -149,7 +149,7 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_route" "qnsc_admin_lan" {
   account_id = var.cloudflare_account_id
   tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.qnsc_admin.id
   network    = var.admin_private_cidr
-  comment    = "office LAN via pve01 (${var.admin_private_ip})"
+  comment    = "office LAN via pve01"
 }
 
 # ── NOT in this stack yet (Phase 1, same directory, own PRs) ────────────────
