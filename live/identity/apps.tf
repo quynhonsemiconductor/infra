@@ -9,8 +9,12 @@
 #   - delegated only: openid/profile/email/offline_access/User.Read (KB also
 #     Files.Read.All + Sites.Read.All for its connectors). NEVER Mail.Send.
 #   - callbacks are SERVER-side code flows → web.redirect_uris only; dev
-#     loopbacks use the real local ports (rova 5175, opshub 5174, KB 8000)
-#     plus the KB connector callbacks.
+#     loopbacks use the org's fixed dev-stack ports from
+#     .github/docs/LOCAL-DEVELOPMENT.md (rova 5175, opshub 5174, KB 8000 —
+#     WEB_DEV_PORT overrides Vite's 5173 default; KB keeps its defaults)
+#     plus the KB connector callbacks
+#     (`/api/v1/auth/entra/callback`, src/api/routers/auth.py:2721;
+#     `/api/v1/connectors/oauth/callback`, src/api/routers/connectors.py:440).
 #   - client-secret VALUES never touch state (§7, main.tf): the owner rotates
 #     with scripts/rotate-signin-secret.sh (az ad app credential reset --append
 #     --end-date +6 months, piped straight into the vault, nothing printed)
