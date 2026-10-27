@@ -12,7 +12,12 @@ variable "cloudflare_api_token" {
 
 variable "admin_private_cidr" {
   type        = string
-  description = "The office LAN range the qnsc-admin tunnel may route to (door 2). Set in tfvars, never committed with a real value if it is sensitive; the default here is a placeholder."
+  sensitive   = true
+  description = "The office LAN range the qnsc-admin tunnel may route to (door 2). CI repo variable ADMIN_PRIVATE_CIDR; never committed with a real value."
+  validation {
+    condition     = can(cidrnetmask(var.admin_private_cidr))
+    error_message = "admin_private_cidr must be a CIDR (e.g. 10.0.0.0/24)."
+  }
 }
 
 variable "admin_pve_hostname" {

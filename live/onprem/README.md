@@ -3,10 +3,10 @@
 The on-prem doors: the two Cloudflare Tunnels (`qnsc-apps`, `qnsc-admin`),
 their remotely-managed ingress config, and the backup targets.
 The state backend is wired (Azure: rg-qnsc-platform / stqnsctfstate / tfstate,
-OIDC — same backend as live/identity). What keeps it from a first apply is
-owner-side, not code: a Cloudflare token with Tunnel edit (see README "Token
-handling" below and the PR that adds the CI wiring) and the Azure OIDC app the
-CI plan/apply jobs log in with.
+key infra/onprem/terraform.tfstate). The CI identities already exist: plan and
+drift run as **QNSC CI Infra Read**, apply as **QNSC CI Infra** (federated
+credential on stqnsctfstate). The only remaining blocker is the Cloudflare
+token scopes — see "Token handling" below.
 
 ## Owns
 
@@ -17,17 +17,26 @@ CI plan/apply jobs log in with.
   design; this file routes what falls through to the origin.
 - `qnsc-admin` — the operator door, systemd on pve01, private-network route to
   the office LAN only, gated by Access + Entra `amr=mfa` in live/edge.
-- Phase 1 (own PRs): `qnsc-backups` (R2, Bucket Lock + lifecycle) and
-  `stqnscbackup` (Azure, locked immutability) — written once the accounts
-  exist, never guessed from schema memory.
+- `qnsc-backups` (R2, Bucket Lock + lifecycle) already lives in backups.tf.
+- Phase 1 (own PR): `stqnscbackup` (Azure, locked immutability) — written
+  once the storage account exists, never guessed from schema memory.
 
 ## Token handling
 
 The tunnel resources keep NO secret in state (values never in state, §7).
-After apply, the owner reads the tunnel token and pipes it into
-`kv-qnsc-platform` as `platform-cloudflared-qnsc-apps` through stdin — never
-argv, never logs. The in-cluster cloudflared runs `tunnel run` with the token
-ESO syncs from that vault.
+NEVER use the provider's tunnel-token data source: it would pull the token
+into plan/state.
+
+- `qnsc-apps`: after apply, the owner reads the token —
+  `GET /accounts/{account_id}/cfd_tunnel/{tunnel_id}/token` — and pipes it
+  through stdin into `kv-qnsc-platform` as `platform-cloudflared-qnsc-apps`.
+  The in-cluster cloudflared runs `tunnel run` with the token ESO syncs from
+  that vault.
+- `qnsc-admin`: same retrieval, piped through stdin into
+  `kv-qnsc-admin` as `admin-cloudflared-qnsc-admin`; on pve01 the systemd
+  service reads it from `/etc/cloudflared/qnsc-admin.env`.
+
+Never argv, never logs.
 
 ## Why no in-cluster ingress exists
 

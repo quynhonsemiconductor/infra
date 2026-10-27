@@ -22,9 +22,9 @@
 # The catch-all is the LAST rule with no hostname — anything unmatched gets
 # 404 at Cloudflare's edge, never a connection attempt at an origin.
 #
-# The state backend (Azure, stqnsctfstate) and the CI plan wiring land with
-# the stack's first CI-planned PR; the apply follows the owner's token-scope
-# check (see README). This file is the Phase-1 preparation PR.
+# CI identity (plan/drift/apply) already exists; the remaining prerequisite
+# is the Cloudflare token scope (Account > Cloudflare Tunnel > Edit) — see
+# the README.
 
 locals {
   qnsc_apps_ingress = [
@@ -156,7 +156,11 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_route" "qnsc_admin_lan" {
 # stqnscbackup (Azure): the storage account with locked immutability + lifecycle
 #   (§10.3). Written once the subscription exists.
 # (qnsc-backups lives in backups.tf since M-6.)
-# TOKENS: the tunnel resources keep NO secret in state — a cloudflare-managed
-# tunnel's token is read from the dashboard/API after apply and piped into
-# kv-qnsc-platform (platform-cloudflared-qnsc-apps) by the owner, through
-# stdin (§7.5). This stack creates the doors; it never stores keys.
+# TOKENS: the tunnel resources keep NO secret in state, and the provider's
+# tunnel-token data source is NEVER used (it would pull the token into
+# plan/state). After apply the owner reads each token —
+# GET /accounts/{account_id}/cfd_tunnel/{id}/token — and pipes it through
+# stdin: qnsc-apps into kv-qnsc-platform (platform-cloudflared-qnsc-apps,
+# ESO-synced), qnsc-admin into kv-qnsc-admin (admin-cloudflared-qnsc-admin,
+# → pve01 /etc/cloudflared/qnsc-admin.env). This stack creates the doors;
+# it never stores keys.
