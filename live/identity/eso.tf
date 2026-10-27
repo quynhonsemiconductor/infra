@@ -61,6 +61,13 @@ resource "azuread_application_certificate" "eso" {
   type           = "AsymmetricX509Cert"
   value          = var.eso_certificates[each.key]
   encoding       = "pem"
+
+  # Rotation issues the NEW credential before the old one is removed, so the
+  # SP is never left without a certificate mid-apply. The cluster Secret
+  # (tls.pem) is swapped right after apply — see README "Rotation".
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 resource "azuread_service_principal" "eso" {

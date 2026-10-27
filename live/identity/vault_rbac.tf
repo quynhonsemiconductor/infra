@@ -41,6 +41,7 @@ resource "azurerm_role_assignment" "admins_secrets_officer" {
   scope                = each.value # a vault resource id — never the RG or subscription
   role_definition_name = "Key Vault Secrets Officer"
   principal_id         = var.platform_admins_object_id
+  principal_type       = "Group" # tolerate replication lag between group creation and this assignment
 }
 
 # The ESO read path: Secrets User (get/list on secrets) — never Officer,
@@ -51,4 +52,5 @@ resource "azurerm_role_assignment" "eso_secrets_user" {
   scope                = local.eso[each.key].vault_id
   role_definition_name = "Key Vault Secrets User"
   principal_id         = azuread_service_principal.eso[each.key].object_id
+  principal_type       = "ServicePrincipal" # tolerate replication lag between SP creation and this assignment
 }

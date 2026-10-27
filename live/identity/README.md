@@ -86,6 +86,10 @@ never committed.
 
    **Go/no-go — the first owner plan must read exactly: 4 to import (each
    "no changes"), 23 to add, 0 to change, 0 to destroy, 0 to replace.**
+   (These 23 cover the vaults, break-glass and CI identities ONLY. The Phase-1
+   PRs — ESO SPs, vault RBAC, sign-in apps — are SEPARATE applies with their
+   own expected counts, stated in their sections below; never mix them into
+   this first apply.)
    Anything else on an imported resource (an update or a replace on the
    resource group, storage account, container or budget) is NO-GO: STOP and
    reconcile the code to the live value in a reviewed PR instead of applying —
@@ -132,19 +136,24 @@ account-wide Blob Data Contributor with an ABAC condition that excludes
 Owner steps, per SP (`dev` shown; repeat with `prod`, `platform`):
 
 1. Generate the keypair and a self-signed certificate (RSA 2048, ≤ 12 months)
-   **locally, outside the repo**:
+   **locally, outside the repo**, in a directory only you can read:
 
    ```sh
-   cd ~/keys && openssl req -x509 -newkey rsa:2048 -nodes \
+   mkdir -p ~/keys && cd ~/keys && umask 077
+   openssl req -x509 -newkey rsa:2048 -nodes \
      -keyout eso-dev-key.pem -out eso-dev-cert.pem \
      -days 365 -subj '/CN=QNSC ESO Dev'
    # the COMBINED PEM (certificate + private key concatenated) is what ESO's
-   # tls.pem reads (stores-onprem.yaml) — store it in 1Password:
+   # tls.pem reads (stores-onprem.yaml) — store it in 1Password, then shred
+   # the private half:
    cat eso-dev-cert.pem eso-dev-key.pem > eso-dev-combined.pem
+   # (file eso-dev-combined.pem into 1Password first, then:)
+   rm eso-dev-key.pem
    ```
 
 2. Run the static guard (plan-free; asserts certificate-only auth and
-   vault-scope-only RBAC):
+   vault-scope-only RBAC). CI runs the same script on every PR as a step of
+   the `tofu fmt check` job in `infra-plan.yml`:
 
    ```sh
    sh live/identity/tests/static.sh
@@ -173,12 +182,16 @@ Owner steps, per SP (`dev` shown; repeat with `prod`, `platform`):
 
    ```sh
    kubectl -n external-secrets create secret generic qnsc-eso-dev-cert \
-     --from-file=tls.pem=eso-dev-combined.pem \
+     --from-file=tls.pem=$HOME/keys/eso-dev-combined.pem \
      --from-literal=client-id=<eso_client_ids.dev>
    # same shape for qnsc-eso-prod-cert / qnsc-eso-platform-cert
+   rm ~/keys/eso-*-combined.pem   # after 1Password holds it and the Secret is applied
    ```
 
-Rotation (≤ 12 months): issue a NEW keypair, apply the new public cert, then
-re-apply the cluster Secret from the new combined PEM (downtime is acceptable;
-dev secrets are re-issuable). The `azuread_application_certificate` is replaced
-on value change, so update the cluster Secret in the same window.
+Rotation (≤ 12 months): issue a NEW keypair, `tofu apply` the new public cert
+(`create_before_destroy` — the new credential exists before the old one is
+removed), THEN re-apply the cluster Secret from the new combined PEM. Between
+apply and the Secret swap ESO authentication fails for that store — downtime is
+acceptable; dev secrets are re-issuable. The old credential is removed by the
+same apply, immediately after the new one is created, so the swap is the very
+next step.
