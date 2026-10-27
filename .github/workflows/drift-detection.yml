@@ -147,6 +147,17 @@ jobs:
           TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           # Read-only token, and only for the stacks that talk to Cloudflare. Empty elsewhere on purpose.
           TF_VAR_cloudflare_api_token:  ${{ contains(fromJSON('["edge","storage-dev","storage-prod"]'), matrix.stack) && secrets.CLOUDFLARE_API_TOKEN_READONLY || '' }}
+          # edge: every variable the stack declares WITHOUT a default (same set
+          # infra-plan.yml passes; without them the nightly edge pass is red on
+          # "required variable not set"). Secrets where the value is sensitive.
+          TF_VAR_admin_hostnames:        ${{ matrix.stack == 'edge' && secrets.ADMIN_HOSTNAMES || '' }}
+          TF_VAR_cutover_hosts:          ${{ matrix.stack == 'edge' && secrets.CUTOVER_HOSTS || '' }}
+          TF_VAR_tunnels_exist:          ${{ matrix.stack == 'edge' && vars.TUNNELS_EXIST || '' }}
+          TF_VAR_grp_platform_admins_id: ${{ matrix.stack == 'edge' && vars.ENTRA_GRP_PLATFORM_ADMINS_ID || '' }}
+          TF_VAR_grp_developers_id:      ${{ matrix.stack == 'edge' && vars.ENTRA_GRP_DEVELOPERS_ID || '' }}
+          TF_VAR_entra_tenant_id:        ${{ matrix.stack == 'edge' && vars.ENTRA_TENANT_ID || '' }}
+          TF_VAR_entra_idp_client_id:    ${{ matrix.stack == 'edge' && vars.ENTRA_IDP_CLIENT_ID || '' }}
+          TF_VAR_entra_idp_client_secret: ${{ matrix.stack == 'edge' && secrets.ENTRA_IDP_CLIENT_SECRET || '' }}
           # adaptive-metrics: the provider configures by calling the AM API, so the
           # nightly plan needs the token + URL here too (matrix-scoped, same form
           # as infra-plan.yml). Empty for every other stack.
@@ -165,6 +176,17 @@ jobs:
           TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           # Read-only token, and only for the stacks that talk to Cloudflare. Empty elsewhere on purpose.
           TF_VAR_cloudflare_api_token:  ${{ contains(fromJSON('["edge","storage-dev","storage-prod"]'), matrix.stack) && secrets.CLOUDFLARE_API_TOKEN_READONLY || '' }}
+          # edge: every variable the stack declares WITHOUT a default (same set
+          # infra-plan.yml passes; without them the nightly edge pass is red on
+          # "required variable not set"). Secrets where the value is sensitive.
+          TF_VAR_admin_hostnames:        ${{ matrix.stack == 'edge' && secrets.ADMIN_HOSTNAMES || '' }}
+          TF_VAR_cutover_hosts:          ${{ matrix.stack == 'edge' && secrets.CUTOVER_HOSTS || '' }}
+          TF_VAR_tunnels_exist:          ${{ matrix.stack == 'edge' && vars.TUNNELS_EXIST || '' }}
+          TF_VAR_grp_platform_admins_id: ${{ matrix.stack == 'edge' && vars.ENTRA_GRP_PLATFORM_ADMINS_ID || '' }}
+          TF_VAR_grp_developers_id:      ${{ matrix.stack == 'edge' && vars.ENTRA_GRP_DEVELOPERS_ID || '' }}
+          TF_VAR_entra_tenant_id:        ${{ matrix.stack == 'edge' && vars.ENTRA_TENANT_ID || '' }}
+          TF_VAR_entra_idp_client_id:    ${{ matrix.stack == 'edge' && vars.ENTRA_IDP_CLIENT_ID || '' }}
+          TF_VAR_entra_idp_client_secret: ${{ matrix.stack == 'edge' && secrets.ENTRA_IDP_CLIENT_SECRET || '' }}
           # adaptive-metrics: the provider configures by calling the AM API, so the
           # nightly plan needs the token + URL here too (matrix-scoped, same form
           # as infra-plan.yml). Empty for every other stack.
