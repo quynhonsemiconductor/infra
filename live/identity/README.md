@@ -117,3 +117,68 @@ account-wide Blob Data Contributor with an ABAC condition that excludes
 - Holds no secret values. Certificates are attached by public half; tokens and
   keys are piped into the vaults through stdin by the operator, with expiry and
   `owner`/`rotate-by` tags (§7.5).
+
+## Phase 1: ESO SP certificates + vault data-plane RBAC (§7.1)
+
+`vault_rbac.tf` + `eso.tf` add, per store in gitops `platform/eso/stores-onprem.yaml`
+(dev, prod, platform — none for `kv-qnsc-admin`):
+
+- one Entra app + service principal `QNSC ESO <Env>`, **certificate-only** (no
+  password credential exists — `tests/static.sh` fails the tree if one appears);
+- `Key Vault Secrets User` for that SP, scoped to **its own vault only**;
+- `Key Vault Secrets Officer` for `grp-qnsc-platform-admins` on **all four**
+  vaults (the operator writes every secret through stdin).
+
+Owner steps, per SP (`dev` shown; repeat with `prod`, `platform`):
+
+1. Generate the keypair and a self-signed certificate (RSA 2048, ≤ 12 months)
+   **locally, outside the repo**:
+
+   ```sh
+   cd ~/keys && openssl req -x509 -newkey rsa:2048 -nodes \
+     -keyout eso-dev-key.pem -out eso-dev-cert.pem \
+     -days 365 -subj '/CN=QNSC ESO Dev'
+   # the COMBINED PEM (certificate + private key concatenated) is what ESO's
+   # tls.pem reads (stores-onprem.yaml) — store it in 1Password:
+   cat eso-dev-cert.pem eso-dev-key.pem > eso-dev-combined.pem
+   ```
+
+2. Run the static guard (plan-free; asserts certificate-only auth and
+   vault-scope-only RBAC):
+
+   ```sh
+   sh live/identity/tests/static.sh
+   ```
+
+3. Pass the PUBLIC certs and the group id as environment (`*.tfvars` and state
+   are git-ignored for values; the private keys never touch the repo or state):
+
+   ```sh
+   export TF_VAR_platform_admins_object_id=$(
+     az ad group show --group grp-qnsc-platform-admins --query id -o tsv)
+   export TF_VAR_eso_certificates=$(jq -n \
+     --rawfile dev ~/keys/eso-dev-cert.pem \
+     --rawfile prod ~/keys/eso-prod-cert.pem \
+     --rawfile platform ~/keys/eso-platform-cert.pem \
+     '{dev:$dev, prod:$prod, platform:$platform}')
+   ```
+
+4. Plan and apply as above (owner-local only). The plan adds 3 applications,
+   3 certificates, 3 service principals, 4 Secrets Officer + 3 Secrets User
+   assignments — nothing wider.
+
+5. Record `eso_client_ids` from the outputs. At bootstrap (§14 step 2, after
+   the cluster exists) hand-apply each store's Secret — one COMBINED PEM per
+   SP, the shape `stores-onprem.yaml` reads:
+
+   ```sh
+   kubectl -n external-secrets create secret generic qnsc-eso-dev-cert \
+     --from-file=tls.pem=eso-dev-combined.pem \
+     --from-literal=client-id=<eso_client_ids.dev>
+   # same shape for qnsc-eso-prod-cert / qnsc-eso-platform-cert
+   ```
+
+Rotation (≤ 12 months): issue a NEW keypair, apply the new public cert, then
+re-apply the cluster Secret from the new combined PEM (downtime is acceptable;
+dev secrets are re-issuable). The `azuread_application_certificate` is replaced
+on value change, so update the cluster Secret in the same window.
