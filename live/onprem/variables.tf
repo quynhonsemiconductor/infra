@@ -12,20 +12,30 @@ variable "cloudflare_api_token" {
 
 variable "admin_private_cidr" {
   type        = string
-  description = "The office LAN range the qnsc-admin tunnel may route to (door 2). Set in tfvars, never committed with a real value if it is sensitive; the default here is a placeholder."
-}
-
-variable "admin_private_ip" {
-  type        = string
-  description = "pve01's address inside admin_private_cidr, the target of the qnsc-admin tunnel route."
+  sensitive   = true
+  description = "The office LAN range the qnsc-admin tunnel may route to (door 2). GitHub Actions repo SECRET ADMIN_PRIVATE_CIDR (secrets, not variables: variable values print unmasked in step env logs of this public repo)."
+  validation {
+    condition     = can(cidrnetmask(var.admin_private_cidr))
+    error_message = "admin_private_cidr must be a CIDR (e.g. 10.0.0.0/24)."
+  }
 }
 
 variable "admin_pve_hostname" {
   type        = string
-  description = "Door-2 Proxmox hostname. GitHub Actions repository variable TF_VAR_admin_pve_hostname (same source as live/edge's admin_hostnames); real value in product-docs runbook §12.1."
+  sensitive   = true
+  description = "Door-2 Proxmox hostname. GitHub Actions repo SECRET ADMIN_PVE_HOSTNAME (same class as live/edge's admin_hostnames; never literal in this public repo). Real value in product-docs runbook §12.1."
+  validation {
+    condition     = length(var.admin_pve_hostname) > 0
+    error_message = "admin_pve_hostname must not be empty."
+  }
 }
 
 variable "admin_pbs_hostname" {
   type        = string
-  description = "Door-2 PBS hostname. GitHub Actions repository variable TF_VAR_admin_pbs_hostname."
+  sensitive   = true
+  description = "Door-2 PBS hostname. GitHub Actions repo SECRET ADMIN_PBS_HOSTNAME."
+  validation {
+    condition     = length(var.admin_pbs_hostname) > 0
+    error_message = "admin_pbs_hostname must not be empty."
+  }
 }
