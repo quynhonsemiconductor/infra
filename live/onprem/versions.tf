@@ -11,9 +11,13 @@ terraform {
   # State lives OFF the box it manages (§11.3): Azure Blob, OIDC, blob-lease
   # locking, versioning + soft delete on the account. stqnsctfstate is created
   # once BY HAND (pre-work (e)) and then imported into live/identity.
-  # Auth comes from the CI identity's environment (ARM_USE_OIDC=true +
+  # Auth method comes from the CI identity's environment (ARM_USE_OIDC=true +
   # ARM_CLIENT_ID/ARM_TENANT_ID); owner-side runs export the same.
+  # use_azuread_auth stays ON here: it is the data-plane access choice —
+  # without it tofu 1.9.1 falls back to account ListKeys, which the Read
+  # identity cannot do.
   backend "azurerm" {
+    use_azuread_auth     = true
     resource_group_name  = "rg-qnsc-platform"
     storage_account_name = "stqnsctfstate"
     container_name       = "tfstate"

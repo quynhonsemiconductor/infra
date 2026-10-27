@@ -4,9 +4,12 @@ The on-prem doors: the two Cloudflare Tunnels (`qnsc-apps`, `qnsc-admin`),
 their remotely-managed ingress config, and the backup targets.
 The state backend is wired (Azure: rg-qnsc-platform / stqnsctfstate / tfstate,
 key infra/onprem/terraform.tfstate). The CI identities already exist: plan and
-drift run as **QNSC CI Infra Read**, apply as **QNSC CI Infra** (federated
-credential on stqnsctfstate). The only remaining blocker is the Cloudflare
-token scopes — see "Token handling" below.
+drift run as **QNSC CI Infra Read**, apply as **QNSC CI Infra** (each app
+holds its federated credential and its Storage Blob Data roles on
+stqnsctfstate). The only remaining blocker is the Cloudflare
+token scopes — see "Token handling" below. The three ADMIN_* inputs are repo
+SECRETS, never variables: variable values print unmasked in step env logs of
+this public repo.
 
 ## Owns
 
