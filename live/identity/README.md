@@ -86,6 +86,10 @@ never committed.
 
    **Go/no-go — the first owner plan must read exactly: 4 to import (each
    "no changes"), 23 to add, 0 to change, 0 to destroy, 0 to replace.**
+   (These 23 cover the vaults, break-glass and CI identities ONLY. The Phase-1
+   PRs — ESO SPs, vault RBAC, sign-in apps — are SEPARATE applies with their
+   own expected counts, stated in their sections below; never mix them into
+   this first apply.)
    Anything else on an imported resource (an update or a replace on the
    resource group, storage account, container or budget) is NO-GO: STOP and
    reconcile the code to the live value in a reviewed PR instead of applying —
@@ -117,3 +121,77 @@ account-wide Blob Data Contributor with an ABAC condition that excludes
 - Holds no secret values. Certificates are attached by public half; tokens and
   keys are piped into the vaults through stdin by the operator, with expiry and
   `owner`/`rotate-by` tags (§7.5).
+
+## Phase 1: ESO SP certificates + vault data-plane RBAC (§7.1)
+
+`vault_rbac.tf` + `eso.tf` add, per store in gitops `platform/eso/stores-onprem.yaml`
+(dev, prod, platform — none for `kv-qnsc-admin`):
+
+- one Entra app + service principal `QNSC ESO <Env>`, **certificate-only** (no
+  password credential exists — `tests/static.sh` fails the tree if one appears);
+- `Key Vault Secrets User` for that SP, scoped to **its own vault only**;
+- `Key Vault Secrets Officer` for `grp-qnsc-platform-admins` on **all four**
+  vaults (the operator writes every secret through stdin).
+
+Owner steps, per SP (`dev` shown; repeat with `prod`, `platform`):
+
+1. Generate the keypair and a self-signed certificate (RSA 2048, ≤ 12 months)
+   **locally, outside the repo**, in a directory only you can read:
+
+   ```sh
+   mkdir -p ~/keys && cd ~/keys && umask 077
+   openssl req -x509 -newkey rsa:2048 -nodes \
+     -keyout eso-dev-key.pem -out eso-dev-cert.pem \
+     -days 365 -subj '/CN=QNSC ESO Dev'
+   # the COMBINED PEM (certificate + private key concatenated) is what ESO's
+   # tls.pem reads (stores-onprem.yaml) — store it in 1Password, then shred
+   # the private half:
+   cat eso-dev-cert.pem eso-dev-key.pem > eso-dev-combined.pem
+   # (file eso-dev-combined.pem into 1Password first, then:)
+   rm eso-dev-key.pem
+   ```
+
+2. Run the static guard (plan-free; asserts certificate-only auth and
+   vault-scope-only RBAC). CI runs the same script on every PR as a step of
+   the `tofu fmt check` job in `infra-plan.yml`:
+
+   ```sh
+   sh live/identity/tests/static.sh
+   ```
+
+3. Pass the PUBLIC certs and the group id as environment (`*.tfvars` and state
+   are git-ignored for values; the private keys never touch the repo or state):
+
+   ```sh
+   export TF_VAR_platform_admins_object_id=$(
+     az ad group show --group grp-qnsc-platform-admins --query id -o tsv)
+   export TF_VAR_eso_certificates=$(jq -n \
+     --rawfile dev ~/keys/eso-dev-cert.pem \
+     --rawfile prod ~/keys/eso-prod-cert.pem \
+     --rawfile platform ~/keys/eso-platform-cert.pem \
+     '{dev:$dev, prod:$prod, platform:$platform}')
+   ```
+
+4. Plan and apply as above (owner-local only). The plan adds 3 applications,
+   3 certificates, 3 service principals, 4 Secrets Officer + 3 Secrets User
+   assignments — nothing wider.
+
+5. Record `eso_client_ids` from the outputs. At bootstrap (§14 step 2, after
+   the cluster exists) hand-apply each store's Secret — one COMBINED PEM per
+   SP, the shape `stores-onprem.yaml` reads:
+
+   ```sh
+   kubectl -n external-secrets create secret generic qnsc-eso-dev-cert \
+     --from-file=tls.pem=$HOME/keys/eso-dev-combined.pem \
+     --from-literal=client-id=<eso_client_ids.dev>
+   # same shape for qnsc-eso-prod-cert / qnsc-eso-platform-cert
+   rm ~/keys/eso-*-combined.pem   # after 1Password holds it and the Secret is applied
+   ```
+
+Rotation (≤ 12 months): issue a NEW keypair, `tofu apply` the new public cert
+(`create_before_destroy` — the new credential exists before the old one is
+removed), THEN re-apply the cluster Secret from the new combined PEM. Between
+apply and the Secret swap ESO authentication fails for that store — downtime is
+acceptable; dev secrets are re-issuable. The old credential is removed by the
+same apply, immediately after the new one is created, so the swap is the very
+next step.

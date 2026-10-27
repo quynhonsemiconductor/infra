@@ -237,6 +237,14 @@ jobs:
           tofu-version: ${{ env.TOFU_VERSION }}
           fmt: 'true'
 
+      # The owner-only identity stack has no CI plan (NOT_PLANNABLE), so its
+      # §7 invariants are enforced statically here on EVERY PR: certificate-only
+      # auth, no private key material, every Key Vault data-plane role scoped to
+      # a vault, no ESO principal for the admin vault. Plan-free — no cloud
+      # credentials, exits non-zero on a violation.
+      - name: live/identity static guard
+        run: sh live/identity/tests/static.sh
+
   # ───────────────────────────────────────────────────────────────────────
   # tflint — NOT a required check yet, deliberately.
   #
