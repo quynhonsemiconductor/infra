@@ -33,7 +33,14 @@
 
 locals {
   github_oidc_issuer = "https://token.actions.githubusercontent.com"
-  infra_subject_base = "repo:quynhonsemiconductor/infra"
+  # IMMUTABLE OIDC subject form (2026-10-27): the repo sets
+  # actions/oidc/customization/sub: use_immutable_subject=true, so GitHub puts
+  # NUMERIC org/repo ids in the sub claim — org 297362956, repo 1282170347
+  # (GET /orgs/<org>, GET /repos/<org>/<repo>). The name-based form stopped
+  # matching: AADSTS700213 "No matching federated identity record". The numeric
+  # form is also rename-proof. Source of truth for the live values: the failed
+  # job's token error and that API.
+  infra_subject_base = "repo:quynhonsemiconductor@297362956/infra@1282170347"
 }
 
 resource "azuread_application" "ci_infra_apply" {
