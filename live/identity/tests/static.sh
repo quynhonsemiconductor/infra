@@ -38,26 +38,38 @@ grep -rn 'BEGIN [A-Z ]*PRIVATE KEY' --include='*.tf' . >/dev/null &&
 #    Storage Blob …) belongs to the CI identities' documented Azure RBAC.
 ROLE_LINE='^[[:space:]]*role_definition_name[[:space:]]*='
 ASSIGNMENTS=$(awk -v roleline="$ROLE_LINE" '
-	/resource "azurerm_role_assignment"/ { inblk = 1; role = ""; scope = "" }
-	inblk && $0 ~ roleline {
-		role = $0
-		sub(/.*role_definition_name[[:space:]]*=[[:space:]]*"/, "", role)
-		sub(/".*/, "", role)
-	}
-	inblk && /^[[:space:]]*scope[[:space:]]*=/ {
-		scope = $0
-		sub(/^[^=]*=[[:space:]]*/, "", scope)
-		sub(/[[:space:]]*#.*$/, "", scope)
-		gsub(/[[:space:]]/, "", scope)
-	}
-	inblk && /^}/ {
-		if (role ~ /^Key Vault / && role != "Key Vault Reader") {
-			if (scope !~ /^azurerm_key_vault\./ &&
-				scope !~ /^each\.value$/ &&      # the all_vaults vault-id map
-				scope !~ /^local\.eso\[each\.key\]\.vault_id$/)
-				printf "%s\n", role " @ " scope
+	/resource "azurerm_role_assignment"/ { inblk = 1; depth = 0; role = ""; scope = ""; fe = "" }
+	inblk {
+		depth += gsub(/\{/, "{") - gsub(/\}/, "}")
+		if ($0 ~ /^[[:space:]]*for_each[[:space:]]*=/) {
+			fe = $0
+			sub(/.*for_each[[:space:]]*=[[:space:]]*/, "", fe)
+			sub(/[[:space:]]*#.*$/, "", fe)
+			gsub(/[[:space:]]/, "", fe)
 		}
-		inblk = 0
+		if ($0 ~ roleline) {
+			role = $0
+			sub(/.*role_definition_name[[:space:]]*=[[:space:]]*"/, "", role)
+			sub(/".*/, "", role)
+		}
+		if ($0 ~ /^[[:space:]]*scope[[:space:]]*=/) {
+			scope = $0
+			sub(/^[^=]*=[[:space:]]*/, "", scope)
+			sub(/[[:space:]]*#.*$/, "", scope)
+			gsub(/[[:space:]]/, "", scope)
+		}
+		if (depth <= 0) {
+			# `each.value` is acceptable ONLY where the map itself is the vault-id
+			# map (local.all_vaults) — any other for_each makes the scope unknown.
+			if (scope == "each.value" && fe != "local.all_vaults") { scope = "each.value (for_each " fe ")" }
+			if (role ~ /^Key Vault / && role != "Key Vault Reader") {
+				if (scope !~ /^azurerm_key_vault\./ &&
+					scope !~ /^each\.value$/ &&
+					scope !~ /^local\.eso\[each\.key\]\.vault_id$/)
+					printf "%s\n", role " @ " scope
+			}
+			inblk = 0
+		}
 	}
 ' *.tf)
 [ -z "$ASSIGNMENTS" ] || fail "Key Vault data-plane role outside a vault scope:
