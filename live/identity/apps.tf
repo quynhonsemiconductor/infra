@@ -112,7 +112,7 @@ variable "existing_object_ids" {
     opshub_dev = string
     kb_dev     = string
   })
-  description = "Object ids of the EXISTING hand-made application registrations (adopted, not replaced). GitHub Actions repository variable TF_VAR_existing_object_ids (JSON)."
+  description = "Object ids of the EXISTING hand-made application registrations (adopted, not replaced). TF_VAR_existing_object_ids exported by the owner, never committed."
 }
 
 variable "existing_sp_object_ids" {
@@ -122,7 +122,7 @@ variable "existing_sp_object_ids" {
     opshub_dev = string
     kb_dev     = string
   })
-  description = "Object ids of the existing service principals, same source."
+  description = "Object ids of the existing service principals. TF_VAR_existing_sp_object_ids exported by the owner, never committed."
 }
 
 variable "owner_operator_object_id" {
@@ -181,7 +181,7 @@ variable "existing_identifier_uris" {
 
 variable "second_owner_object_id" {
   type        = string
-  description = "Object id of the second company owner (A4/O2). GitHub Actions repository variable."
+  description = "Object id of the second company owner (A4/O2). TF_VAR_second_owner_object_id exported by the owner, never committed."
 }
 
 resource "azuread_application" "signin" {
@@ -233,7 +233,6 @@ resource "azuread_application" "signin" {
 
   owners = [var.owner_operator_object_id, var.second_owner_object_id]
 }
-
 
 # ── Adoption: import the existing registrations, do not create new ones ─────
 import {
