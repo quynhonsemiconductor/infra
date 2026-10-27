@@ -139,7 +139,8 @@ Owner steps, per SP (`dev` shown; repeat with `prod`, `platform`):
    **locally, outside the repo**, in a directory only you can read:
 
    ```sh
-   mkdir -p ~/keys && cd ~/keys && umask 077
+   umask 077
+   mkdir -p ~/keys && cd ~/keys
    openssl req -x509 -newkey rsa:2048 -nodes \
      -keyout eso-dev-key.pem -out eso-dev-cert.pem \
      -days 365 -subj '/CN=QNSC ESO Dev'
@@ -195,3 +196,58 @@ apply and the Secret swap ESO authentication fails for that store — downtime i
 acceptable; dev secrets are re-issuable. The old credential is removed by the
 same apply, immediately after the new one is created, so the swap is the very
 next step.
+
+## Sign-in apps (`apps.tf`): owner export, plan, go/no-go
+
+The four existing registrations are ADOPTED (import blocks), never recreated.
+Because azuread 3.x does not treat app roles / optional claims / identifier
+URIs as Computed, anything the code omits would be REMOVED on apply — so the
+owner exports the live shape first and the plan is a hard go/no-go.
+
+1. Export the FULL live shape of each app AND its service principal — not a
+   subset: azuread treats `web.homepage_url`, `web.logout_url`,
+   `web.implicit_grant`, the `api` block (`requested_access_token_version`,
+   oauth2 scopes), `sign_in_audience`, `feature_tags`, `tags`, `notes`, other
+   `required_resource_access`, and the SP's `login_url`/`tags` as
+   non-Computed too, so anything the code omits would be REMOVED on apply.
+   The loop FAILS unless exactly one app matches each name:
+
+   ```sh
+   mkdir -p ~/signin-export && cd ~/signin-export
+   for app in "Rova Prod" "Rova Dev" "Opshub Dev" "KB Dev"; do
+     n=$(az ad app list --display-name "$app" --query 'length(@)' -o tsv)
+     [ "$n" = "1" ] || { echo "expected exactly 1 app named '$app', got $n — STOP"; exit 1; }
+     app_id=$(az ad app list --display-name "$app" --query '[0].appId' -o tsv)
+     az ad app show --id "$app_id"   > "$(echo "$app" | tr ' ' '-' | tr 'A-Z' 'a-z')-app.json"
+     az ad sp show --id "$app_id"    > "$(echo "$app" | tr ' ' '-' | tr 'A-Z' 'a-z')-sp.json"
+   done
+   ```
+
+2. Owner diffs each export against the code (this is the go/no-go, below).
+   From the exports, fill:
+   - `TF_VAR_opshub_dev_app_role_ids` — the App Role `id` GUIDs (keys `admin`,
+     `it-admin`, `security`, `hr`, `manager`, `helpdesk`, `auditor`,
+     `employee`; values/display names are modeled from
+     `db/permissions.catalog.ts` and MUST match the export);
+   - `TF_VAR_opshub_dev_app_role_descriptions` — the EXACT live role
+     `description` strings (hand-written text would overwrite them);
+   - `TF_VAR_existing_identifier_uris` — JSON map keyed
+     `rova_prod`/`rova_dev`/`opshub_dev`/`kb_dev`; pass `{}` ONLY if the
+     exports show none.
+   If an export shows `optionalClaims`, a `groupMembershipClaims` value, or
+   ANY of the non-Computed fields above set differently from the code, STOP
+   and encode the difference in a reviewed commit BEFORE the apply — the code
+   cannot guess it.
+
+3. Expected plan: **8 imports** (4 applications + 4 service principals, each
+   "no changes" unless a section below names it), plus the Opshub Dev App Role
+   resources and AT MOST in-place updates on the imported apps for the modeled
+   redirect URIs / roles.
+
+   **Go/no-go: 8 imports and ONLY the changes named in the PR body. Any
+   removal, replacement, or a change on an imported app that the PR does not
+   name is NO-GO — STOP, export again, and reconcile the code in a reviewed
+   commit instead of applying.**
+
+4. After apply: record `signin_app_client_ids`; rotate/land client secrets
+   with `scripts/rotate-signin-secret.sh` (≤ 6 months, into the vault).
