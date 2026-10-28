@@ -225,6 +225,9 @@ resource "cloudflare_zero_trust_access_application" "dev_bypass" {
   account_id = var.cloudflare_account_id
   name       = "bypass ${each.key}"
   domain     = each.key
+  # v5 sends the whole app on update; the API rejects a PUT without a type
+  # (12130 "app type is missing or invalid").
+  type = "self_hosted"
 
   policies = [{
     id         = cloudflare_zero_trust_access_policy.dev_bypass[each.key].id
