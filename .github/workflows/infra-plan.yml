@@ -397,8 +397,10 @@ jobs:
           TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           TF_VAR_grafana_cloud_api_key: ${{ secrets.GRAFANA_CLOUD_API_KEY }}
           TF_VAR_teams_webhook_url:     ${{ secrets.TEAMS_ALERTS_WEBHOOK_URL }}
-          TF_VAR_admin_hostnames:       ${{ vars.ADMIN_HOSTNAMES }}
-          TF_VAR_cutover_hosts:         ${{ vars.CUTOVER_HOSTS }}
+          # secrets, not vars: admin_hostnames is a sensitive label->hostname map —
+          # vars print in job logs / PR text, secrets are masked (edge v5 migration)
+          TF_VAR_admin_hostnames:       ${{ secrets.ADMIN_HOSTNAMES }}
+          TF_VAR_cutover_hosts:         ${{ secrets.CUTOVER_HOSTS }}
           TF_VAR_tunnels_exist:         ${{ vars.TUNNELS_EXIST }}
           TF_VAR_grp_platform_admins_id: ${{ vars.ENTRA_GRP_PLATFORM_ADMINS_ID }}
           TF_VAR_grp_developers_id:     ${{ vars.ENTRA_GRP_DEVELOPERS_ID }}

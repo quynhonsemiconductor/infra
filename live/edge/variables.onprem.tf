@@ -4,13 +4,22 @@
 # hostname values are recorded in product-docs (runbook §12.1), never here.
 
 variable "admin_hostnames" {
-  type        = list(string)
-  description = "Door-2 hostnames (pve/pbs). TF_VAR_admin_hostnames (repo variable, JSON list)."
+  type        = map(string)
+  sensitive   = true # public repo: real values (product-docs runbook §12.1) leak in plan text / PR comments otherwise
+  description = <<-EOT
+    Door-2 hostnames (pve/pbs): STATIC LABEL -> hostname map. Labels are the only part that appears in
+    resource addresses; the values stay sensitive end to end (tofu forbids iterating a sensitive value,
+    so for_each runs over the labels and the hostname lands in sensitive attributes only).
+    TF_VAR_admin_hostnames (repo SECRET — vars print in logs, secrets are masked; JSON object,
+    e.g. {"pve": "<hostname>", "pbs": "<hostname>"}).
+    Labels are load-bearing: they are state addresses, so never rename one without a `tofu state mv`.
+  EOT
 }
 
 variable "cutover_hosts" {
   type        = list(string)
-  description = "App hosts whose DNS + Workers routes are LIVE. One host is added per product move PR apply; [] until then (rova prod stays on AWS). TF_VAR_cutover_hosts."
+  sensitive   = true # public repo: real values (product-docs runbook §12.1) leak in plan text / PR comments otherwise
+  description = "App hosts whose DNS + Workers routes are LIVE. One host is added per product move PR apply; [] until then (rova prod stays on AWS). TF_VAR_cutover_hosts (repo SECRET — vars print in logs, secrets are masked; JSON list)."
 }
 
 variable "tunnels_exist" {

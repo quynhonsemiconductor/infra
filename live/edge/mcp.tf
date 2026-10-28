@@ -1,13 +1,12 @@
 # ── rova DEV /mcp — Access app for the MCP server (MCP-PLAN v0.4 §5, §10; AI-4)
 #
-# Provider 4.52.9 CANNOT express Managed OAuth (no oauth_configuration on
-# access_application, no MCP-portal resource — verified against the provider
-# schema). So this file creates the Access app + policy that gate the path,
-# and the Managed OAuth specifics are DOCUMENTED OWNER CLICK-STEPS (below and
-# in the PR body). Until those clicks happen, the app behaves as a plain
-# self-hosted Access app: the /mcp path demands an Access session — Claude
-# Code cannot complete OAuth yet, and MCP_ENABLED stays false (agent C owns
-# that flag).
+# Provider v5 now exposes `oauth_configuration` on access_application, but the
+# Managed OAuth + MCP-portal rollout stays QUEUED (SA 2026-10-27 — do not
+# start it here). So this file only creates the Access app + policy that gate
+# the path, and the Managed OAuth specifics remain DOCUMENTED OWNER CLICK-STEPS
+# (below). Until those clicks happen, the app behaves as a plain self-hosted
+# Access app: the /mcp path demands an Access session — Claude Code cannot
+# complete OAuth yet, and MCP_ENABLED stays false (agent C owns that flag).
 #
 # Gate: cutover_hosts, same as every rova-dev resource — nothing exists for
 # the host until its move apply.
@@ -25,31 +24,36 @@ resource "cloudflare_zero_trust_access_application" "rova_dev_mcp" {
   type             = "self_hosted"
   session_duration = "24h" # the OAuth GRANT session (MCP-PLAN §5: chosen 24 h)
   allowed_idps     = [cloudflare_zero_trust_access_identity_provider.entra.id]
+
+  policies = [{
+    id         = cloudflare_zero_trust_access_policy.rova_dev_mcp_allow[0].id
+    precedence = 1
+  }]
 }
 
+# v5 shape: policy defined standalone (no application_id/zone_id/precedence —
+# attachment happens on the application's `policies` above); `azure` became
+# `azure_ad`; include/require are attributes, not blocks.
 resource "cloudflare_zero_trust_access_policy" "rova_dev_mcp_allow" {
   count = var.tunnels_exist && contains(var.cutover_hosts, "rova-dev.qnsc.vn") ? 1 : 0
 
   account_id       = var.cloudflare_account_id
-  zone_id          = var.cloudflare_zone_id
-  application_id   = cloudflare_zero_trust_access_application.rova_dev_mcp[0].id
   name             = "rova-dev-mcp-mfa"
   decision         = "allow"
-  precedence       = 1
   session_duration = "24h"
 
-  include {
-    azure {
-      id                   = [var.grp_developers_id]
+  include = [{
+    azure_ad = {
+      id                   = var.grp_developers_id
       identity_provider_id = cloudflare_zero_trust_access_identity_provider.entra.id
     }
-  }
-  require {
-    auth_method = "mfa"
-  }
+  }]
+  require = [{
+    auth_method = { auth_method = "mfa" }
+  }]
 }
 
-# ── OWNER CLICK-STEPS (provider 4.52.9 cannot express these) ────────────────
+# ── OWNER CLICK-STEPS (Managed OAuth — queued, not in IaC) ──────────────────
 #
 # After this app is applied, in Zero Trust → Access → Applications →
 # "rova-dev MCP server":

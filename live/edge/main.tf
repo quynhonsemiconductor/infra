@@ -3,7 +3,7 @@ terraform {
 
   required_providers {
     aws        = { source = "hashicorp/aws", version = "~> 5.0" }
-    cloudflare = { source = "cloudflare/cloudflare", version = "~> 4.0" }
+    cloudflare = { source = "cloudflare/cloudflare", version = "~> 5.28" }
   }
 
   backend "s3" {
@@ -50,7 +50,7 @@ provider "aws" {
 # =============================================================================
 
 module "edge" {
-  source = "git::https://github.com/quynhonsemiconductor/tf-modules.git//modules/cf-edge?ref=cf-edge-v1.0.0"
+  source = "git::https://github.com/quynhonsemiconductor/tf-modules.git//modules/cf-edge?ref=cf-edge-v2.0.0"
 
   zone_id = var.cloudflare_zone_id
 
@@ -102,24 +102,26 @@ resource "aws_acm_certificate" "wildcard" {
   tags = { Name = "qnsc-wildcard-${var.certificate_domain}" }
 }
 
-resource "cloudflare_record" "acm_validation" {
+resource "cloudflare_dns_record" "acm_validation" {
   for_each = {
     for dvo in aws_acm_certificate.wildcard.domain_validation_options :
     dvo.domain_name => {
-      name    = dvo.resource_record_name
+      name    = trimsuffix(dvo.resource_record_name, ".")
       type    = dvo.resource_record_type
-      content = dvo.resource_record_value
+      content = trimsuffix(dvo.resource_record_value, ".")
     }
   }
 
-  zone_id         = var.cloudflare_zone_id
-  name            = trimsuffix(each.value.name, ".")
-  type            = each.value.type
-  content         = trimsuffix(each.value.content, ".")
-  ttl             = 60
-  proxied         = false # validation CNAME — DNS-only, never orange-clouded
-  comment         = "ACM DNS validation for *.${var.certificate_domain} (qnsc-infra/edge)"
-  allow_overwrite = true
+  zone_id = var.cloudflare_zone_id
+  name    = each.value.name
+  type    = each.value.type
+  content = each.value.content
+  ttl     = 60
+  proxied = false # validation CNAME — DNS-only, never orange-clouded
+  comment = "ACM DNS validation for *.${var.certificate_domain} (qnsc-infra/edge)"
+  # v5 note: v4's `allow_overwrite` is gone; the create fails loudly on a
+  # conflicting record instead. This record is imported (never re-created), so
+  # that path only matters on a deliberate rebuild.
 
   lifecycle {
     # A DNS record whose zone_id changes is destroyed and re-created, and a failed re-create is an outage (2026-10-09).
@@ -135,7 +137,7 @@ resource "cloudflare_record" "acm_validation" {
 
 resource "aws_acm_certificate_validation" "wildcard" {
   certificate_arn         = aws_acm_certificate.wildcard.arn
-  validation_record_fqdns = [for r in cloudflare_record.acm_validation : r.hostname]
+  validation_record_fqdns = [for r in cloudflare_dns_record.acm_validation : r.name]
 }
 
 # =============================================================================
@@ -178,13 +180,13 @@ resource "aws_sesv2_email_identity" "mail_domain" {
  * The three CNAMEs that prove the domain. Without them the identity stays `PENDING` forever and
  * every send is refused, so they belong in the same apply as the identity rather than a runbook step.
  */
-resource "cloudflare_record" "ses_dkim" {
+resource "cloudflare_dns_record" "ses_dkim" {
   count = 3
 
   zone_id = var.cloudflare_zone_id
   name    = "${aws_sesv2_email_identity.mail_domain.dkim_signing_attributes[0].tokens[count.index]}._domainkey"
   type    = "CNAME"
-  value   = "${aws_sesv2_email_identity.mail_domain.dkim_signing_attributes[0].tokens[count.index]}.dkim.amazonses.com"
+  content = "${aws_sesv2_email_identity.mail_domain.dkim_signing_attributes[0].tokens[count.index]}.dkim.amazonses.com"
   # Never proxied: DKIM is a DNS lookup by a receiving mail server, not HTTP traffic. Proxying it
   # would return Cloudflare's own record and the verification would never complete.
   proxied = false
@@ -230,11 +232,11 @@ resource "aws_sesv2_email_identity_mail_from_attributes" "mail_domain" {
  * The MX host is REGION-SPECIFIC (`feedback-smtp.<region>.amazonses.com`) — it is where SES asks
  * receivers to send bounces, so a wrong region silently loses them.
  */
-resource "cloudflare_record" "ses_mail_from_mx" {
+resource "cloudflare_dns_record" "ses_mail_from_mx" {
   zone_id  = var.cloudflare_zone_id
   name     = "mail"
   type     = "MX"
-  value    = "feedback-smtp.${var.mail_region}.amazonses.com"
+  content  = "feedback-smtp.${var.mail_region}.amazonses.com"
   priority = 10
   ttl      = 300
   comment  = "SES custom MAIL FROM (bounce path) — managed by qnsc-infra/edge"
@@ -249,7 +251,7 @@ resource "cloudflare_record" "ses_mail_from_mx" {
   }
 }
 
-resource "cloudflare_record" "ses_mail_from_spf" {
+resource "cloudflare_dns_record" "ses_mail_from_spf" {
   zone_id = var.cloudflare_zone_id
   name    = "mail"
   type    = "TXT"
@@ -258,7 +260,7 @@ resource "cloudflare_record" "ses_mail_from_spf" {
   #
   # QUOTED, because Cloudflare's dashboard warns about an unquoted TXT value (owner report, 2026-10-13). The string resolvers
   # return is the same either way; this only clears the warning and stores the value the way a TXT record is written.
-  value   = "\"v=spf1 include:amazonses.com ~all\""
+  content = "\"v=spf1 include:amazonses.com ~all\""
   ttl     = 300
   comment = "SES custom MAIL FROM SPF — managed by qnsc-infra/edge"
 
@@ -281,7 +283,7 @@ resource "cloudflare_record" "ses_mail_from_spf" {
 # PLAN: read the aggregate reports for 2-4 weeks. When every legitimate source (Microsoft 365 via spf.protection.outlook.com, SES via
 # amazonses.com, with DKIM aligned) passes and only noise fails, move to p=quarantine, then to p=reject after another clean period.
 # Each step is its own PR so the change and the reports that justified it are reviewable together.
-resource "cloudflare_record" "dmarc" {
+resource "cloudflare_dns_record" "dmarc" {
   zone_id = var.cloudflare_zone_id
   name    = "_dmarc"
   type    = "TXT"
@@ -327,7 +329,7 @@ resource "cloudflare_pages_project" "landing" {
 
 # Custom domains — serve the site on the apex (qnsc.vn) and www. Two parts per
 # host: cloudflare_pages_domain registers the hostname with the Pages project
-# (so Pages answers for it), and cloudflare_record routes traffic to the
+# (so Pages answers for it), and cloudflare_dns_record routes traffic to the
 # project's *.pages.dev origin. Proxied (orange-cloud) so Cloudflare terminates
 # TLS and flattens the CNAME at the apex. Without these, qnsc.vn has no DNS and
 # does not resolve — the site is only reachable at *.pages.dev.
@@ -335,14 +337,14 @@ resource "cloudflare_pages_domain" "landing" {
   for_each     = toset([var.certificate_domain, "www.${var.certificate_domain}"])
   account_id   = var.cloudflare_account_id
   project_name = cloudflare_pages_project.landing.name
-  domain       = each.value
+  name         = each.value # v5: was `domain`
 
   lifecycle {
     prevent_destroy = true # destroying the Pages domain detaches the hostname from the project: the site stops answering on it
   }
 }
 
-resource "cloudflare_record" "landing" {
+resource "cloudflare_dns_record" "landing" {
   for_each = {
     (var.certificate_domain)          = var.certificate_domain # apex → CNAME-flattened
     ("www.${var.certificate_domain}") = "www"
@@ -375,7 +377,7 @@ resource "cloudflare_record" "landing" {
 # `TURNSTILE_SECRET` env var — never injected from Terraform, matching the
 # platform's secrets-out-of-band convention (see the module README).
 module "landing_turnstile" {
-  source = "git::https://github.com/quynhonsemiconductor/tf-modules.git//modules/cloudflare-turnstile?ref=cloudflare-turnstile-v1.0.0"
+  source = "git::https://github.com/quynhonsemiconductor/tf-modules.git//modules/cloudflare-turnstile?ref=cloudflare-turnstile-v2.0.0"
 
   account_id = var.cloudflare_account_id
   name       = "qnsc-landing"
