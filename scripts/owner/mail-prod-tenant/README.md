@@ -41,7 +41,8 @@ opshub's and KB's prod SES paths).
 
    Creates what is missing and prints the proof table (explicit
    `Application Mail.Send` + `InScope` filter, plus a `-ControlMailbox`
-   assertion that must be OUT of scope). The run fails if any row differs from
+   assertion that must be OUT of scope). SP lookups are identity-scoped
+   (`Get-ServicePrincipal -Identity`, never a bare tenant-wide call). The run fails if any row differs from
    the expected values: the own prod mailbox is `True`, everything else `False`.
    First-hour propagation is normal — re-run before debugging.
 
@@ -56,10 +57,13 @@ opshub's and KB's prod SES paths).
    before anything is removed:
 
    ```powershell
-   ./exchange-prod-mail.ps1 -Step RemoveSignInRole -TenantId <tenant-guid> -SignInAppId <sign-in-app-guid> `
-     -RovaProdServiceAppId <app id> -ControlMailbox noreply-rova-dev@qnsc.vn                     # dry run
+   ./exchange-prod-mail.ps1 -Step RemoveSignInRole -TenantId <tenant-guid> `
+     -SignInAppId <sign-in-app-guid> -RovaProdServiceAppId <app id>                              # dry run
    ./exchange-prod-mail.ps1 -Step RemoveSignInRole ... -ConfirmRemoveSignInAppRole
    ```
+
+   (`-RovaProdServiceObjectId` and `-ControlMailbox` are Setup-only; the
+   examples above carry exactly the parameters each step uses.)
 
    The match is found by role `Application Mail.Send`, scope `noreply-rova`,
    and assignee resolving to the sign-in app's service principal — not by

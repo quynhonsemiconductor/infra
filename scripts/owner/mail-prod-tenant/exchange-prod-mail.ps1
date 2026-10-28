@@ -15,8 +15,8 @@
       2. Management scope "noreply-rova" (created only if missing).
       3. Service principal for "Rova Prod Service".
       4. Application Mail.Send role assignment on that service principal, scoped to
-         the "noreply-rova" scope (idempotency checked by the SP OBJECT ID, never a
-         display name).
+         the "noreply-rova" scope (idempotency checked by the SP's own
+         {ObjectId, DisplayName, Identity} forms, never a hand-typed name).
       5. Proof table: Test-ServicePrincipalAuthorization for the Rova service
          principal against every dev and prod mailbox, plus an explicit
          -ControlMailbox assertion (must be OUT of scope). A mailbox counts as in
@@ -38,8 +38,8 @@
     ./exchange-prod-mail.ps1 -TenantId <tenant-guid> -SignInAppId <sign-in-app-guid> `
       -RovaProdServiceAppId <app-id-from-mail_service_client_ids> `
       -RovaProdServiceObjectId <sp-object-id> -ControlMailbox noreply-rova-dev@qnsc.vn
-    ./exchange-prod-mail.ps1 -Step RemoveSignInRole -TenantId <tenant-guid> -SignInAppId <sign-in-app-guid> `
-      -RovaProdServiceAppId <app-id> -ControlMailbox noreply-rova-dev@qnsc.vn            # dry run
+    ./exchange-prod-mail.ps1 -Step RemoveSignInRole -TenantId <tenant-guid> `
+      -SignInAppId <sign-in-app-guid> -RovaProdServiceAppId <app-id>                     # dry run
     ./exchange-prod-mail.ps1 -Step RemoveSignInRole ... -ConfirmRemoveSignInAppRole
 #>
 [CmdletBinding()]
@@ -56,12 +56,12 @@ param(
     [Parameter(Mandatory)]
     [string]$RovaProdServiceAppId,
 
-    [Parameter(Mandatory)]
+    # Setup-only: the SP object id from the 'az ad sp show' export.
     [string]$RovaProdServiceObjectId,
 
-    # A mailbox that must stay OUT of scope for the Rova service principal
-    # (e.g. noreply-rova-dev@qnsc.vn) — asserted False in addition to the table.
-    [Parameter(Mandatory)]
+    # Setup-only: a mailbox that must stay OUT of scope for the Rova service
+    # principal (e.g. noreply-rova-dev@qnsc.vn) — asserted False in addition
+    # to the table.
     [string]$ControlMailbox,
 
     [switch]$ConfirmRemoveSignInAppRole
@@ -142,8 +142,24 @@ function Ensure-ManagementScope {
     Write-Host "created  scope $Name"
 }
 
+function Get-ServicePrincipalByObjectId {
+    # Identity-scoped lookup — a bare Get-ServicePrincipal returns EVERY SP in
+    # the tenant. -Identity accepts the SP ObjectId; fall back to an AppId
+    # lookup (also Identity-accepted) if the export's ObjectId misses.
+    param([string]$ObjectId, [string]$AppId)
+    $sp = Get-ServicePrincipal -Identity $ObjectId -ErrorAction SilentlyContinue
+    if (-not $sp) {
+        $sp = Get-ServicePrincipal -Identity $AppId -ErrorAction SilentlyContinue
+    }
+    if ($sp -and [string]$sp.AppId -ne $AppId) {
+        throw "Service principal '$ObjectId' exists but carries AppId '$($sp.AppId)', expected '$AppId'. Inspect by hand."
+    }
+    return $sp
+}
+
 function Ensure-ServicePrincipal {
-    $sp = Get-ServicePrincipal -ErrorAction SilentlyContinue
+    Assert-RealGuid -Name 'RovaProdServiceObjectId' -Value $RovaProdServiceObjectId
+    $sp = Get-ServicePrincipalByObjectId -ObjectId $RovaProdServiceObjectId -AppId $RovaProdServiceAppId
     if ($sp) {
         Write-Host "exists   service principal $ServiceName ($RovaProdServiceAppId, object $($sp.ObjectId))"
         return $sp
@@ -154,16 +170,20 @@ function Ensure-ServicePrincipal {
 }
 
 function Ensure-MailRoleAssignment {
-    # Idempotency by the SP OBJECT ID — never a display name.
-    param([string]$SpObjectId)
+    # Idempotency against the SP's OWN identity forms (the same
+    # {ObjectId, DisplayName, Identity} set RemoveSignInRole matches on) —
+    # never a hand-typed display name.
+    param($ServicePrincipal)
+    $spIds = @($ServicePrincipal.ObjectId, $ServicePrincipal.DisplayName, $ServicePrincipal.Identity) |
+        Where-Object { $_ } | ForEach-Object { [string]$_ }
     $existing = Get-ManagementRoleAssignment -Role $MailRole -ErrorAction SilentlyContinue |
-        Where-Object { [string]$_.RoleAssignee -eq [string]$SpObjectId -and $_.CustomResourceScope -eq $ScopeName }
+        Where-Object { $_.CustomResourceScope -eq $ScopeName -and ($spIds -contains [string]$_.RoleAssignee) }
     if ($existing) {
-        Write-Host "exists   role $MailRole for object $SpObjectId scoped to '$ScopeName'"
+        Write-Host "exists   role $MailRole for object $($ServicePrincipal.ObjectId) scoped to '$ScopeName'"
         return
     }
     New-ManagementRoleAssignment -App $RovaProdServiceAppId -Role $MailRole -CustomResourceScope $ScopeName | Out-Null
-    Write-Host "created  role $MailRole for object $SpObjectId scoped to '$ScopeName'"
+    Write-Host "created  role $MailRole for object $($ServicePrincipal.ObjectId) scoped to '$ScopeName'"
 }
 
 function Invoke-SetupStep {
@@ -186,7 +206,7 @@ function Invoke-SetupStep {
     $sp = Ensure-ServicePrincipal
 
     Write-Host '--- 4. Exchange RBAC: Application Mail.Send, scoped to own mailbox'
-    Ensure-MailRoleAssignment -SpObjectId $sp.ObjectId
+    Ensure-MailRoleAssignment -ServicePrincipal $sp
 
     Write-Host '--- 5. proof: Test-ServicePrincipalAuthorization (explicit Application Mail.Send filter)'
     $rows = foreach ($mb in $AllMailboxes) {
@@ -218,7 +238,10 @@ function Remove-SignInAppRoleAssignment {
     Assert-RealGuid -Name 'SignInAppId' -Value $SignInAppId
     Assert-RealGuid -Name 'RovaProdServiceAppId' -Value $RovaProdServiceAppId
 
-    $signIn = Get-ServicePrincipal -ErrorAction Stop | Where-Object { [string]$_.AppId -eq $SignInAppId }
+    $signIn = Get-ServicePrincipal -Identity $SignInAppId -ErrorAction SilentlyContinue
+    if (-not $signIn) {
+        $signIn = Get-ServicePrincipal -ErrorAction SilentlyContinue | Where-Object { [string]$_.AppId -eq $SignInAppId }
+    }
     if (-not $signIn) {
         throw "No Exchange service principal for the sign-in app $SignInAppId. Nothing to remove."
     }
