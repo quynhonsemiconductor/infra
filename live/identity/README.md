@@ -255,7 +255,15 @@ owner exports the live shape first and the plan is a hard go/no-go.
 
 3. Expected plan: **8 imports** (4 applications + 4 service principals) and
    **in-place updates on the imported apps only** — 0 create, 0 destroy. Any
-   other resource appearing in the plan is NO-GO.
+   other resource appearing in the plan is NO-GO. Since #238/#239 the plan
+   also names exactly **3 FIC in-place updates** (subject flips to the
+   numeric org/repo-id form; credential ids untouched — `subject` is a plain
+   updatable attribute, CI keeps the same app/credential): the federated
+   credentials `infra-environment-production`
+   (`…@297362956/infra@1282170347:environment:production`), `infra-pull-request`
+   (`…:pull_request`) and `infra-main-schedule` (`…:ref:refs/heads/main`) on
+   the two `QNSC CI Infra`/`QNSC CI Infra Read` apps. A FIC removal, a
+   replacement, or a fourth FIC is NO-GO.
 
    **Go/no-go: 8 imports and ONLY the changes named in the PR body. Any
    removal, replacement, or a change on an imported app that the PR does not
