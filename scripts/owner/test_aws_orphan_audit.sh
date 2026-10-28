@@ -12,6 +12,12 @@ LIB="$HERE/aws-audit-lib.jq"
 T="$(mktemp -d)"
 [[ -n "${KEEP_TEST_DIR:-}" ]] || trap 'rm -rf "$T"' EXIT
 FIX="$T/fixtures"
+# The expected account is whatever the audited script declares (ACCOUNT=... in
+# aws-orphan-audit.sh) — read at runtime, never hardcoded here. The stub
+# defaults to it so the happy path matches; the refusal case passes a
+# different, fictional 000000000000.
+AUDIT_ACCOUNT="$(sed -n 's/^ACCOUNT=//p' "$SCRIPT" | head -1)"
+export AUDIT_ACCOUNT
 LOG="$T/calls.log"
 mkdir -p "$T/bin" "$FIX"
 export FIX LOG
@@ -20,7 +26,7 @@ cat >"$T/bin/aws" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$LOG"
 if [[ "$1 $2" == "sts get-caller-identity" ]]; then
-  echo "${STUB_ACCOUNT:-111111111111}"
+  echo "${STUB_ACCOUNT:-$AUDIT_ACCOUNT}"
   exit 0
 fi
 f="$FIX/$1-$2.json"
@@ -164,9 +170,9 @@ if grep -qE '^aws ' "$MD"; then fail "every command in the report is commented o
 if grep -q '^# aws iam delete-role' "$MD"; then pass "delete-role command is present, commented"; else fail "delete-role command is present, commented"; fi
 
 # 5. a wrong account is refused before anything else runs
-if STUB_ACCOUNT=111111111111 run_audit; then
+if STUB_ACCOUNT=000000000000 run_audit; then
   fail "wrong account refused"
-elif grep -q 'expected 111111111111' "$T/stderr.txt"; then
+elif grep -q "expected $AUDIT_ACCOUNT" "$T/stderr.txt"; then
   pass "wrong account refused"
 else
   fail "wrong account refused (stderr: $(cat "$T/stderr.txt"))"
