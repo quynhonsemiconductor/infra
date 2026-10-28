@@ -15,6 +15,7 @@
 # source of truth for them (published deliberately).
 ^(www|mail|send|preview)\.qnsc\.vn$
 ^(rova|opshub)(-dev)?\.qnsc\.vn$
+^rova\.dev\.qnsc\.vn$
 ^rova-assets(-dev)?\.qnsc\.vn$
 ^opshub-api-dev\.qnsc\.vn$
 ^kb-dev\.qnsc\.vn$
@@ -57,13 +58,10 @@
 ^72b35adf-eded-4097-b391-02d1319d1e8e$
 
 # ── RFC1918 allocations ──────────────────────────────────────────────────────
-# The internal address plan (allocations.json), the VPC subnet CIDRs of the
-# runtime stacks, and one CIDR example in the onprem variables. Non-routable,
-# already public, and the files that hold them are the source of truth for the
-# allocation table. Scoped to those paths ON PURPOSE — a private address
-# appearing anywhere else in the tree still fails.
-^allocations\.json$
-^live/runtime-dev/
-^live/runtime-prod/
-^live/onprem/variables\.tf$
-^docs/records/kubernetes-platform-design\.md$
+# ONLY the VPC subnet CIDRs of the two runtime stacks, file-scoped (policy:
+# allowlist by file, never whole directories). Everywhere else a private
+# address in the tree fails — allocations.json, the onprem variables example
+# and the design records were FIXED in the PR that added this file (literals
+# replaced by symbolic references / an RFC 5737 example), not allowlisted.
+^live/runtime-dev/main\.tf$
+^live/runtime-prod/main\.tf$

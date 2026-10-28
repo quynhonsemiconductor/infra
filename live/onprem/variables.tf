@@ -16,7 +16,7 @@ variable "admin_private_cidr" {
   description = "The office LAN range the qnsc-admin tunnel may route to (door 2). GitHub Actions repo SECRET ADMIN_PRIVATE_CIDR (secrets, not variables: variable values print unmasked in step env logs of this public repo)."
   validation {
     condition     = can(cidrnetmask(var.admin_private_cidr))
-    error_message = "admin_private_cidr must be a CIDR (e.g. 10.0.0.0/24)."
+    error_message = "admin_private_cidr must be a CIDR (e.g. 192.0.2.0/24 — RFC 5737 documentation range)."
   }
 }
 

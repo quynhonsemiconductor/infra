@@ -5,10 +5,12 @@
 # The shared ci action (v1.26.0, deterministic — no model, no network) scans
 # the current TREE (not history — gitleaks owns history, for secrets) for the
 # names that must never land here: qnsc.vn hostnames and mail addresses, GUIDs,
-# private addresses, plus the org's own Entra tenant GUID and AWS account
-# number, which are NOT written down anywhere in this repo or in ci — the
-# caller feeds them at runtime from org variables and any finding is reported
-# with the value REDACTED (this repo's Actions logs are public).
+# private addresses, plus the org's Entra tenant GUID, fed at runtime from org
+# variables and reported with the value REDACTED (this repo's Actions logs are
+# public). The AWS account id is deliberately NOT armed (policy 2026-10-29: the
+# account closes after the AWS cutover; fixtures use 111111111111) — when ci
+# ships the azure-subscription-id input (E's key-scoped allowlist round), this
+# job re-pins and arms `azure-subscription-id: vars.AZURE_SUBSCRIPTION_ID`.
 #
 # Allowlist: .github/leak-guard-allowlist.txt — one regex per line for the
 # names that are public on purpose (the product edge hostnames this repo's
@@ -51,5 +53,4 @@ jobs:
       - uses: quynhonsemiconductor/ci/actions/leak-guard@ae52bdb8f3a5eecfc8d5f2665053ac872d4cb6f0 # v1.26.0
         with:
           entra-tenant-id: ${{ vars.ENTRA_TENANT_ID }}
-          aws-account-id: ${{ vars.AWS_ACCOUNT_ID }}
           allowlist: .github/leak-guard-allowlist.txt

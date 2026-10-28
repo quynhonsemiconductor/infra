@@ -8,7 +8,7 @@
 # The pattern is rendered from the SAME template the stack uses (breakglass-assumed.pattern.json.tftpl).
 set -uo pipefail
 cd "$(dirname "$0")"
-ROLE_ARN="${1:-arn:aws:iam::608983206583:role/qnsc-prod-breakglass}"
+ROLE_ARN="${1:-arn:aws:iam::111111111111:role/qnsc-prod-breakglass}"
 REGION="${AWS_REGION:-ap-southeast-1}"
 pat="$(mktemp)"; trap 'rm -f "$pat"' EXIT
 sed "s|\${role_arn}|$ROLE_ARN|g" breakglass-assumed.pattern.json.tftpl >"$pat"

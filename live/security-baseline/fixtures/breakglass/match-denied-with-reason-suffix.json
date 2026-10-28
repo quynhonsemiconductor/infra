@@ -3,7 +3,7 @@
   "id": "00000000-0000-0000-0000-000000000000",
   "detail-type": "AWS API Call via CloudTrail",
   "source": "aws.sts",
-  "account": "608983206583",
+  "account": "111111111111",
   "time": "2026-10-12T07:42:38Z",
   "region": "ap-southeast-1",
   "resources": [],
@@ -19,12 +19,12 @@
     "userIdentity": {
       "type": "AssumedRole",
       "principalId": "AROAEXAMPLE:botocore-session-1",
-      "arn": "arn:aws:sts::608983206583:assumed-role/qnsc-admin/botocore-session-1",
-      "accountId": "608983206583"
+      "arn": "arn:aws:sts::111111111111:assumed-role/qnsc-admin/botocore-session-1",
+      "accountId": "111111111111"
     },
     "requestParameters": null,
     "responseElements": null,
     "errorCode": "AccessDenied",
-    "errorMessage": "User: arn:aws:sts::608983206583:assumed-role/qnsc-admin/botocore-session-1 is not authorized to perform: sts:AssumeRole on resource: arn:aws:iam::608983206583:role/qnsc-prod-breakglass because no identity-based policy allows the sts:AssumeRole action"
+    "errorMessage": "User: arn:aws:sts::111111111111:assumed-role/qnsc-admin/botocore-session-1 is not authorized to perform: sts:AssumeRole on resource: arn:aws:iam::111111111111:role/qnsc-prod-breakglass because no identity-based policy allows the sts:AssumeRole action"
   }
 }
