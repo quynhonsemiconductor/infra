@@ -213,13 +213,16 @@ owner exports the live shape first and the plan is a hard go/no-go.
    The loop FAILS unless exactly one app matches each name:
 
    ```sh
+   # NOTE: --display-name is a PREFIX match ("Rova Dev" also hits
+   # "Rova Dev Service") — filter on EXACT equality instead:
    mkdir -p ~/signin-export && cd ~/signin-export
-   for app in "Rova Prod" "Rova Dev" "Opshub Dev" "KB Dev"; do
-     n=$(az ad app list --display-name "$app" --query 'length(@)' -o tsv)
+   for app in "Rova Prod" "Rova Dev" "OpsHub Dev" "KB Dev"; do
+     n=$(az ad app list --filter "displayName eq '$app'" --query 'length(@)' -o tsv)
      [ "$n" = "1" ] || { echo "expected exactly 1 app named '$app', got $n — STOP"; exit 1; }
-     app_id=$(az ad app list --display-name "$app" --query '[0].appId' -o tsv)
-     az ad app show --id "$app_id"   > "$(echo "$app" | tr ' ' '-' | tr 'A-Z' 'a-z')-app.json"
-     az ad sp show --id "$app_id"    > "$(echo "$app" | tr ' ' '-' | tr 'A-Z' 'a-z')-sp.json"
+     app_id=$(az ad app list --filter "displayName eq '$app'" --query '[0].appId' -o tsv)
+     slug=$(echo "$app" | tr ' ' '-' | tr 'A-Z' 'a-z')
+     az ad app show --id "$app_id" > "$slug-app.json"
+     az ad sp show --id "$app_id"  > "$slug-sp.json"
    done
    ```
 
@@ -231,18 +234,17 @@ owner exports the live shape first and the plan is a hard go/no-go.
      `jq -n --slurpfile a rova-prod-app.json '{rova_prod:$a[0].id, …}'`
      (keys `rova_prod`/`rova_dev`/`opshub_dev`/`kb_dev`);
    - `TF_VAR_opshub_dev_app_role_ids` — the App Role `id` GUIDs (keys `admin`,
-     `it-admin`, `security`, `hr`, `manager`, `helpdesk`, `auditor`,
-     `employee`; values/display names are modeled from
-     `db/permissions.catalog.ts` and MUST match the export);
-   - `TF_VAR_opshub_dev_app_role_descriptions` — the EXACT live role
-     `description` strings (hand-written text would overwrite them);
+     `it-admin`, `security`, `hr`, `manager`, `helpdesk`, `auditor` — 7 roles;
+     there is NO `employee` role live and none is modeled);
    - `TF_VAR_existing_identifier_uris` — JSON map keyed like above; pass `{}`
      ONLY if the exports show none;
    - `TF_VAR_owner_operator_object_id` and `TF_VAR_second_owner_object_id` —
      the two human owners (A4/O2).
-   Per role, the export MUST show `allowedMemberTypes` = `["User"]` and
-   `enabled` = true — ANY other shape is NO-GO (encode it in a reviewed commit
-   first). If an export shows `optionalClaims`, a `groupMembershipClaims`
+   Display names, descriptions and member types are IN the code now, taken
+   verbatim from the 2026-10-27 export (admin: `Admin`,
+   `["User", "Application"]`; auditor: `Auditor`; the rest `["User"]`). If a
+   future export differs from the code on any role field, STOP and reconcile
+   in a reviewed commit first. If an export shows `optionalClaims`, a `groupMembershipClaims`
    value, or ANY of the non-Computed fields above set differently from the
    code, STOP and encode the difference in a reviewed commit BEFORE the
    apply — the code cannot guess it.
@@ -251,9 +253,17 @@ owner exports the live shape first and the plan is a hard go/no-go.
    these variables exported — Phase-1-only plans (vault RBAC + ESO alone) are
    no longer possible.**
 
-3. Expected plan: **8 imports** (4 applications + 4 service principals, each
-   "no changes" unless a section below names it) and AT MOST in-place updates
-   on the imported apps for the modeled redirect URIs / roles.
+3. Expected plan: **8 imports** (4 applications + 4 service principals) and
+   **in-place updates on the imported apps only** — 0 create, 0 destroy. Any
+   other resource appearing in the plan is NO-GO. Since #238/#239 the plan
+   also names exactly **3 FIC in-place updates** (subject flips to the
+   numeric org/repo-id form; credential ids untouched — `subject` is a plain
+   updatable attribute, CI keeps the same app/credential): the federated
+   credentials `infra-environment-production`
+   (`…@297362956/infra@1282170347:environment:production`), `infra-pull-request`
+   (`…:pull_request`) and `infra-main-schedule` (`…:ref:refs/heads/main`) on
+   the two `QNSC CI Infra`/`QNSC CI Infra Read` apps. A FIC removal, a
+   replacement, or a fourth FIC is NO-GO.
 
    **Go/no-go: 8 imports and ONLY the changes named in the PR body. Any
    removal, replacement, or a change on an imported app that the PR does not
