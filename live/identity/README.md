@@ -311,8 +311,15 @@ apps come with their own prod PRs.
 
    - `TF_VAR_mail_service_object_ids` — the app-registrations object ids
      (the `id` field of each `*-app.json`):
-     `jq -n --slurpfile a rova-prod-service-app.json …` — keys
-     `rova_prod`/`rova_dev`/`opshub_dev`/`kb_dev`;
+
+     ```sh
+     jq -n \
+       --slurpfile a rova-prod-service-app.json \
+       --slurpfile b rova-dev-service-app.json \
+       --slurpfile c opshub-dev-service-app.json \
+       --slurpfile d kb-dev-service-app.json \
+       '{rova_prod:$a[0].id, rova_dev:$b[0].id, opshub_dev:$c[0].id, kb_dev:$d[0].id}'
+     ```;
    - `TF_VAR_mail_service_sp_object_ids` — the SP object ids
      (`id` field of each `*-sp.json`);
    - `TF_VAR_mail_service_certificates` — one PEM PUBLIC certificate per app
@@ -362,6 +369,8 @@ import. The **dev certificates are adopted too** (SA decision — no rotation):
 imported by `<app object id>/certificate/<keyId>`, value = the exact public
 certificate already in 1Password ("Entra mail cert – <product>-dev –
 certificate"). Only **rova_prod's certificate is created** (new keypair).
+Import id form (azuread 3.10 parser): EXACTLY
+`<app OBJECT id>/certificate/<keyId>` — no `/applications/` prefix.
 NO opshub/kb PROD apps: those products are not live in prod; their service
 apps come with their own prod PRs. rova_prod carries the ONE Graph permission
 the plan gives the rova Service app — tenant-wide guest invite
@@ -405,8 +414,15 @@ the invite to the Service cert — a rova-track change, not this stack's).
 
    - `TF_VAR_mail_service_object_ids` — the app-registrations object ids
      (the `id` field of each `*-app.json`):
-     `jq -n --slurpfile a rova-prod-service-app.json …` — keys
-     `rova_prod`/`rova_dev`/`opshub_dev`/`kb_dev`;
+
+     ```sh
+     jq -n \
+       --slurpfile a rova-prod-service-app.json \
+       --slurpfile b rova-dev-service-app.json \
+       --slurpfile c opshub-dev-service-app.json \
+       --slurpfile d kb-dev-service-app.json \
+       '{rova_prod:$a[0].id, rova_dev:$b[0].id, opshub_dev:$c[0].id, kb_dev:$d[0].id}'
+     ```;
    - `TF_VAR_mail_service_sp_object_ids` — the SP object ids
      (`id` field of each `*-sp.json`);
    - `TF_VAR_mail_service_cert_key_ids` — the three dev `keyId`s:
@@ -427,6 +443,7 @@ the invite to the Service cert — a rova-track change, not this stack's).
 
      ```sh
      umask 077
+     mkdir -p "$HOME/keys"
      keydir=$(mktemp -d "$HOME/keys/mail-rova-prod.XXXXXX")   # outside iCloud-synced folders
      openssl req -x509 -newkey rsa:2048 -nodes -days 730 \
        -keyout "$keydir/rova-prod.key" -out "$keydir/rova-prod.crt" \
@@ -448,19 +465,22 @@ the invite to the Service cert — a rova-track change, not this stack's).
      A private key in any value fails the variable validation. KEEP the key
      files — they are the source of the vault secrets in step 5.
 
-4. `tofu plan` go/no-go — expected: **8 imports** (4 applications + 4 service
-   principals) + **3 certificate imports** (the dev certs) + **1 certificate
-   create** (rova_prod) and NOTHING else. The TWO named changes on the
-   hand-created rova_prod app: a default delegated `User.Read` entry is
-   REMOVED (rova Service apps model no delegated permission), and
-   `User.Invite.All` (application role) is ADDED for the guest-invite flow.
-   Consent it right after apply:
-   `az ad app permission admin-consent --id <rova_prod service app id>`.
-   Anything else on an imported app — a permission add or removal, a redirect
-   URI, a secret credential, a certificate replacement on a dev app — is
-   NO-GO: STOP, export again, reconcile in a reviewed commit first.
-   (opshub_dev's three application roles are in the code; a different live
-   set is STOP and reconcile `mail.tf` first.)
+4. `tofu plan` go/no-go — the plan must read EXACTLY: **8 imports** (4
+   applications + 4 service principals) + **3 certificate imports** (the dev
+   certs) + **1 certificate create** (rova_prod) + **1 application update**
+   (the hand-created rova_prod app: the wizard-default delegated `User.Read`
+   REMOVED, `User.Invite.All` (application role) ADDED) — nothing else.
+   Any change on an imported app — a permission add or removal, a redirect
+   URI, a secret credential — is NO-GO, and **any certificate showing
+   "must be replaced" is STOP** (the dev certs are imported write-only; see
+   the `mail.tf` resource comment). opshub_dev's three application roles are
+   in the code; a different live set is STOP and reconcile `mail.tf` first.
+   The `User.Invite.All` ADMIN CONSENT is a separate manual step right after
+   apply (the plan only updates the app):
+
+   ```sh
+   az ad app permission admin-consent --id <rova_prod service app id>
+   ```
 
 5. After apply: record `mail_service_client_ids` (rova_prod's is the value
    rova's Graph config records; the dev values land in the dev bundles).

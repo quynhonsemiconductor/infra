@@ -9,13 +9,14 @@
 # prod PRs and stay draft until then.
 #
 # The DEV certificates are ADOPTED too (SA decision — no rotation): one
-# azuread_application_certificate per dev app, imported by
-# "<app object id>/certificate/<keyId>" (keyIds via
-# TF_VAR_mail_service_cert_key_ids — public identifiers), the VALUE being the
-# public certificate already in 1Password ("Entra mail cert – <product>-dev –
-# certificate"). Only rova_prod's certificate is CREATED (new keypair,
-# README). Rotation: create_before_destroy — the new credential exists before
-# the old one is removed.
+# azuread_application_certificate per dev app, imported by the azuread 3.10
+# parse.CertificateID form — EXACTLY "{app OBJECT id}/certificate/{keyId}"
+# (ObjectSubResourceID: 3 slash-parts, bare UUID, no /applications/ prefix;
+# keyIds via TF_VAR_mail_service_cert_key_ids — public identifiers), the
+# VALUE being the public certificate already in 1Password ("Entra mail cert –
+# <product>-dev – certificate"). Only rova_prod's certificate is CREATED (new
+# keypair, README). ignore_changes on value/encoding keeps the imported certs
+# imported (see the resource comment).
 #
 # Certificate auth ONLY (§7.2): the PUBLIC half is terraformed from
 # TF_VAR_mail_service_certificates (a private key never passes validation —
@@ -39,8 +40,10 @@ locals {
       display_name = "Rova Prod Service"
       notes        = "github.com/quynhonsemiconductor/rova"
       # The one Graph permission the plan gives the rova Service app (§7.3,
-      # H-D14, backlog P0-7): tenant-wide guest invite, admin-consented on
-      # apply — the sign-in apps must keep NO application permissions.
+      # H-D14, backlog P0-7): tenant-wide guest invite — the sign-in apps
+      # must keep NO application permissions. The app UPDATE is in this
+      # plan; the ADMIN CONSENT is a separate manual step right after apply
+      # (az ad app permission admin-consent, README step 4).
       graph_app_role_values = ["User.Invite.All"]
     }
     rova_dev = {
@@ -157,11 +160,18 @@ resource "azuread_application_certificate" "mail_service" {
   value          = var.mail_service_certificates[each.key]
   encoding       = "pem"
 
-  # Rotation issues the NEW credential before the old one is removed, so the
-  # SP is never left without a certificate mid-apply; the worker's PEM file is
-  # swapped right after (README "Rotation").
+  # azuread 3.10: value/encoding are ForceNew AND the read never sets them, so
+  # an imported certificate would plan a REPLACE (delete the live dev cert —
+  # it breaks the workers). value/encoding are write-only config here: ignore
+  # changes so imported certs stay imported and the secret's bytes are the
+  # source of truth. Any plan showing a certificate "must be replaced" is a
+  # STOP (README go/no-go).
+  #
+  # Rotation is still deliberate: issue the NEW credential (apply) before the
+  # old one is removed, then swap the worker's PEM (README "Rotation").
   lifecycle {
     create_before_destroy = true
+    ignore_changes        = [value, encoding]
   }
 }
 
@@ -204,9 +214,10 @@ import {
   to = azuread_service_principal.mail_service["kb_dev"]
   id = "/servicePrincipals/${var.mail_service_sp_object_ids.kb_dev}"
 }
-# Dev certificates: ADOPTED (SA decision — no rotation). Import id shape:
-# <application object id>/certificate/<keyId>. rova_prod's certificate is the
-# one create in this apply.
+# Dev certificates: ADOPTED (SA decision — no rotation). Import id shape
+# (azuread 3.10 parse.CertificateID = ObjectSubResourceID): exactly
+# "{app OBJECT id}/certificate/{keyId}" — 3 slash-parts, NO /applications/
+# prefix. rova_prod's certificate is the one create in this apply.
 import {
   to = azuread_application_certificate.mail_service["rova_dev"]
   id = "/applications/${var.mail_service_object_ids.rova_dev}/certificate/${var.mail_service_cert_key_ids.rova_dev}"
