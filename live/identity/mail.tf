@@ -62,10 +62,6 @@ locals {
       graph_app_role_values = []
     }
   }
-
-  # The dev apps' EXISTING certificates are imported (no rotation); only
-  # rova_prod's certificate is created by the apply.
-  mail_service_certs_imported = ["rova_dev", "opshub_dev", "kb_dev"]
 }
 
 variable "mail_service_object_ids" {
