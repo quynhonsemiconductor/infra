@@ -1,0 +1,67 @@
+# Allowlist for the public-repo leak guard (ci actions/leak-guard, v1.26.0).
+# One REGULAR EXPRESSION per line, matched against a finding's TEXT or its
+# repository-relative PATH. NO trailing comments — a loader line is a whole
+# regex; comments must sit on their own # lines. Blank lines are ignored.
+#
+# Baseline triaged 2026-10-29 against the full tree (175 findings, dry run with
+# the org identifiers from vars); every entry below is a name that is public on
+# purpose — the finding-by-finding triage is in the PR that added this file.
+# Anything genuinely internal must be FIXED, not added here.
+
+# ── Hostnames ────────────────────────────────────────────────────────────────
+# The product edge hostnames: live/edge, live/identity, live/onprem,
+# live/storage-*, live/observability-alerting and the incident/record docs
+# configure or name them, and the edge configuration in this public repo is the
+# source of truth for them (published deliberately).
+^(www|mail|send|preview)\.qnsc\.vn$
+^(rova|opshub)(-dev)?\.qnsc\.vn$
+^rova\.dev\.qnsc\.vn$
+^rova-assets(-dev)?\.qnsc\.vn$
+^opshub-api-dev\.qnsc\.vn$
+^kb-dev\.qnsc\.vn$
+^kb-api-dev\.qnsc\.vn$
+# Dead pre-rename name, kept in the EKS teardown record:
+^rally-api-dev\.qnsc\.vn$
+# Dead EKS hostname, teardown record only:
+^rova-api-eks-dev\.qnsc\.vn$
+# Example PR-preview hostname in the platform design record:
+^rova-412\.preview\.qnsc\.vn$
+
+# ── Mail addresses ───────────────────────────────────────────────────────────
+# Operator alert alias in live/* and docs (already public by design):
+^devops@qnsc\.vn$
+# SECURITY.md's public security-contact address:
+^security@qnsc\.vn$
+# Product send-only mailboxes, both documented spellings (noreply-<product>
+# and <product>-noreply):
+^noreply(-[a-z0-9-]+)?@qnsc\.vn$
+^([a-z0-9]+-)?noreply@qnsc\.vn$
+
+# ── GUIDs ────────────────────────────────────────────────────────────────────
+# Microsoft well-known constants (public first-party app / tenant ids used by
+# the Entra audit scripts and live/identity):
+^00000003-0000-0000-c000-000000000000$
+^00000002-0000-0ff1-ce00-000000000000$
+^f8cdef31-a31e-4b4a-93e4-5f571e91255a$
+# Fabricated fixtures in the owner-script test suites:
+^0{8}(-0{4}){3}-0{12}$
+^scripts/entra-audit/test_entra_audit\.py$
+^scripts/owner/test_aws_orphan_audit\.sh$
+# (also that file's operator fixture address)
+^scripts/owner/test_bootstrap_state\.sh$
+# DEFAULT_ROLE_ID all-zero sentinel:
+^scripts/owner/entra-hygiene/hygiene\.py$
+# Resource IDENTIFIERS (not credentials) in the incident/record docs — an ACM
+# certificate id inside a well-formed ARN and an RDS managed-secret NAME (the
+# secret's value is never in the tree; gitleaks owns that):
+^c3a479c8-f7b4-4bf1-b26c-998e14a34384$
+^72b35adf-eded-4097-b391-02d1319d1e8e$
+
+# ── RFC1918 allocations ──────────────────────────────────────────────────────
+# ONLY the VPC subnet CIDRs of the two runtime stacks, file-scoped (policy:
+# allowlist by file, never whole directories). Everywhere else a private
+# address in the tree fails — allocations.json, the onprem variables example
+# and the design records were FIXED in the PR that added this file (literals
+# replaced by symbolic references / an RFC 5737 example), not allowlisted.
+^live/runtime-dev/main\.tf$
+^live/runtime-prod/main\.tf$

@@ -12,6 +12,12 @@ LIB="$HERE/aws-audit-lib.jq"
 T="$(mktemp -d)"
 [[ -n "${KEEP_TEST_DIR:-}" ]] || trap 'rm -rf "$T"' EXIT
 FIX="$T/fixtures"
+# The expected account is whatever the audited script declares (ACCOUNT=... in
+# aws-orphan-audit.sh) — read at runtime, never hardcoded here. The stub
+# defaults to it so the happy path matches; the refusal case passes a
+# different, fictional 000000000000.
+AUDIT_ACCOUNT="$(sed -n 's/^ACCOUNT=//p' "$SCRIPT" | head -1)"
+export AUDIT_ACCOUNT
 LOG="$T/calls.log"
 mkdir -p "$T/bin" "$FIX"
 export FIX LOG
@@ -20,7 +26,7 @@ cat >"$T/bin/aws" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$LOG"
 if [[ "$1 $2" == "sts get-caller-identity" ]]; then
-  echo "${STUB_ACCOUNT:-608983206583}"
+  echo "${STUB_ACCOUNT:-$AUDIT_ACCOUNT}"
   exit 0
 fi
 f="$FIX/$1-$2.json"
@@ -34,8 +40,8 @@ RECENT="$(date -u -v-5d +%Y-%m-%dT10:00:00+07:00 2>/dev/null || date -u -d '5 da
 
 cat >"$FIX/iam-list-roles.json" <<'JSON'
 {"Roles": [
-  {"RoleName": "eks-spike-node", "Arn": "arn:aws:iam::608983206583:role/eks-spike-node", "RoleLastUsed": {"LastUsedDate": "2026-10-01T00:00:00+00:00"}},
-  {"RoleName": "rova-api-task", "Arn": "arn:aws:iam::608983206583:role/rova-api-task", "RoleLastUsed": {}}
+  {"RoleName": "eks-spike-node", "Arn": "arn:aws:iam::111111111111:role/eks-spike-node", "RoleLastUsed": {"LastUsedDate": "2026-10-01T00:00:00+00:00"}},
+  {"RoleName": "rova-api-task", "Arn": "arn:aws:iam::111111111111:role/rova-api-task", "RoleLastUsed": {}}
 ]}
 JSON
 # CreateTime at 03:00 on the 2nd in +07:00 is still the 1st in UTC: a naive date slice would print the 2nd.
@@ -85,7 +91,7 @@ cat >"$FIX/kms-list-aliases.json" <<'JSON'
 {"Aliases": [{"AliasName": "alias/rova-develop", "TargetKeyId": "2222bbbb-0000-0000-0000-000000000000"}]}
 JSON
 cat >"$FIX/elbv2-describe-load-balancers.json" <<'JSON'
-{"LoadBalancers": [{"LoadBalancerName": "opshub-prod-alb", "LoadBalancerArn": "arn:aws:elasticloadbalancing:ap-southeast-1:608983206583:loadbalancer/app/opshub-prod-alb/abc123"}]}
+{"LoadBalancers": [{"LoadBalancerName": "opshub-prod-alb", "LoadBalancerArn": "arn:aws:elasticloadbalancing:ap-southeast-1:111111111111:loadbalancer/app/opshub-prod-alb/abc123"}]}
 JSON
 cat >"$FIX/rds-describe-db-snapshots.json" <<'JSON'
 {"DBSnapshots": [{"DBSnapshotIdentifier": "qnsc-sql-final", "Engine": "sqlserver-se", "SnapshotType": "manual", "SnapshotCreateTime": "2026-02-02T00:00:00+00:00", "AllocatedStorage": 50}]}
@@ -164,9 +170,9 @@ if grep -qE '^aws ' "$MD"; then fail "every command in the report is commented o
 if grep -q '^# aws iam delete-role' "$MD"; then pass "delete-role command is present, commented"; else fail "delete-role command is present, commented"; fi
 
 # 5. a wrong account is refused before anything else runs
-if STUB_ACCOUNT=111111111111 run_audit; then
+if STUB_ACCOUNT=000000000000 run_audit; then
   fail "wrong account refused"
-elif grep -q 'expected 608983206583' "$T/stderr.txt"; then
+elif grep -q "expected $AUDIT_ACCOUNT" "$T/stderr.txt"; then
   pass "wrong account refused"
 else
   fail "wrong account refused (stderr: $(cat "$T/stderr.txt"))"

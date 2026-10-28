@@ -15,7 +15,7 @@ import hygiene
 from hygiene import DEFAULT_ROLE_ID, GraphError, Hygiene, MEMBER_RULE, PRODUCTS, references_bundle
 
 NOW = dt.datetime(2026, 10, 18, 9, 0, tzinfo=dt.timezone.utc)
-ACCOUNT = "608983206583"
+ACCOUNT = "111111111111"
 ROVA_DEV = PRODUCTS[("rova", "develop")]
 ROVA_PROD = PRODUCTS[("rova", "production")]
 KB_DEV = PRODUCTS[("kb", "develop")]

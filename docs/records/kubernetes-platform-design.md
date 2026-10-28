@@ -345,8 +345,8 @@ platform: the chart deploys images, not repositories. Every repository above sta
 
 ```
 ONE account (608983206583) to start
-  ├── EKS cluster "dev"   in runtime-dev VPC   10.90.0.0/16
-  └── EKS cluster "prod"  in runtime-prod VPC  10.91.0.0/16
+  ├── EKS cluster "dev"   in runtime-dev VPC   (the runtime-dev /16 — allocations.json)
+  └── EKS cluster "prod"  in runtime-prod VPC  (the runtime-prod /16 — allocations.json)
 namespace per product              rova · opshub · kb · lms …
 ```
 
@@ -464,8 +464,8 @@ routing and DNS remain exactly as they are in `runtime-dev` and `runtime-prod`.
 IP*, and nodes reserve them in blocks. Current sizing:
 
 ```
-VPC              10.90.0.0/16      65,536 addresses
-private subnets  10.90.10-12.0/24  3 × ~251 usable ≈ 750 pod IPs cluster-wide
+VPC              the runtime-dev /16   65,536 addresses
+private subnets  three /24s in the runtime-dev VPC   3 × ~251 usable ≈ 750 pod IPs cluster-wide
 ```
 
 At fifteen services with replicas, plus Alloy on every node, plus system workloads, that is not
@@ -474,7 +474,7 @@ enough — and exhaustion presents as pods stuck in `ContainerCreating` with no 
 * Resize private subnets `/24` → `/20` (~4,000 each). The `/16` is nearly empty; the space is
   free today and requires recreating subnets under load later.
 * Enable **prefix delegation** on the VPC CNI.
-* `runtime-prod` (`10.91.0.0/16`) needs the same treatment.
+* `runtime-prod` (the runtime-prod /16) needs the same treatment.
 
 ### The S3 gateway endpoint, which should exist already
 

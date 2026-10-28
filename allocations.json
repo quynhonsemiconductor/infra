@@ -37,39 +37,33 @@
   "allocations": {
     "runtime-dev": {
       "net": 90,
-      "cidr": "10.90.0.0/16",
       "status": "live",
       "note": "shared dev VPC + fck-nat + shared Valkey. NO ALB: runtime-dev sets enable_alb = false and products ingress via Cloudflare Tunnel sidecars."
     },
     "runtime-prod": {
       "net": 91,
-      "cidr": "10.91.0.0/16",
       "status": "live",
       "note": "shared prod VPC + fck-nat. Live as of go-live (see live/runtime-prod/main.tf header). NO ALB: enable_alb = false, products ingress via Cloudflare Tunnel. No shared cache in prod — each product owns its node."
     },
     "rova-develop": {
       "net": 10,
-      "cidr": "10.10.0.0/16",
       "status": "retiring",
       "note": "legacy per-product dev VPC, superseded by runtime-dev. Renamed from rally-develop when the product was renamed rally -> rova. CONFIRM DESTROYED before octet 10 is ever reused."
     },
     "rova-prod": {
       "net": 20,
-      "cidr": "10.20.0.0/16",
       "status": "retiring",
       "note": "legacy per-product prod VPC, superseded by runtime-prod. Renamed from rally-prod. CONFIRM DESTROYED before octet 20 is ever reused."
     },
     "opshub-develop": {
       "net": 50,
-      "cidr": "10.50.0.0/16",
       "status": "retiring",
-      "note": "legacy per-product dev VPC, superseded by runtime-dev. opshub develop now runs IN the shared runtime-dev VPC (10.90.0.0/16) — state, RDS and ECS cluster all exist there — so nothing depends on this legacy /16. CONFIRM DESTROYED before octet 50 is ever reused."
+      "note": "legacy per-product dev VPC, superseded by runtime-dev. opshub develop now runs IN the shared runtime-dev VPC (the shared runtime-dev VPC) — state, RDS and ECS cluster all exist there — so nothing depends on this legacy /16. CONFIRM DESTROYED before octet 50 is ever reused."
     },
     "opshub-prod": {
       "net": 30,
-      "cidr": "10.30.0.0/16",
       "status": "retiring",
-      "note": "legacy per-product prod VPC, superseded by runtime-prod. opshub prod IS applied (state, RDS and ECS cluster exist) but runs in the shared runtime-prod VPC (10.91.0.0/16) and is idle — one worker service at desired 0, no api service. Nothing depends on this legacy /16. CONFIRM DESTROYED before octet 30 is ever reused."
+      "note": "legacy per-product prod VPC, superseded by runtime-prod. opshub prod IS applied (state, RDS and ECS cluster exist) but runs in the shared runtime-prod VPC (the shared runtime-prod VPC) and is idle — one worker service at desired 0, no api service. Nothing depends on this legacy /16. CONFIRM DESTROYED before octet 30 is ever reused."
     }
   },
   "stacks_without_an_allocation": {
