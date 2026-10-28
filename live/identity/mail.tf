@@ -2,11 +2,20 @@
 #
 # One certificate-only Service app per product per env, named
 # "<Product> <Env> Service". The registrations are ADOPTED via import (no new
-# ids, so rova #727's recorded client id is unaffected): rova prod (the owner
-# hand-creates the registration FIRST — README "Mail service apps") and the
-# three EXISTING dev service apps (live since 2026-10-18). NO opshub/kb PROD
-# apps — those products are not live in prod; their service apps come with
-# their own prod PRs and stay draft until then.
+# ids): rova prod (the owner hand-creates the registration FIRST — README
+# "Mail service apps") and the three EXISTING dev service apps (live since
+# 2026-10-18, reconciled to the 2026-10-28 exports). NO opshub/kb PROD apps —
+# those products are not live in prod; their service apps come with their own
+# prod PRs and stay draft until then.
+#
+# The DEV certificates are ADOPTED too (SA decision — no rotation): one
+# azuread_application_certificate per dev app, imported by
+# "<app object id>/certificate/<keyId>" (keyIds via
+# TF_VAR_mail_service_cert_key_ids — public identifiers), the VALUE being the
+# public certificate already in 1Password ("Entra mail cert – <product>-dev –
+# certificate"). Only rova_prod's certificate is CREATED (new keypair,
+# README). Rotation: create_before_destroy — the new credential exists before
+# the old one is removed.
 #
 # Certificate auth ONLY (§7.2): the PUBLIC half is terraformed from
 # TF_VAR_mail_service_certificates (a private key never passes validation —
@@ -18,38 +27,45 @@
 # No Mail.* permission anywhere (§7.2): Exchange RBAC
 # ("Application Mail.Send" scoped to the product mailbox) is EXCHANGE-side and
 # stays owner-run in scripts/owner/mail-prod-tenant/. rova and kb Service
-# apps hold NO Graph permissions at all; opshub's five Graph APPLICATION roles
-# (identity/door reads) are modeled so the import does not REMOVE them
-# (azuread 3.x does not treat required_resource_access as Computed); ids are
-# resolved from the msgraph SP — no literal UUIDs.
+# apps hold NO Graph permissions at all; opshub_dev models EXACTLY the three
+# LIVE application roles (2026-10-28 export; the write roles come later in
+# their own PR) so the import does not REMOVE them (azuread 3.x does not
+# treat required_resource_access as Computed); ids are resolved from the
+# msgraph SP — no literal UUIDs.
 
 locals {
   mail_service_apps = {
     rova_prod = {
       display_name          = "Rova Prod Service"
+      notes                 = "github.com/quynhonsemiconductor/rova"
       graph_app_role_values = []
     }
     rova_dev = {
       display_name          = "Rova Dev Service"
+      notes                 = "github.com/quynhonsemiconductor/rova"
       graph_app_role_values = []
     }
     opshub_dev = {
       display_name = "OpsHub Dev Service"
-      # Exactly the five live application permissions (identity/door reads);
-      # never Mail.Send (§7.3).
+      notes        = "github.com/quynhonsemiconductor/opshub"
+      # Exactly the three LIVE application roles (2026-10-28 export); never
+      # Mail.Send (§7.3). The write roles are a later, separate PR.
       graph_app_role_values = [
-        "SecurityEvents.Read.All",
         "DeviceManagementManagedDevices.Read.All",
+        "SecurityEvents.Read.All",
         "User.Read.All",
-        "User.EnableDisableAccount.All",
-        "User.RevokeSessions.All",
       ]
     }
     kb_dev = {
       display_name          = "KB Dev Service"
+      notes                 = "github.com/quynhonsemiconductor/qnsc-kb-backend"
       graph_app_role_values = []
     }
   }
+
+  # The dev apps' EXISTING certificates are imported (no rotation); only
+  # rova_prod's certificate is created by the apply.
+  mail_service_certs_imported = ["rova_dev", "opshub_dev", "kb_dev"]
 }
 
 variable "mail_service_object_ids" {
@@ -72,6 +88,23 @@ variable "mail_service_sp_object_ids" {
   description = "Object ids of the mail service apps' service principals (the enterprise-application objects, NOT the app-registrations object ids). TF_VAR_mail_service_sp_object_ids exported by the owner, never committed."
 }
 
+variable "mail_service_cert_key_ids" {
+  type = object({
+    rova_dev   = string
+    opshub_dev = string
+    kb_dev     = string
+  })
+  description = "keyId of the EXISTING certificate credential on each dev service app, from the owner's `az ad app show` export (keyCredentials[].keyId) — public identifiers, used only to build the import ids. TF_VAR_mail_service_cert_key_ids (JSON), never committed."
+
+  validation {
+    condition = alltrue([
+      for id in values(var.mail_service_cert_key_ids) :
+      can(regex("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", id))
+    ])
+    error_message = "Every mail_service_cert_key_ids value must be a GUID."
+  }
+}
+
 variable "mail_service_certificates" {
   type = object({
     rova_prod  = string
@@ -79,7 +112,7 @@ variable "mail_service_certificates" {
     opshub_dev = string
     kb_dev     = string
   })
-  description = "PEM PUBLIC certificate for each mail service app, keyed like local.mail_service_apps. Generated locally by the owner (openssl, RSA 2048, ≤ 24 months), passed through TF_VAR_mail_service_certificates, never committed. A private key must never be passed."
+  description = "PEM PUBLIC certificate per app, keyed like local.mail_service_apps. Dev values are the certificates ALREADY LIVE (1Password 'Entra mail cert – <product>-dev – certificate' — the same bytes the export shows); rova_prod's comes from the owner's NEW keypair (README step 3). Passed through TF_VAR_mail_service_certificates, never committed. A private key must never be passed."
 
   validation {
     condition = alltrue([
@@ -94,12 +127,14 @@ resource "azuread_application" "mail_service" {
   for_each = local.mail_service_apps
 
   display_name     = each.value.display_name
+  notes            = each.value.notes
   sign_in_audience = "AzureADMyOrg" # single tenant, app-only; no redirect URIs
 
   # rova and kb: NO required_resource_access at all (their runbooks require
   # none — a hand-created registration's default delegated User.Read entry is
-  # REMOVED on apply, an intended change named in the README). opshub: exactly
-  # the five live application roles, ids resolved from the msgraph SP.
+  # REMOVED on apply, an intended change named in the README). opshub_dev:
+  # exactly the three live application roles, ids resolved from the msgraph
+  # SP.
   dynamic "required_resource_access" {
     for_each = length(each.value.graph_app_role_values) > 0 ? [1] : []
     content {
@@ -169,6 +204,21 @@ import {
 import {
   to = azuread_service_principal.mail_service["kb_dev"]
   id = "/servicePrincipals/${var.mail_service_sp_object_ids.kb_dev}"
+}
+# Dev certificates: ADOPTED (SA decision — no rotation). Import id shape:
+# <application object id>/certificate/<keyId>. rova_prod's certificate is the
+# one create in this apply.
+import {
+  to = azuread_application_certificate.mail_service["rova_dev"]
+  id = "/applications/${var.mail_service_object_ids.rova_dev}/certificate/${var.mail_service_cert_key_ids.rova_dev}"
+}
+import {
+  to = azuread_application_certificate.mail_service["opshub_dev"]
+  id = "/applications/${var.mail_service_object_ids.opshub_dev}/certificate/${var.mail_service_cert_key_ids.opshub_dev}"
+}
+import {
+  to = azuread_application_certificate.mail_service["kb_dev"]
+  id = "/applications/${var.mail_service_object_ids.kb_dev}/certificate/${var.mail_service_cert_key_ids.kb_dev}"
 }
 
 # Client ids are public identifiers — rova #727 records the rova_prod one as
