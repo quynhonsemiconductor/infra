@@ -36,9 +36,12 @@
 locals {
   mail_service_apps = {
     rova_prod = {
-      display_name          = "Rova Prod Service"
-      notes                 = "github.com/quynhonsemiconductor/rova"
-      graph_app_role_values = []
+      display_name = "Rova Prod Service"
+      notes        = "github.com/quynhonsemiconductor/rova"
+      # The one Graph permission the plan gives the rova Service app (§7.3,
+      # H-D14, backlog P0-7): tenant-wide guest invite, admin-consented on
+      # apply — the sign-in apps must keep NO application permissions.
+      graph_app_role_values = ["User.Invite.All"]
     }
     rova_dev = {
       display_name          = "Rova Dev Service"

@@ -363,16 +363,18 @@ imported by `<app object id>/certificate/<keyId>`, value = the exact public
 certificate already in 1Password ("Entra mail cert – <product>-dev –
 certificate"). Only **rova_prod's certificate is created** (new keypair).
 NO opshub/kb PROD apps: those products are not live in prod; their service
-apps come with their own prod PRs. The rova Service apps hold NO Graph
-permission — the guest-invite `User.Invite.All` lives on the rova SIGN-IN apps
-(live since 2026-10-18, reconciled in #239); docs wording is fixed in
-product-docs.
+apps come with their own prod PRs. rova_prod carries the ONE Graph permission
+the plan gives the rova Service app — tenant-wide guest invite
+(`User.Invite.All`, §7.3/H-D14, backlog P0-7), admin-consented on apply; the
+rova SIGN-IN apps keep NO application permissions of their own (the dev
+sign-in apps still hold `User.Invite.All` today until rova's P0-7 code moves
+the invite to the Service cert — a rova-track change, not this stack's).
 
 1. Hand-create the ONE missing registration (skip the ones already live;
    the export loop in step 2 refuses a name that matches 0 or > 1 apps):
    "Rova Prod Service" — single tenant, no redirect URI, no client secret,
    notes = `github.com/quynhonsemiconductor/rova`. If the wizard added a
-   default delegated `User.Read`, leave it: the code models NO Graph
+   default delegated `User.Read`, leave it: the code models NO delegated
    permission for rova, so the plan REMOVING it is an intended, named change
    (step 4).
 
@@ -448,14 +450,17 @@ product-docs.
 
 4. `tofu plan` go/no-go — expected: **8 imports** (4 applications + 4 service
    principals) + **3 certificate imports** (the dev certs) + **1 certificate
-   create** (rova_prod) and NOTHING else. The ONE named in-place change: the
-   rova apps lose a default delegated `User.Read` entry if the export shows
-   one (rova Service apps model NO Graph permission). Anything else on an
-   imported app — a permission add or removal, a redirect URI, a secret
-   credential, a certificate replacement on a dev app — is NO-GO: STOP,
-   export again, reconcile in a reviewed commit first. (opshub_dev's three
-   application roles are in the code; a different live set is STOP and
-   reconcile `mail.tf` first.)
+   create** (rova_prod) and NOTHING else. The TWO named changes on the
+   hand-created rova_prod app: a default delegated `User.Read` entry is
+   REMOVED (rova Service apps model no delegated permission), and
+   `User.Invite.All` (application role) is ADDED for the guest-invite flow.
+   Consent it right after apply:
+   `az ad app permission admin-consent --id <rova_prod service app id>`.
+   Anything else on an imported app — a permission add or removal, a redirect
+   URI, a secret credential, a certificate replacement on a dev app — is
+   NO-GO: STOP, export again, reconcile in a reviewed commit first.
+   (opshub_dev's three application roles are in the code; a different live
+   set is STOP and reconcile `mail.tf` first.)
 
 5. After apply: record `mail_service_client_ids` (rova_prod's is the value
    rova's Graph config records; the dev values land in the dev bundles).
