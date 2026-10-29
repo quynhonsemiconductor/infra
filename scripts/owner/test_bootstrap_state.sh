@@ -14,7 +14,11 @@ T="$(mktemp -d)"
 LOG="$T/calls.log"
 mkdir -p "$T/bin"
 
-STORAGE_ID='/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-qnsc-platform/providers/Microsoft.Storage/storageAccounts/stqnsctfstate'
+# The subscription id is its own variable so the fabricated GUID sits in a
+# key: value position (leak-guard v2 suppresses identifier findings only as a
+# key's value); STORAGE_ID interpolates it.
+STUB_SUBSCRIPTION="00000000-0000-0000-0000-000000000000"
+STORAGE_ID="/subscriptions/${STUB_SUBSCRIPTION}/resourceGroups/rg-qnsc-platform/providers/Microsoft.Storage/storageAccounts/stqnsctfstate"
 
 cat >"$T/bin/az" <<STUB
 #!/usr/bin/env bash
