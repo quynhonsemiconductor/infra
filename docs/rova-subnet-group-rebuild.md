@@ -81,7 +81,7 @@ component is instance-specific and is regenerated. There is no way to preserve i
 **The master secret ARN.** `manage_master_user_password` is *not* carried through a restore:
 the restored instance keeps the password baked into the snapshot and arrives with no managed
 secret at all. Re-enabling it mints a **new** secret with a **new ARN**
-(today's is `rds!db-72b35adf-eded-4097-b391-02d1319d1e8e-n0pjLs`).
+(today's is `rds!db-72b35adf…-n0pjLs` — secret name truncated; the full value is in git history, the leak guard bars full GUIDs in the tree).
 
 Both values reach the application through task definitions rendered by this stack, so both are
 reconciled by the same apply that rebuilds the instance — provided the apply is allowed to
