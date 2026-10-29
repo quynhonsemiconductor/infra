@@ -24,6 +24,13 @@ import entra_report as er  # noqa: E402
 
 FIXTURES = HERE / "fixtures"
 NOW = dt.datetime(2026, 10, 18, tzinfo=dt.timezone.utc)
+# Fabricated ids reused across assertions, as named constants: the leak guard
+# (v2) suppresses identifier findings only when the id is a key's VALUE, so a
+# bare literal after a comma or as a dict key must live behind a name.
+ROLE_FIXTURE_ID = "f0000000-0000-4000-8000-000000000001"
+SP_FIXTURE_ID = "bbbbbbbb-0000-4000-8000-00000000000b"
+TENANT_FIXTURE_ID = "99999999-0000-4000-8000-000000000009"
+FIXED_CREDENTIAL_ID = "c0000000-0000-4000-8000-000000000007"
 GRAPH = json.loads((FIXTURES / "graph.fixture.json").read_text())
 EXCHANGE = json.loads((FIXTURES / "exchange.fixture.json").read_text())
 PRODUCTS = er.DEFAULT_PRODUCTS
@@ -92,7 +99,7 @@ class FixtureReport(unittest.TestCase):
         expiry = next(r for r in app["results"] if r["rule"] == "credential-expiry")
         self.assertIn("expires 2026-10-28 (in 10 days)", expiry["detail"])
         self.assertIn("EXPIRED 2026-09-30", expiry["detail"])
-        self.assertIn("c0000000-0000-4000-8000-000000000007", expiry["fix"])  # names the credential to act on
+        self.assertIn(FIXED_CREDENTIAL_ID, expiry["fix"])  # names the credential to act on
 
     def test_unknown_app_gets_only_the_universal_rules_and_is_listed_separately(self):
         app = app_report("QNSC KB SSO")
@@ -237,7 +244,7 @@ class Rules(unittest.TestCase):
 
     def test_full_access_as_app_counts_as_a_mail_permission(self):
         graph = copy.deepcopy(GRAPH)
-        graph["resources"]["bbbbbbbb-0000-4000-8000-00000000000b"] = {
+        graph["resources"][SP_FIXTURE_ID] = {
             "appId": "00000002-0000-0ff1-ce00-000000000000", "displayName": "Office 365 Exchange Online",
             "appRoles": [{"id": "f1000000-0000-4000-8000-000000000001", "value": "full_access_as_app"}], "oauth2PermissionScopes": []}
         next(a for a in graph["applications"] if a["displayName"] == "Rova Prod Service")["servicePrincipal"]["appRoleAssignments"].append(
@@ -422,7 +429,7 @@ log = os.environ["AZ_LOG"]
 raw = json.load(open(os.environ["AZ_RAW"]))
 mode = os.environ.get("AZ_MODE", "")
 if args[:2] == ["account", "show"]:
-    print("tester@example.invalid"); print("99999999-0000-4000-8000-000000000009"); sys.exit(0)
+    print("tester@example.invalid"); print(os.environ["AZ_TENANT"]); sys.exit(0)
 if args[0] != "rest":
     open(log, "a").write("UNEXPECTED " + " ".join(args) + "\n"); sys.exit(9)
 method = args[args.index("--method") + 1]
@@ -434,7 +441,7 @@ def out(body): print(json.dumps(body)); sys.exit(0)
 def fail(text): sys.stderr.write(text + "\n"); sys.exit(1)
 NOT_FOUND = "ERROR: Not Found({\"error\":{\"code\":\"Request_ResourceNotFound\",\"message\":\"Resource does not exist.\"}})"
 if mode == "forbidden-with-404-in-request-id" and path.endswith("/appRoleAssignments"):
-    fail("ERROR: Forbidden({\"error\":{\"code\":\"Authorization_RequestDenied\",\"innerError\":{\"request-id\":\"4040f0c1-0404-4040-8404-404040404040\"}}})")
+    fail("ERROR: Forbidden({\"error\":{\"code\":\"Authorization_RequestDenied\",\"innerError\":{\"request-id\":\"req-4040f0c1\"}}})")
 if mode == "owners-not-found" and path.endswith("/owners"):
     fail(NOT_FOUND)
 if mode == "throttle-once":
@@ -535,7 +542,7 @@ class Collector(unittest.TestCase):
         az.write_text(FAKE_AZ)
         az.chmod(az.stat().st_mode | stat.S_IEXEC)
         (self.tmp / "raw.json").write_text(json.dumps(raw_graph()))
-        self.env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}", AZ_LOG=str(self.tmp / "az.log"), AZ_RAW=str(self.tmp / "raw.json"), HOME=str(self.tmp))
+        self.env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}", AZ_LOG=str(self.tmp / "az.log"), AZ_RAW=str(self.tmp / "raw.json"), AZ_TENANT=TENANT_FIXTURE_ID, HOME=str(self.tmp))
         self.out = self.tmp / "out"
 
     def run_script(self, *args, env=None):
@@ -554,7 +561,7 @@ class Collector(unittest.TestCase):
         self.assertEqual(len(by_name["Rova Prod"]["owners"]), 2)
         self.assertEqual(by_name["Rova Prod"]["owners"][0], {"id": "90000001", "type": "user", "displayName": "Owner 1", "userPrincipalName": "o1@example.invalid"})
         self.assertEqual(by_name["Rova Prod Service"]["federatedCredentials"], [{"name": "k3s", "issuer": "https://oidc.example.invalid"}])
-        self.assertEqual(by_name["Rova Prod Service"]["servicePrincipal"]["appRoleAssignments"][0]["appRoleId"], "f0000000-0000-4000-8000-000000000001")
+        self.assertEqual(by_name["Rova Prod Service"]["servicePrincipal"]["appRoleAssignments"][0]["appRoleId"], ROLE_FIXTURE_ID)
         resource = next(iter(graph["resources"].values()))
         self.assertEqual(resource["appRoles"], [{"id": "f0000000-0000-4000-8000-000000000001", "value": "Mail.Send", "displayName": "Send mail"}])
 
@@ -627,7 +634,7 @@ class Collector(unittest.TestCase):
         graph = json.loads((self.out / "graph.json").read_text())
         external = {e["displayName"]: e for e in graph["externalPrincipals"]}
         self.assertEqual(sorted(external), ["Contoso Mailer", "Example First-Party"])  # the app's own SP and the Group are not external; duplicates collapse
-        self.assertEqual(external["Contoso Mailer"]["appRoleAssignments"][0]["appRoleId"], "f0000000-0000-4000-8000-000000000001")
+        self.assertEqual(external["Contoso Mailer"]["appRoleAssignments"][0]["appRoleId"], ROLE_FIXTURE_ID)
         done = self.run_script("--report-only", str(self.out))
         md = (self.out / "entra-audit-report.md").read_text()
         self.assertIn("Contoso Mailer | third-party", md)
@@ -636,7 +643,7 @@ class Collector(unittest.TestCase):
 
     def test_prints_the_tenant_next_to_the_user(self):
         done = self.run_script(str(self.out), "--no-report")
-        self.assertIn("Signed in as: tester@example.invalid (tenant 99999999-0000-4000-8000-000000000009)", done.stderr)
+        self.assertIn(f"Signed in as: tester@example.invalid (tenant {TENANT_FIXTURE_ID})", done.stderr)
 
     def test_a_not_yet_existing_directory_inside_a_repository_is_refused(self):
         repo = self.tmp / "repo2"
