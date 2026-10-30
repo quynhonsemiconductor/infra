@@ -276,6 +276,43 @@ owner exports the live shape first and the plan is a hard go/no-go.
 4. After apply: record `signin_app_client_ids`; rotate/land client secrets
    with `scripts/rotate-signin-secret.sh` (≤ 6 months, into the vault).
 
+## Proxmox login (`proxmox.tf`): app "QNSC Proxmox", plan, secret
+
+Adds the Entra half of Proxmox's OpenID realm; the Proxmox half is the
+platform runbook (server-setup §3.2, product-docs, private). Three adds, no
+import: the application, its service principal (assignment REQUIRED, owners =
+the two company owners) and the assignment of `grp-qnsc-platform-admins`.
+The ID token carries only the application-assigned groups, as display names.
+
+1. One new variable on top of the existing ones (the Proxmox origin is an
+   admin-door hostname, so it stays out of the repo): export
+   `TF_VAR_proxmox_redirect_uris='["https://<proxmox-host>","https://<proxmox-host>/"]'`
+   (JSON list; Proxmox redirects back to its page origin).
+2. Plan and apply as in the sections above, locally. Expected:
+   **3 to add** (`azuread_application.proxmox`,
+   `azuread_service_principal.proxmox`,
+   `azuread_app_role_assignment.proxmox_platform_admins`), **0 to change,
+   0 to destroy, 0 to replace**, two new outputs. ANY change or destroy on an
+   existing resource is NO-GO: stop and reconcile in a reviewed PR.
+3. Record `proxmox_oidc_client_id` and `proxmox_oidc_issuer_url` from the
+   outputs (the runbook needs them). Neither is a secret.
+4. Create the client secret OUT OF BAND (never in state; the same rule as the
+   sign-in apps) straight into the admin vault, nothing printed, expiry
+   at most 12 months out, then set a calendar reminder to rotate:
+
+   ```sh
+   az ad app credential reset --id <proxmox_oidc_client_id> --append \
+     --display-name "proxmox-$(date -u +%F)" \
+     --end-date "$(date -v+12m +%Y-%m-%dT00:00:00Z)" \
+     --query password -o tsv --only-show-errors \
+   | tr -d '\n' \
+   | az keyvault secret set --vault-name kv-qnsc-admin \
+       --name admin-proxmox-oidc-secret --file /dev/stdin \
+       --content-type text/plain \
+       --expires "$(date -v+12m +%Y-%m-%dT00:00:00Z)" \
+       --tags owner=platform "rotated=$(date -u +%Y-%m-%d)" -o none
+   ```
+
 ## Mail service apps (`mail.tf`): owner export, plan, go/no-go
 
 One certificate-only Service app per product per env, `<Product> <Env> Service`
