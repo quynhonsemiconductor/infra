@@ -171,7 +171,7 @@ jobs:
           # edge: every variable the stack declares WITHOUT a default (same set
           # infra-plan.yml passes; without them the nightly edge pass is red on
           # "required variable not set"). Secrets where the value is sensitive.
-          TF_VAR_admin_hostnames:        ${{ matrix.stack == 'edge' && secrets.ADMIN_HOSTNAMES || '' }}
+          TF_VAR_admin_hostnames:        ${{ contains(fromJSON('["edge","onprem"]'), matrix.stack) && secrets.ADMIN_HOSTNAMES || '' }}
           TF_VAR_cutover_hosts:          ${{ matrix.stack == 'edge' && secrets.CUTOVER_HOSTS || '' }}
           TF_VAR_tunnels_exist:          ${{ matrix.stack == 'edge' && vars.TUNNELS_EXIST || '' }}
           TF_VAR_grp_platform_admins_id: ${{ matrix.stack == 'edge' && vars.ENTRA_GRP_PLATFORM_ADMINS_ID || '' }}
@@ -192,8 +192,6 @@ jobs:
           ARM_TENANT_ID:       ${{ matrix.stack == 'onprem' && vars.ENTRA_TENANT_ID || '' }}
           ARM_USE_OIDC:        ${{ matrix.stack == 'onprem' && 'true' || '' }}
           TF_VAR_admin_private_cidr: ${{ contains(fromJSON('["onprem","edge"]'), matrix.stack) && secrets.ADMIN_PRIVATE_CIDR || '' }}
-          TF_VAR_admin_pve_hostname: ${{ matrix.stack == 'onprem' && secrets.ADMIN_PVE_HOSTNAME || '' }}
-          TF_VAR_admin_pbs_hostname: ${{ matrix.stack == 'onprem' && secrets.ADMIN_PBS_HOSTNAME || '' }}
         run: |
           set +e
           tofu plan -refresh-only -input=false -lock=false -no-color -detailed-exitcode -out=refresh.tfplan 2>&1 | tee refresh.txt
@@ -210,7 +208,7 @@ jobs:
           # edge: every variable the stack declares WITHOUT a default (same set
           # infra-plan.yml passes; without them the nightly edge pass is red on
           # "required variable not set"). Secrets where the value is sensitive.
-          TF_VAR_admin_hostnames:        ${{ matrix.stack == 'edge' && secrets.ADMIN_HOSTNAMES || '' }}
+          TF_VAR_admin_hostnames:        ${{ contains(fromJSON('["edge","onprem"]'), matrix.stack) && secrets.ADMIN_HOSTNAMES || '' }}
           TF_VAR_cutover_hosts:          ${{ matrix.stack == 'edge' && secrets.CUTOVER_HOSTS || '' }}
           TF_VAR_tunnels_exist:          ${{ matrix.stack == 'edge' && vars.TUNNELS_EXIST || '' }}
           TF_VAR_grp_platform_admins_id: ${{ matrix.stack == 'edge' && vars.ENTRA_GRP_PLATFORM_ADMINS_ID || '' }}
@@ -229,8 +227,6 @@ jobs:
           ARM_TENANT_ID:       ${{ matrix.stack == 'onprem' && vars.ENTRA_TENANT_ID || '' }}
           ARM_USE_OIDC:        ${{ matrix.stack == 'onprem' && 'true' || '' }}
           TF_VAR_admin_private_cidr: ${{ contains(fromJSON('["onprem","edge"]'), matrix.stack) && secrets.ADMIN_PRIVATE_CIDR || '' }}
-          TF_VAR_admin_pve_hostname: ${{ matrix.stack == 'onprem' && secrets.ADMIN_PVE_HOSTNAME || '' }}
-          TF_VAR_admin_pbs_hostname: ${{ matrix.stack == 'onprem' && secrets.ADMIN_PBS_HOSTNAME || '' }}
         run: |
           set +e
           tofu plan -input=false -lock=false -no-color -detailed-exitcode 2>&1 | tee plan.txt

@@ -118,7 +118,7 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "qnsc_admin" {
       # these rules only decide where an authenticated request lands. Order
       # matters: host rules BEFORE the catch-all.
       {
-        hostname = var.admin_pve_hostname
+        hostname = var.admin_hostnames["pve"]
         path     = null
         service  = "https://localhost:8006"
         origin_request = {
@@ -126,7 +126,7 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "qnsc_admin" {
         }
       },
       {
-        hostname = var.admin_pbs_hostname
+        hostname = var.admin_hostnames["pbs"]
         path     = null
         service  = "https://localhost:8007"
         origin_request = {

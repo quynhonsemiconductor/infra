@@ -49,6 +49,7 @@ scripts/owner/test_bootstrap_state.sh
 # ranges are well-known public constants, not internal addresses; the admin range itself is a secret.
 live/edge/warp.tf
 live/edge/variables.onprem.tf
+live/onprem/variables.tf
 
 # ── key: entries (identifier findings; the finding must be the key's value) ──
 # Microsoft well-known first-party constants used by the Entra audit and

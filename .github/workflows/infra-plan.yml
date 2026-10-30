@@ -420,8 +420,6 @@ jobs:
           # hostnames sensitive in the stack, and there is no admin_private_ip
           # variable anymore.
           TF_VAR_admin_private_cidr:     ${{ contains(fromJSON('["onprem","edge"]'), matrix.stack) && secrets.ADMIN_PRIVATE_CIDR || '' }}
-          TF_VAR_admin_pve_hostname:     ${{ matrix.stack == 'onprem' && secrets.ADMIN_PVE_HOSTNAME || '' }}
-          TF_VAR_admin_pbs_hostname:     ${{ matrix.stack == 'onprem' && secrets.ADMIN_PBS_HOSTNAME || '' }}
 
       # TASK 0.3 / §17b — refuse a plan that would lose data, before anyone reads
       # it. Runs BEFORE the plan comment on purpose: if the answer is "this deletes

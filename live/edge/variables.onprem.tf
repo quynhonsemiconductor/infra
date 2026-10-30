@@ -13,7 +13,17 @@ variable "admin_hostnames" {
     TF_VAR_admin_hostnames (repo SECRET — vars print in logs, secrets are masked; JSON object,
     e.g. {"pve": "<hostname>", "pbs": "<hostname>"}).
     Labels are load-bearing: they are state addresses, so never rename one without a `tofu state mv`.
+    ONE source: live/onprem reads the SAME secret (its old ADMIN_PVE_HOSTNAME / ADMIN_PBS_HOSTNAME are retired).
   EOT
+
+  validation {
+    condition     = toset(keys(var.admin_hostnames)) == toset(["pve", "pbs"])
+    error_message = "admin_hostnames must have exactly the keys pve and pbs (the labels are state addresses)."
+  }
+  validation {
+    condition     = alltrue([for h in values(var.admin_hostnames) : can(regex("^[a-z0-9-]+\\.qnsc\\.vn$", h))])
+    error_message = "every admin_hostnames value must be a hostname under qnsc.vn (^[a-z0-9-]+\\.qnsc\\.vn$): a placeholder such as 'hostname PVE' once produced a tunnel that 404'd for 3 days."
+  }
 }
 
 variable "cutover_hosts" {
