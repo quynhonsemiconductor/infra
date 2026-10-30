@@ -276,6 +276,58 @@ owner exports the live shape first and the plan is a hard go/no-go.
 4. After apply: record `signin_app_client_ids`; rotate/land client secrets
    with `scripts/rotate-signin-secret.sh` (≤ 6 months, into the vault).
 
+## Proxmox login (`proxmox.tf`): app "QNSC Proxmox", plan, secret
+
+Adds the Entra half of Proxmox's OpenID realm; the Proxmox half is the
+platform runbook (server-setup §3.2.1, product-docs, private). The tenant has
+NO Entra ID P1, so group-based app assignment and `ApplicationGroup` claims
+are unavailable: the admin USERS are assigned directly and the ID token
+carries security-group object ids (`SecurityGroup`).
+
+**Adding or removing an admin = edit `TF_VAR_proxmox_admin_object_ids` (and
+re-apply) AND the Entra group `grp-qnsc-platform-admins` (Cloudflare Access
+and the Proxmox ACL key on it).** Keep the two in step.
+
+1. Export the two new variables on top of the existing ones (the Proxmox
+   origin is an admin-door hostname, so it stays out of the repo):
+
+   ```sh
+   export TF_VAR_proxmox_redirect_uris='["https://<proxmox-host>/"]'   # trailing slash REQUIRED (azuread 3.10)
+   export TF_VAR_proxmox_admin_object_ids='["<user-object-id>", "<user-object-id>"]'
+   ```
+
+   pve-manager sends `location.origin` (no slash) and Entra normalises the
+   root. The FIRST login must confirm there is no `AADSTS50011` (redirect URI
+   mismatch); if there is, STOP and tell the SA.
+2. Plan and apply as in the sections above, locally. Expected: **adds only**:
+   `azuread_application.proxmox`, `azuread_service_principal.proxmox`, one
+   `azuread_app_role_assignment.proxmox_admins[...]` per listed user, and
+   `azuread_service_principal_delegated_permission_grant.proxmox`; 0 to change,
+   0 to destroy, 0 to replace; two new outputs. ANY change or destroy on an
+   existing resource is NO-GO: stop and reconcile in a reviewed PR.
+3. Record `proxmox_oidc_client_id` and `proxmox_oidc_issuer_url` from the
+   outputs (the runbook needs them). Neither is a secret.
+4. Create the client secret OUT OF BAND (never in state; same shape as
+   `scripts/rotate-signin-secret.sh`) straight into the admin vault, nothing
+   printed, 6 months (sign-in app policy), then set a calendar reminder to
+   rotate. The new credential's `keyId` goes to stderr so an orphaned
+   credential can be revoked if the vault write fails:
+
+   ```sh
+   new=$(az ad app credential reset --id <proxmox_oidc_client_id> --append \
+     --display-name "rotated-$(date -u +%F)" \
+     --end-date "$(date -v+6m +%Y-%m-%dT00:00:00Z)" --only-show-errors -o json)
+   printf '%s\n' "$new" | jq -ej '.keyId' |
+     xargs printf 'new credential keyId %s — revoke this if the run fails below\n' >&2
+   printf '%s\n' "$new" | jq -ej '.password' \
+   | az keyvault secret set --vault-name kv-qnsc-admin \
+       --name admin-proxmox-oidc-secret --file /dev/stdin \
+       --content-type text/plain \
+       --expires "$(date -v+6m +%Y-%m-%dT00:00:00Z)" \
+       --tags owner=platform "rotated=$(date -u +%Y-%m-%d)" -o none
+   unset new
+   ```
+
 ## Mail service apps (`mail.tf`): owner export, plan, go/no-go
 
 One certificate-only Service app per product per env, `<Product> <Env> Service`

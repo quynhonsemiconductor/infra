@@ -64,6 +64,9 @@ key:id"?
 key:resourceAppId"?
 key:resourceId"?
 key:appRoleId"?
+# live/identity/proxmox.tf: the all-zero default-access app role id (a Microsoft
+# well-known constant, not an identifier of ours):
+key:app_role_id
 key:appOwnerOrganizationId"?
 key:request-id"?
 # Fabricated AWS KMS key ids in the orphan-audit fixtures:
