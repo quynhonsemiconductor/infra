@@ -7,7 +7,7 @@ key infra/onprem/terraform.tfstate). The CI identities already exist: plan and
 drift run as **QNSC CI Infra Read**, apply as **QNSC CI Infra** (each app
 holds its federated credential and its Storage Blob Data roles on
 stqnsctfstate). The only remaining blocker is the Cloudflare
-token scopes — see "Token handling" below. The three ADMIN_* inputs are repo
+token scopes — see "Token handling" below. The ADMIN_PRIVATE_CIDR and ADMIN_HOSTNAMES inputs are repo
 SECRETS, never variables: variable values print unmasked in step env logs of
 this public repo.
 
