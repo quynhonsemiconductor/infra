@@ -158,4 +158,9 @@ resource "cloudflare_zero_trust_device_settings" "this" {
   external_emergency_signal_url         = data.cloudflare_zero_trust_device_settings.current.external_emergency_signal_url
   root_certificate_installation_enabled = data.cloudflare_zero_trust_device_settings.current.root_certificate_installation_enabled
   use_zt_virtual_ip                     = data.cloudflare_zero_trust_device_settings.current.use_zt_virtual_ip
+
+  lifecycle {
+    # Account-wide singleton, not importable: a destroy could reset the account's device settings.
+    prevent_destroy = true
+  }
 }
