@@ -8,7 +8,7 @@
 # Access app: the /mcp path demands an Access session — Claude Code cannot
 # complete OAuth yet, and MCP_ENABLED stays false (agent C owns that flag).
 #
-# Gate: cutover_hosts, same as every rova-dev resource — nothing exists for
+# Gate: local.cutover, same as every rova-dev resource — nothing exists for
 # the host until its move apply.
 #
 # Policy group: `grp-qnsc-developers` — the SAME Entra group the web dev
@@ -16,7 +16,7 @@
 # membership (MCP-PLAN §5 L1).
 
 resource "cloudflare_zero_trust_access_application" "rova_dev_mcp" {
-  count = var.tunnels_exist && contains(var.cutover_hosts, "rova-dev.qnsc.vn") ? 1 : 0
+  count = contains(local.cutover_live, "rova-dev.qnsc.vn") ? 1 : 0
 
   account_id       = var.cloudflare_account_id
   name             = "rova-dev MCP server"
@@ -35,7 +35,7 @@ resource "cloudflare_zero_trust_access_application" "rova_dev_mcp" {
 # attachment happens on the application's `policies` above); `azure` became
 # `azure_ad`; include/require are attributes, not blocks.
 resource "cloudflare_zero_trust_access_policy" "rova_dev_mcp_allow" {
-  count = var.tunnels_exist && contains(var.cutover_hosts, "rova-dev.qnsc.vn") ? 1 : 0
+  count = contains(local.cutover_live, "rova-dev.qnsc.vn") ? 1 : 0
 
   account_id       = var.cloudflare_account_id
   name             = "rova-dev-mcp-mfa"

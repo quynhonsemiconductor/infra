@@ -3,7 +3,7 @@
 # Provider: cloudflare v5.28 (this stack's pin, since the v5 edge migration).
 #
 # ADDITIVE: nothing AWS-era is removed here. DNS records and Workers routes
-# are gated on `cutover_hosts` — each host joins AT ITS CUTOVER apply (§8.2:
+# are gated on `local.cutover` — each host joins AT ITS CUTOVER apply (§8.2:
 # "one live/edge apply per product"), with the Pages domain/records imported
 # and removed in the SAME apply. rova prod resolves to AWS today and must
 # keep doing so until Nov 10.
@@ -34,6 +34,24 @@ locals {
   door_bypass = "opshub-dev.qnsc.vn/v1/door/terminal/*"
 
   api_paths = ["/api/*", "/v1/*", "/readyz"]
+
+  # Hosts whose DNS + Access + Workers routes are LIVE (plan §8.2: one host is
+  # added per product move PR, in the SAME apply that imports/removes its
+  # Pages domain and records). A reviewed list in the diff, not a secret: the
+  # hostnames are already public DNS and in app_hosts above. Empty today:
+  # nothing has cut over (rova prod stays on AWS until its move PR).
+  cutover = []
+
+  # Nothing goes live before the tunnels exist (DNS targets them).
+  cutover_live = var.tunnels_exist ? local.cutover : []
+}
+
+# A typo in local.cutover must fail the plan, not silently create nothing.
+check "cutover_in_app_hosts" {
+  assert {
+    condition     = alltrue([for h in local.cutover : contains(keys(local.app_hosts), h)])
+    error_message = "every entry of local.cutover must be a key of local.app_hosts."
+  }
 }
 
 # ── Tunnels (created in live/onprem; data lookups gated on tunnels_exist) ───
@@ -52,15 +70,12 @@ data "cloudflare_zero_trust_tunnel_cloudflared" "qnsc_admin" {
   filter = { name = "qnsc-admin" }
 }
 
-# App hosts → the qnsc-apps tunnel. A host enters cutover_hosts only inside
+# App hosts → the qnsc-apps tunnel. A host enters local.cutover only inside
 # its move PR's apply; the Pages/legacy records for it are imported and
 # removed in the SAME apply (no CNAME conflict, no early switch).
 # ttl = 1 (automatic): required in v5 and the only valid value while proxied.
-# nonsensitive() only unwraps the cutover MEMBERSHIP test: its values are the
-# same hostnames already public in local.app_hosts above; tofu refuses to
-# touch a sensitive value in for_each.
 resource "cloudflare_dns_record" "app_hosts" {
-  for_each = { for h, v in local.app_hosts : h => v if var.tunnels_exist && contains(nonsensitive(var.cutover_hosts), h) }
+  for_each = { for h, v in local.app_hosts : h => v if contains(local.cutover_live, h) }
 
   zone_id = var.cloudflare_zone_id
   name    = each.key
@@ -178,12 +193,12 @@ resource "cloudflare_zero_trust_access_policy" "admin_allow" {
 }
 
 # Dev hosts: one Access app per host (§8.2), Allow grp-qnsc-developers —
-# gated on cutover_hosts (an Access app for a host still pointing at
+# gated on local.cutover (an Access app for a host still pointing at
 # AWS/Pages would be dead weight). The BYPASS apps below are harmless before
 # cutover — a bypass on an unresolving host protects nothing — so they are
 # not gated.
 resource "cloudflare_zero_trust_access_application" "dev" {
-  for_each = { for h, v in local.app_hosts : h => v if v.env == "dev" && contains(nonsensitive(var.cutover_hosts), h) }
+  for_each = { for h, v in local.app_hosts : h => v if v.env == "dev" && contains(local.cutover_live, h) }
 
   account_id       = var.cloudflare_account_id
   type             = "self_hosted" # v5: no default — required for session_duration
@@ -199,7 +214,7 @@ resource "cloudflare_zero_trust_access_application" "dev" {
 }
 
 resource "cloudflare_zero_trust_access_policy" "dev_allow" {
-  for_each = { for h, v in local.app_hosts : h => h if v.env == "dev" && contains(nonsensitive(var.cutover_hosts), h) }
+  for_each = { for h, v in local.app_hosts : h => h if v.env == "dev" && contains(local.cutover_live, h) }
 
   account_id       = var.cloudflare_account_id
   name             = "developers"
@@ -249,12 +264,12 @@ resource "cloudflare_zero_trust_access_policy" "dev_bypass" {
   include = [{ everyone = {} }]
 }
 
-# ── Workers routes (§8.2), gated on cutover_hosts like the DNS ──────────────
+# ── Workers routes (§8.2), gated on local.cutover (and tunnels_exist) like the DNS ──────────────
 # SPA script on `<host>/*`; the API paths are no-Worker routes (`script`
 # omitted — the route exists with no script, so the traffic falls through to
 # the tunnel). v5 renamed `script_name` to `script`.
 resource "cloudflare_workers_route" "spa" {
-  for_each = { for h, v in local.app_hosts : h => v if contains(nonsensitive(var.cutover_hosts), h) }
+  for_each = { for h, v in local.app_hosts : h => v if contains(local.cutover_live, h) }
 
   zone_id = var.cloudflare_zone_id
   pattern = "${each.key}/*"
@@ -264,7 +279,7 @@ resource "cloudflare_workers_route" "spa" {
 resource "cloudflare_workers_route" "api_no_worker" {
   for_each = {
     for pair in flatten([
-      for h in nonsensitive(var.cutover_hosts) : [
+      for h in local.cutover_live : [
         for p in local.api_paths : { host = h, path = p }
       ]
     ]) : "${pair.host}${pair.path}" => pair
