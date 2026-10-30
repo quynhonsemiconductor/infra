@@ -191,7 +191,7 @@ jobs:
           ARM_CLIENT_ID:       ${{ matrix.stack == 'onprem' && vars.AZURE_CLIENT_ID_READ || '' }}
           ARM_TENANT_ID:       ${{ matrix.stack == 'onprem' && vars.ENTRA_TENANT_ID || '' }}
           ARM_USE_OIDC:        ${{ matrix.stack == 'onprem' && 'true' || '' }}
-          TF_VAR_admin_private_cidr: ${{ matrix.stack == 'onprem' && secrets.ADMIN_PRIVATE_CIDR || '' }}
+          TF_VAR_admin_private_cidr: ${{ contains(fromJSON('["onprem","edge"]'), matrix.stack) && secrets.ADMIN_PRIVATE_CIDR || '' }}
           TF_VAR_admin_pve_hostname: ${{ matrix.stack == 'onprem' && secrets.ADMIN_PVE_HOSTNAME || '' }}
           TF_VAR_admin_pbs_hostname: ${{ matrix.stack == 'onprem' && secrets.ADMIN_PBS_HOSTNAME || '' }}
         run: |
@@ -228,7 +228,7 @@ jobs:
           ARM_CLIENT_ID:       ${{ matrix.stack == 'onprem' && vars.AZURE_CLIENT_ID_READ || '' }}
           ARM_TENANT_ID:       ${{ matrix.stack == 'onprem' && vars.ENTRA_TENANT_ID || '' }}
           ARM_USE_OIDC:        ${{ matrix.stack == 'onprem' && 'true' || '' }}
-          TF_VAR_admin_private_cidr: ${{ matrix.stack == 'onprem' && secrets.ADMIN_PRIVATE_CIDR || '' }}
+          TF_VAR_admin_private_cidr: ${{ contains(fromJSON('["onprem","edge"]'), matrix.stack) && secrets.ADMIN_PRIVATE_CIDR || '' }}
           TF_VAR_admin_pve_hostname: ${{ matrix.stack == 'onprem' && secrets.ADMIN_PVE_HOSTNAME || '' }}
           TF_VAR_admin_pbs_hostname: ${{ matrix.stack == 'onprem' && secrets.ADMIN_PBS_HOSTNAME || '' }}
         run: |
