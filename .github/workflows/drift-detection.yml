@@ -172,7 +172,6 @@ jobs:
           # infra-plan.yml passes; without them the nightly edge pass is red on
           # "required variable not set"). Secrets where the value is sensitive.
           TF_VAR_admin_hostnames:        ${{ contains(fromJSON('["edge","onprem"]'), matrix.stack) && secrets.ADMIN_HOSTNAMES || '' }}
-          TF_VAR_cutover_hosts:          ${{ matrix.stack == 'edge' && secrets.CUTOVER_HOSTS || '' }}
           TF_VAR_tunnels_exist:          ${{ matrix.stack == 'edge' && vars.TUNNELS_EXIST || '' }}
           TF_VAR_grp_platform_admins_id: ${{ matrix.stack == 'edge' && vars.ENTRA_GRP_PLATFORM_ADMINS_ID || '' }}
           TF_VAR_grp_developers_id:      ${{ matrix.stack == 'edge' && vars.ENTRA_GRP_DEVELOPERS_ID || '' }}
@@ -209,7 +208,6 @@ jobs:
           # infra-plan.yml passes; without them the nightly edge pass is red on
           # "required variable not set"). Secrets where the value is sensitive.
           TF_VAR_admin_hostnames:        ${{ contains(fromJSON('["edge","onprem"]'), matrix.stack) && secrets.ADMIN_HOSTNAMES || '' }}
-          TF_VAR_cutover_hosts:          ${{ matrix.stack == 'edge' && secrets.CUTOVER_HOSTS || '' }}
           TF_VAR_tunnels_exist:          ${{ matrix.stack == 'edge' && vars.TUNNELS_EXIST || '' }}
           TF_VAR_grp_platform_admins_id: ${{ matrix.stack == 'edge' && vars.ENTRA_GRP_PLATFORM_ADMINS_ID || '' }}
           TF_VAR_grp_developers_id:      ${{ matrix.stack == 'edge' && vars.ENTRA_GRP_DEVELOPERS_ID || '' }}

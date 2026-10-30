@@ -26,12 +26,6 @@ variable "admin_hostnames" {
   }
 }
 
-variable "cutover_hosts" {
-  type        = list(string)
-  sensitive   = true # public repo: real values (product-docs runbook §12.1) leak in plan text / PR comments otherwise
-  description = "App hosts whose DNS + Workers routes are LIVE. One host is added per product move PR apply; [] until then (rova prod stays on AWS). TF_VAR_cutover_hosts (repo SECRET — vars print in logs, secrets are masked; JSON list)."
-}
-
 variable "tunnels_exist" {
   type        = bool
   description = "False until live/onprem has created the qnsc-apps/qnsc-admin tunnels; gates the data sources and DNS. TF_VAR_tunnels_exist."
