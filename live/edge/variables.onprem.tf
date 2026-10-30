@@ -53,3 +53,28 @@ variable "entra_idp_client_secret" {
   description = "Client secret of the Zero Trust Entra IdP app — created out-of-band (owner, stdin); lands in the CF state as THE documented exception (plan §7). TF_VAR_entra_idp_client_secret (repo secret)."
 }
 
+
+variable "admin_private_cidr" {
+  type        = string
+  sensitive   = true # public repo: the real range lives in product-docs (runbook §12.1)
+  description = <<-EOT
+    The office LAN range the qnsc-admin tunnel routes to (door 2). WARP removes it from the split-tunnel
+    Exclude list so admin laptops reach it through Cloudflare. The SAME secret live/onprem reads:
+    TF_VAR_admin_private_cidr (repo SECRET ADMIN_PRIVATE_CIDR — secrets, not variables: variable values
+    print unmasked in step env logs of this public repo).
+    Must be a /8../32 inside RFC 1918 (10/8, 172.16/12, 192.168/16): the exclude-list subtraction in warp.tf
+    only carves ranges that sit inside one default exclude entry.
+  EOT
+
+  validation {
+    condition     = can(cidrnetmask(var.admin_private_cidr))
+    error_message = "admin_private_cidr must be an IPv4 CIDR (e.g. 192.0.2.0/24 — RFC 5737 documentation range)."
+  }
+  validation {
+    condition = can(cidrnetmask(var.admin_private_cidr)) && anytrue([
+      for r in ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"] :
+      cidrcontains(r, var.admin_private_cidr)
+    ])
+    error_message = "admin_private_cidr must sit inside RFC 1918 (10.0.0.0/8, 172.16.0.0/12 or 192.168.0.0/16). A placeholder or a public range would leave WARP routing nothing to the office."
+  }
+}

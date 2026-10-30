@@ -45,6 +45,10 @@ live/runtime-dev/main.tf
 live/runtime-prod/main.tf
 # That file's operator fixture address:
 scripts/owner/test_bootstrap_state.sh
+# WARP split tunnel (live/edge): Cloudflare's published default exclude list and the RFC 1918 validation
+# ranges are well-known public constants, not internal addresses; the admin range itself is a secret.
+live/edge/warp.tf
+live/edge/variables.onprem.tf
 
 # ── key: entries (identifier findings; the finding must be the key's value) ──
 # Microsoft well-known first-party constants used by the Entra audit and
