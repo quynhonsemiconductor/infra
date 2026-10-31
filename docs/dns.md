@@ -8,11 +8,12 @@ record unless the PR carries the `allow-dns-destroy` label; see `docs/incidents/
 
 | Name | Type | Purpose | In code |
 |---|---|---|---|
-| `qnsc.vn` | TXT | SPF for the apex: Microsoft 365 + SES, `-all` | not yet (set by hand) |
-| `mail.qnsc.vn` | MX | SES custom MAIL FROM (`feedback-smtp.<region>.amazonses.com`) | `ses_mail_from_mx` |
-| `mail.qnsc.vn` | TXT | SPF for the MAIL FROM domain, `~all` | `ses_mail_from_spf` |
-| three `*._domainkey` | CNAME | SES DKIM | `ses_dkim[0..2]` |
+| `qnsc.vn` | TXT | SPF for the apex: Microsoft 365, `-all` (the `include:amazonses.com` term is removed by hand once SES is gone) | not in code (set by hand) |
 | `_dmarc.qnsc.vn` | TXT | DMARC, report-only | `dmarc` (imported, see below) |
+
+**The SES records are removed from code and from the zone** by `chore(email): remove SES identity and mail-from DNS for qnsc.vn`
+(infra#188): the shared `qnsc.vn` identity, its three `*._domainkey` DKIM CNAMEs, and the `mail.qnsc.vn` MX + SPF pair. That PR is
+gated on every product being off SES.
 
 ## DMARC policy and its plan
 

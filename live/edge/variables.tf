@@ -46,18 +46,6 @@ variable "custom_firewall_rules" {
   description = "Optional custom expression firewall rules passed through to the cf-edge module."
 }
 
-variable "mail_domain" {
-  type        = string
-  default     = "qnsc.vn"
-  description = "Domain SES verifies for outbound mail across every product. One identity covers all of them because they share the account and region."
-}
-
-variable "mail_region" {
-  type        = string
-  default     = "ap-southeast-1"
-  description = "Region whose SES sends the mail. Only used to build the custom MAIL FROM MX host (feedback-smtp.<region>.amazonses.com), which is region-specific — a wrong value silently loses bounce notifications rather than failing loudly."
-}
-
 variable "cloudflare_account_id" {
   type        = string
   description = <<-EOT

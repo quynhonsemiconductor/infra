@@ -23,11 +23,6 @@ output "landing_pages_subdomain" {
   description = "Cloudflare Pages *.pages.dev hostname for qnsc-landing (e.g. qnsc-landing.pages.dev). The qnsc-landing web-deploy CI pushes built assets here."
 }
 
-output "ses_identity_arn" {
-  value       = aws_sesv2_email_identity.mail_domain.arn
-  description = "SES domain identity for outbound mail (qnsc.vn). Every product's IAM policy constructs this same ARN directly (arn:aws:ses:<region>:<account>:identity/<domain>) rather than reading this output, so a product apply never has to run after this one."
-}
-
 output "landing_turnstile_sitekey" {
   value       = module.landing_turnstile.sitekey
   description = "Public Turnstile sitekey for the qnsc-landing contact form — bake into the client (non-secret)."
