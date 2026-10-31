@@ -69,10 +69,12 @@ variable "vm_cores" {
 
 variable "vm_memory_mb" {
   type = number
-  # The live VM has 51200 MB (`qm config 100`), not the 57344 the runbook's
-  # `qm set --memory` line implies — the file matched the machine, not the note.
-  default     = 51200
-  description = "Dedicated memory in MiB (50 GiB, live value). Ballooning stays off (floating = 0)."
+  # 36 GiB, down from the live 50 GiB (51200 MB): ai-01 needs 20 GiB and the
+  # host has ~60 GB usable. This is an IN-PLACE change that needs a VM
+  # restart; the stack keeps reboot_after_update = false, so the owner restarts
+  # VM 100 in the same window as the host reboot.
+  default     = 36864
+  description = "Dedicated memory in MiB (36 GiB after ai-01; live was 50 GiB). Ballooning stays off (floating = 0)."
 }
 
 variable "os_disk_gb" {
@@ -97,4 +99,19 @@ variable "vlan_id" {
   type        = number
   default     = null
   description = "VLAN tag on net0. Default null: the live VM has no tag (`qm config 100`: net0 … bridge=vmbr0, no tag), and a tag that is not on the machine is a change that moves the node. Set it in site.tfvars only when the bridge is VLAN-aware and tagged."
+}
+
+variable "ipv4_gateway" {
+  type        = string
+  description = "Default gateway of the server VLAN (site value, git-ignored tfvars)."
+}
+
+variable "dns_servers" {
+  type        = list(string)
+  description = "DNS resolvers handed to a new VM (site value)."
+
+  validation {
+    condition     = length(var.dns_servers) > 0
+    error_message = "dns_servers must not be empty."
+  }
 }
