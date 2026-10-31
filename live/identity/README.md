@@ -125,87 +125,58 @@ account-wide Blob Data Contributor with an ABAC condition that excludes
   keys are piped into the vaults through stdin by the operator, with expiry and
   `owner`/`rotate-by` tags (§7.5).
 
-## Phase 1: ESO SP certificates + vault data-plane RBAC (§7.1)
+## Phase 1: ESO service principals + vault data-plane RBAC (§7.1)
 
-`vault_rbac.tf` + `eso.tf` add, per store in gitops `platform/eso/stores-onprem.yaml`
-(dev, prod, platform — none for `kv-qnsc-admin`):
+`vault_rbac.tf` + `eso.tf` add, per store in gitops
+`platform/eso/stores-onprem.yaml` (dev, prod, platform — none for
+`kv-qnsc-admin`):
 
-- one Entra app + service principal `QNSC ESO <Env>`, **certificate-only** (no
-  password credential exists — `tests/static.sh` fails the tree if one appears);
+- one Entra app + service principal `QNSC ESO <Env>`, authenticated by the
+  cluster's own OIDC issuer (see "ESO workload identity" below). No password
+  credential exists, and no certificate either — `tests/static.sh` fails the
+  tree if either reappears;
 - `Key Vault Secrets User` for that SP, scoped to **its own vault only**;
 - `Key Vault Secrets Officer` for `grp-qnsc-platform-admins` on **all four**
   vaults (the operator writes every secret through stdin).
 
-Owner steps, per SP (`dev` shown; repeat with `prod`, `platform`):
+Owner steps:
 
-1. Generate the keypair and a self-signed certificate (RSA 2048, ≤ 12 months)
-   **locally, outside the repo**, in a directory only you can read:
-
-   ```sh
-   umask 077
-   mkdir -p ~/keys && cd ~/keys
-   openssl req -x509 -newkey rsa:2048 -nodes \
-     -keyout eso-dev-key.pem -out eso-dev-cert.pem \
-     -days 365 -subj '/CN=QNSC ESO Dev'
-   # the COMBINED PEM (certificate + private key concatenated) is what ESO's
-   # tls.pem reads (stores-onprem.yaml) — store it in 1Password, then shred
-   # the private half:
-   cat eso-dev-cert.pem eso-dev-key.pem > eso-dev-combined.pem
-   # (file eso-dev-combined.pem into 1Password first, then:)
-   rm eso-dev-key.pem
-   ```
-
-2. Run the static guard (plan-free; asserts certificate-only auth and
-   vault-scope-only RBAC). CI runs the same script on every PR as a step of
-   the `tofu fmt check` job in `infra-plan.yml`:
+1. Run the static guard (plan-free; asserts the auth and RBAC invariants). CI
+   runs the same script on every PR as a step of the `tofu fmt check` job in
+   `infra-plan.yml`:
 
    ```sh
    sh live/identity/tests/static.sh
    ```
 
-3. Pass the PUBLIC certs and the group id as environment (`*.tfvars` and state
-   are git-ignored for values; the private keys never touch the repo or state):
+2. Export the group id (an identifier, not a credential — it is
+   operator-supplied all the same, so it is never committed):
 
    ```sh
    export TF_VAR_platform_admins_object_id=$(
      az ad group show --group grp-qnsc-platform-admins --query id -o tsv)
-   export TF_VAR_eso_certificates=$(jq -n \
-     --rawfile dev ~/keys/eso-dev-cert.pem \
-     --rawfile prod ~/keys/eso-prod-cert.pem \
-     --rawfile platform ~/keys/eso-platform-cert.pem \
-     '{dev:$dev, prod:$prod, platform:$platform}')
    ```
 
-4. Plan and apply as above (owner-local only). The plan adds 3 applications,
-   3 certificates, 3 service principals, 4 Secrets Officer + 3 Secrets User
-   assignments — nothing wider.
+3. Plan and apply as above (owner-local only). The plan adds 3 applications,
+   3 service principals, 3 federated identity credentials, 4 Secrets Officer
+   + 3 Secrets User assignments — nothing wider.
 
-5. Record `eso_client_ids` from the outputs. At bootstrap (§14 step 2, after
-   the cluster exists) hand-apply each store's Secret — one COMBINED PEM per
-   SP, the shape `stores-onprem.yaml` reads:
+4. Nothing else. With workload identity there is no per-store Secret to create
+   at bootstrap, so the `platform-eso-*` / `qnsc-eso-*-cert` steps that §14
+   step 2 used to carry are gone.
 
-   ```sh
-   kubectl -n external-secrets create secret generic qnsc-eso-dev-cert \
-     --from-file=tls.pem=$HOME/keys/eso-dev-combined.pem \
-     --from-literal=client-id=<eso_client_ids.dev>
-   # same shape for qnsc-eso-prod-cert / qnsc-eso-platform-cert
-   rm ~/keys/eso-*-combined.pem   # after 1Password holds it and the Secret is applied
-   ```
-
-Rotation (≤ 12 months): issue a NEW keypair, `tofu apply` the new public cert
-(`create_before_destroy` — the new credential exists before the old one is
-removed), THEN re-apply the cluster Secret from the new combined PEM. Between
-apply and the Secret swap ESO authentication fails for that store — downtime is
-acceptable; dev secrets are re-issuable. The old credential is removed by the
-same apply, immediately after the new one is created, so the swap is the very
-next step.
+The certificate path (the `openssl` keypairs, the `eso_certificates` variable
+and the `qnsc-eso-*-cert` cluster Secrets) was removed once gitops
+authenticated through the federated credential; that shape is in the history
+of this file.
 
 ## ESO workload identity: no secret zero (§7.1, end state)
 
-The certificate above is a long-lived secret that has to be kept, rotated and
-replaced when lost. The end state is a **federated identity credential**: Entra
-trusts a service-account token minted by the cluster's own OIDC issuer, and ESO
-exchanges it for a Key Vault token. Nothing to store, nothing to leak.
+A certificate is a long-lived secret that has to be kept, rotated and replaced
+when lost — and it leaked once. The end state is a **federated identity
+credential**: Entra trusts a service-account token minted by the cluster's own
+OIDC issuer, and ESO exchanges it for a Key Vault token. Nothing to store,
+nothing to leak.
 
 `eso.tf` adds, per store (`dev`, `prod`, `platform`):
 
@@ -255,9 +226,10 @@ is never edited by that side):
    ServiceAccounts (annotated `azure.workload.identity/client-id`). Prove all
    three stores `Valid` and an ExternalSecret syncing.
 6. **Delete the `*-cert` Secrets** in `external-secrets`, then merge + apply
-   the removal PR: `azuread_application_certificate.eso`,
+   **this PR** (the certificate removal): `azuread_application_certificate.eso`,
    `var.eso_certificates` and the openssl steps go. Expected plan: 3 to
-   destroy, 0 to add. Only now is the secret gone.
+   destroy, 0 to add. Only now is the secret gone. Never merge it before step
+   5 reports every store `Valid` on `WorkloadIdentity`.
 7. **`live/onprem-vm`** only after its rework, with VM 100 planning **no
    changes**.
 

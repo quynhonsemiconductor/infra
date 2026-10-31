@@ -4,19 +4,16 @@
 # platform/eso/stores-onprem.yaml: dev, prod, platform. NONE for kv-qnsc-admin
 # — nobody automated reads it (§7.1).
 #
-# TWO credentials exist during the cutover, and the certificate one is REMOVED
-# once the gitops side is proven (README "ESO workload identity", removal step):
+# EACH APP HAS EXACTLY ONE CREDENTIAL: a FEDERATED IDENTITY CREDENTIAL. Entra
+# trusts a token issued by the cluster's OWN OIDC issuer (below), so there is
+# no secret to store, rotate or leak. This is `authType: WorkloadIdentity` in
+# stores-onprem.yaml; ESO asks the API server for a service-account token and
+# exchanges it at Entra (audience api://AzureADTokenExchange).
 #
-#   1. A FEDERATED IDENTITY CREDENTIAL per app — the end state. Entra trusts a
-#      token issued by the cluster's OWN OIDC issuer (below), so there is no
-#      secret to store, rotate or leak. This is `authType: WorkloadIdentity`
-#      in stores-onprem.yaml; ESO asks the API server for a service-account
-#      token and exchanges it at Entra (audience api://AzureADTokenExchange).
-#   2. The CERTIFICATE (`azuread_application_certificate`) — today's auth. No
-#      password credential exists, by construction: tests/static.sh fails the
-#      tree if one is ever added. The combined PEM (certificate + private key,
-#      exactly what ESO's tls.pem reads) lives in 1Password and is hand-applied
-#      into the cluster as the store's Secret (README "ESO SP certificates").
+# NO CERTIFICATE and NO PASSWORD exist, by construction: tests/static.sh fails
+# the tree if either ever appears. The certificate credential and the combined
+# PEM in 1Password were the cutover path and are gone (README "ESO workload
+# identity" records the order they were removed in).
 #
 # WHY THE ISSUER IS k3s's: k3s sets `service-account-issuer` itself, and a
 # `kube-apiserver-arg` override REPLACES it (k3s's util.GetArgs deletes the
@@ -59,23 +56,6 @@ variable "eso_oidc_issuer" {
   }
 }
 
-variable "eso_certificates" {
-  type = object({
-    dev      = string
-    prod     = string
-    platform = string
-  })
-  description = "PEM public certificate for each ESO SP, keyed like local.eso. Generated locally by the owner (openssl, RSA 2048, ≤ 12 months), passed through TF_VAR_eso_certificates, never committed. A private key must never be passed."
-
-  validation {
-    condition = alltrue([
-      for pem in values(var.eso_certificates) :
-      can(regex("-----BEGIN CERTIFICATE-----", pem)) && !can(regex("PRIVATE KEY", pem))
-    ])
-    error_message = "Every eso_certificates value must be a PEM PUBLIC certificate (BEGIN CERTIFICATE); a private key is never accepted."
-  }
-}
-
 resource "azuread_application" "eso" {
   for_each = local.eso
 
@@ -103,29 +83,6 @@ resource "azuread_application_federated_identity_credential" "eso" {
   audiences      = ["api://AzureADTokenExchange"]
   issuer         = var.eso_oidc_issuer
   subject        = "system:serviceaccount:external-secrets:eso-${each.key}"
-}
-
-# CUTOVER CREDENTIAL — removed in the follow-up PR listed in the README
-# ("ESO workload identity", step 4), after gitops authenticates with the
-# federated credential and the cluster Secrets are deleted. It is kept here
-# until then on purpose: an apply that added the federated credential AND
-# destroyed this one in the same plan would take ESO down between apply and the
-# gitops change, which cannot be ordered the other way (the token exchange has
-# nothing to trust until the credential above exists).
-resource "azuread_application_certificate" "eso" {
-  for_each = local.eso
-
-  application_id = azuread_application.eso[each.key].id
-  type           = "AsymmetricX509Cert"
-  value          = var.eso_certificates[each.key]
-  encoding       = "pem"
-
-  # Rotation issues the NEW credential before the old one is removed, so the
-  # SP is never left without a certificate mid-apply. The cluster Secret
-  # (tls.pem) is swapped right after apply — see README "Rotation".
-  lifecycle {
-    create_before_destroy = true
-  }
 }
 
 resource "azuread_service_principal" "eso" {
