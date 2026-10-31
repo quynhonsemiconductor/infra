@@ -200,6 +200,126 @@ acceptable; dev secrets are re-issuable. The old credential is removed by the
 same apply, immediately after the new one is created, so the swap is the very
 next step.
 
+## ESO workload identity: no secret zero (§7.1, end state)
+
+The certificate above is a long-lived secret that has to be kept, rotated and
+replaced when lost. The end state is a **federated identity credential**: Entra
+trusts a service-account token minted by the cluster's own OIDC issuer, and ESO
+exchanges it for a Key Vault token. Nothing to store, nothing to leak.
+
+`eso.tf` adds, per store (`dev`, `prod`, `platform`):
+
+| federated credential field | value |
+| --- | --- |
+| issuer | `var.eso_oidc_issuer` — default `https://oidc.qnsc.vn/k3s-onprem` |
+| subject | `system:serviceaccount:external-secrets:eso-<env>` |
+| audience | `api://AzureADTokenExchange` (the fixed exchange audience) |
+
+Three files carry the issuer and must agree (the static guard fails on drift):
+this variable, `live/onprem-oidc` (the published OIDC documents) and
+`live/onprem-vm/files/k3s/config.yaml` (what k3s signs tokens with).
+
+### Ordering — this PR does NOT cut over by itself
+
+Entra must trust the issuer before the cluster can use it, and gitops must stop
+using the certificate before the certificate can be removed. Three states, two
+applies, and the middle one is a gitops change (agent D applies it; this stack
+is never edited by that side):
+
+1. **Snapshot first.** Proxmox snapshot of VM 100 and a CNPG backup. The k3s
+   restart in step 4 is the only step that touches the running cluster.
+2. **`live/onprem-oidc` applied (owner, local).** Publishes the discovery
+   document + JWKS captured from the running cluster. Curl both URLs and
+   confirm the issuer string.
+3. **This stack, first apply (owner, local).** Adds 3 federated identity
+   credentials. The certificates stay. Expected plan: 3 to add, 0 to change,
+   0 to destroy.
+4. **k3s issuer (owner, on the node).** Add the two `service-account-issuer`
+   lines to `/etc/rancher/k3s/config.yaml` — the new URL FIRST (that is the
+   one k3s signs with) and the old default SECOND (accepted, never issued) —
+   then `systemctl restart k3s`. Verify with a token from an EXISTING service
+   account (the ESO SAs do not exist until step 5):
+
+   ```sh
+   kubectl -n external-secrets create token default --audience api://AzureADTokenExchange \
+     | cut -d. -f2 | base64 -d 2>/dev/null | jq -r '.iss, .sub, .aud'
+   # must print https://oidc.qnsc.vn/k3s-onprem,
+   # system:serviceaccount:external-secrets:default and the audience
+   ```
+
+   Then confirm ArgoCD and the CNPG clusters are healthy — tokens minted
+   before the restart carry the OLD issuer and are accepted only because the
+   old value is still in the list.
+5. **gitops (D).** `platform/eso/stores-onprem.yaml` switches each store from
+   `authType: ServicePrincipal` to `WorkloadIdentity` and adds the three
+   ServiceAccounts (annotated `azure.workload.identity/client-id`). Prove all
+   three stores `Valid` and an ExternalSecret syncing.
+6. **Delete the `*-cert` Secrets** in `external-secrets`, then merge + apply
+   the removal PR: `azuread_application_certificate.eso`,
+   `var.eso_certificates` and the openssl steps go. Expected plan: 3 to
+   destroy, 0 to add. Only now is the secret gone.
+7. **`live/onprem-vm`** only after its rework, with VM 100 planning **no
+   changes**.
+
+Until step 6 runs, both credentials exist and either authenticates — which is
+what makes each step separately revertible.
+
+### The published documents (`live/onprem-oidc`)
+
+Entra fetches `<issuer>/.well-known/openid-configuration`, then the `jwks_uri`
+inside it. Both are published from a Cloudflare Worker in `live/onprem-oidc`
+(the provider has no resource that uploads static objects to R2 and none that
+deploys Pages, so a Worker is the only way to keep the content in Terraform).
+
+The JWKS is the PUBLIC half of the cluster's service-account signing key:
+
+```sh
+kubectl get --raw /openid/v1/jwks > /tmp/jwks.json     # public keys only
+TF_VAR_k3s_jwks="$(cat /tmp/jwks.json)" tofu apply     # in live/onprem-oidc
+```
+
+### Rotation of the service-account signing key
+
+**k3s does not rotate it on its own.** The API server SIGNS with
+`/var/lib/rancher/k3s/server/tls/service.current.key`
+(`service-account-signing-key-file`, k3s `pkg/daemons/control/server.go`), and
+VALIDATES with `service.key` (`service-account-key-file`) — which is why
+`service.key` can hold several keys and old tokens keep working. They are
+rewritten only by `k3s certificate rotate-ca` (k3s docs, "Service-Account
+Issuer Key Rotation": stage the new key, append the old one, rotate, restart).
+Nothing in k3s watches the file.
+
+So the published JWKS stays valid until someone rotates deliberately. When
+that happens, in this order:
+
+1. Rotate so `service.key` holds the NEW key **after** the old one (k3s
+   accepts several; the API server publishes all of them in its JWKS).
+2. `kubectl get --raw /openid/v1/jwks` — the response now lists both keys.
+3. `TF_VAR_k3s_jwks=... tofu apply` in `live/onprem-oidc`. Old and new tokens
+   both validate; nothing breaks.
+4. After the longest token lifetime has passed, drop the old key from
+   `service.key`, restart k3s, re-publish (steps 2–3 again).
+
+Publishing both keys in step 3 is what makes the rotation uninterrupted; a
+JWKS that carried only the new key would reject every token minted before the
+rotation.
+
+Where the mechanisms come from (checked 2026-10-31):
+
+- ESO, Azure Key Vault provider — https://external-secrets.io/latest/provider/azure-key-vault/
+  (`authType: WorkloadIdentity`, `serviceAccountRef.name`/`namespace`, and the
+  `azure.workload.identity/client-id` annotation on the ServiceAccount; the
+  audience `api://AzureADTokenExchange` is added by the provider itself —
+  `AzureDefaultAudience` in `providers/v1/azure/keyvault/keyvault.go` at the
+  chart's pinned version 2.11.0).
+- Microsoft Learn, "Create a trust relationship between an app and an external
+  identity provider" — https://learn.microsoft.com/en-us/entra/workload-id/workload-identity-federation-create-trust
+  (issuer / subject / audience semantics; the wrong-subject failure is silent).
+- k3s, "k3s certificate" (Service-Account Issuer Key Rotation) —
+  https://docs.k3s.io/cli/certificate
+  (the rotation is manual: `k3s certificate rotate-ca` + restart; k3s never
+  rotates the signing key by itself).
+
 ## Sign-in apps (`apps.tf`): owner export, plan, go/no-go
 
 The four existing registrations are ADOPTED (import blocks), never recreated.

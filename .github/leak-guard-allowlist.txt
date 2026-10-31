@@ -21,6 +21,9 @@
 ^opshub-api-dev\.qnsc\.vn$
 ^kb-dev\.qnsc\.vn$
 ^kb-api-dev\.qnsc\.vn$
+# The cluster's public OIDC issuer (live/onprem-oidc): Entra fetches the
+# discovery document and JWKS from it, so the hostname is public by design.
+^oidc\.qnsc\.vn$
 # Dead pre-rename name, kept in the EKS teardown record:
 ^rally-api-dev\.qnsc\.vn$
 # Dead EKS hostname, teardown record only:
