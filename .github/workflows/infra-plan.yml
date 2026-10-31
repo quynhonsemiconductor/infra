@@ -182,7 +182,9 @@ jobs:
           # realm qnsc, scope adaptive-metrics-config:read+write) and repo variable
           # AM_METRICS_URL. It is planned here and applied by the apply-adaptive-metrics job.
           # identity stays here on purpose: owner-only plan/apply (public repo; plan output would expose break-glass UPNs and the Entra role layout).
-          NOT_PLANNABLE="observability organization identity"
+          # onprem-oidc joins for a different reason: its only input CI does not have is the JWKS, readable
+          # only from the running cluster (kubectl get --raw /openid/v1/jwks), so there is no plan to run here.
+          NOT_PLANNABLE="observability organization identity onprem-oidc"
 
           SKIPPED=""
           PLANNABLE=""

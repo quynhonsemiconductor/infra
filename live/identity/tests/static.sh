@@ -88,4 +88,37 @@ KEYS=$(sed -n '/^locals {/,/^}/s/^[[:space:]]*\([a-z]*\)[[:space:]]*=[[:space:]]
 platform
 prod" ] || fail "local.eso keys are not exactly dev/prod/platform: $KEYS"
 
+# 5. ESO workload identity (§7.1): the issuer Entra trusts (this stack), the
+#    issuer published as an OIDC document (live/onprem-oidc) and the issuer
+#    k3s mints tokens with (live/onprem-vm) are ONE string. A mismatch passes
+#    every other gate and fails only at token exchange, silently.
+grep -q 'resource "azuread_application_federated_identity_credential" "eso"' eso.tf ||
+	fail "no federated identity credential for the ESO apps — the certificate stays the only auth"
+grep -q 'system:serviceaccount:external-secrets:eso-' eso.tf ||
+	fail "federated credential subject is not system:serviceaccount:external-secrets:eso-<env>"
+grep -q 'api://AzureADTokenExchange' eso.tf ||
+	fail "federated credential audience is not api://AzureADTokenExchange"
+
+default_of() {
+	sed -n "/^variable \"$2\"/,/^}/s/^[[:space:]]*default[[:space:]]*=[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$1"
+}
+
+IDENTITY_ISSUER=$(default_of eso.tf eso_oidc_issuer)
+[ -n "$IDENTITY_ISSUER" ] || fail "eso_oidc_issuer has no default in eso.tf"
+
+OIDC_DIR=../onprem-oidc
+[ -f "$OIDC_DIR/variables.tf" ] || fail "live/onprem-oidc is missing — the issuer has no published discovery document"
+PUBLISHED_ISSUER="https://$(default_of "$OIDC_DIR/variables.tf" oidc_hostname)/$(default_of "$OIDC_DIR/variables.tf" oidc_path)"
+[ "$PUBLISHED_ISSUER" = "$IDENTITY_ISSUER" ] ||
+	fail "published issuer ($PUBLISHED_ISSUER) != trusted issuer ($IDENTITY_ISSUER)"
+
+K3S_CONFIG=../onprem-vm/files/k3s/config.yaml
+if [ -f "$K3S_CONFIG" ]; then
+	# The config carries the new issuer FIRST — the one k3s signs with — and
+	# the old default SECOND, which is only accepted. Check the first only.
+	K3S_ISSUER=$(sed -n 's/^[[:space:]]*-[[:space:]]*service-account-issuer=\([^[:space:]]*\)$/\1/p' "$K3S_CONFIG" | head -1)
+	[ "$K3S_ISSUER" = "$IDENTITY_ISSUER" ] ||
+		fail "k3s service-account-issuer ($K3S_ISSUER) != trusted issuer ($IDENTITY_ISSUER)"
+fi
+
 echo "PASS: static guard"
