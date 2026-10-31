@@ -41,8 +41,9 @@ locals {
   # hostnames are already public DNS and in app_hosts above.
   # 2026-10-31 rova-dev: AWS develop destroyed (rova#802), SPA Worker
   # rova-dev-web deployed (rova#834), api on k3s. rova prod stays on AWS
-  # until its move PR.
-  cutover = ["rova-dev.qnsc.vn"]
+  # until its move PR. 2026-11-01 opshub-dev: AWS develop destroyed (opshub#488),
+  # api on k3s (gitops#75/#76), SPA Worker opshub-dev-web (opshub#521).
+  cutover = ["rova-dev.qnsc.vn", "opshub-dev.qnsc.vn"]
 
   # Nothing goes live before the tunnels exist (DNS targets them).
   cutover_live = var.tunnels_exist ? local.cutover : []
