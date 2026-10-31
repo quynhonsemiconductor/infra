@@ -38,9 +38,11 @@ locals {
   # Hosts whose DNS + Access + Workers routes are LIVE (plan §8.2: one host is
   # added per product move PR, in the SAME apply that imports/removes its
   # Pages domain and records). A reviewed list in the diff, not a secret: the
-  # hostnames are already public DNS and in app_hosts above. Empty today:
-  # nothing has cut over (rova prod stays on AWS until its move PR).
-  cutover = []
+  # hostnames are already public DNS and in app_hosts above.
+  # 2026-10-31 rova-dev: AWS develop destroyed (rova#802), SPA Worker
+  # rova-dev-web deployed (rova#834), api on k3s. rova prod stays on AWS
+  # until its move PR.
+  cutover = ["rova-dev.qnsc.vn"]
 
   # Nothing goes live before the tunnels exist (DNS targets them).
   cutover_live = var.tunnels_exist ? local.cutover : []
