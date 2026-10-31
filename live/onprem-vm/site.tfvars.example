@@ -1,0 +1,30 @@
+# ── Site values for live/onprem-vm ──────────────────────────────────────────
+#
+# Copy to site.tfvars (git-ignored) and change THAT file for a new site:
+#
+#   cp site.tfvars.example site.tfvars
+#   chmod 600 site.tfvars
+#
+# Nothing here is a credential: the Proxmox endpoint and API token are
+# environment variables (TF_VAR_proxmox_*), so this file can be copied between
+# sites without carrying access. The VLAN tag is REQUIRED — it is site
+# topology, which this public repo does not carry.
+
+proxmox_node = "pve01"
+
+vm_id   = 100
+vm_name = "k3s-01"
+
+datastore_id = "local-zfs"
+
+vm_cores     = 28
+vm_memory_mb = 57344
+
+os_disk_gb   = 120
+data_disk_gb = 1200
+
+bridge = "vmbr0"
+
+# The tag `qm config 100` shows as tag=<n> on net0. Replace before applying:
+# 0 means "untagged", which would move a tagged node.
+vlan_id = 0

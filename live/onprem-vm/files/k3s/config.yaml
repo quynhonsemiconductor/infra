@@ -1,0 +1,6 @@
+write-kubeconfig-mode: "0640"
+disable: [traefik, servicelb]
+secrets-encryption: true
+kube-apiserver-arg:
+  - service-account-issuer=https://oidc.qnsc.vn/k3s-onprem
+  - service-account-issuer=https://kubernetes.default.svc.cluster.local
