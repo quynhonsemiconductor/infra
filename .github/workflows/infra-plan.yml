@@ -184,7 +184,8 @@ jobs:
           # identity stays here on purpose: owner-only plan/apply (public repo; plan output would expose break-glass UPNs and the Entra role layout).
           # onprem-oidc joins for a different reason: its only input CI does not have is the JWKS, readable
           # only from the running cluster (kubectl get --raw /openid/v1/jwks), so there is no plan to run here.
-          NOT_PLANNABLE="observability organization identity onprem-oidc"
+          # onprem-vm is owner-only too: CI has no Proxmox token, and the endpoint is the admin door.
+          NOT_PLANNABLE="observability organization identity onprem-oidc onprem-vm"
 
           SKIPPED=""
           PLANNABLE=""
