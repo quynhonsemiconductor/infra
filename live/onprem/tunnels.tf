@@ -93,6 +93,7 @@ data "cloudflare_zero_trust_access_application" "dev" {
 }
 
 locals {
+  # team_name comes from auth_domain ("<team>.cloudflareaccess.com"), not the org display name.
   access_team_name = split(".", data.cloudflare_zero_trust_organization.this.auth_domain)[0]
 }
 
