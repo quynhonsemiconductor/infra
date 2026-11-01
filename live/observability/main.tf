@@ -119,6 +119,41 @@ resource "grafana_cloud_access_policy_token" "otlp_push" {
 }
 
 # =============================================================================
+# Synthetic Monitoring installation. The installation was first made in the UI;
+# this resource "can be used on an existing Synthetic Monitoring installation
+# without issues" (provider docs) and cannot be imported, so it is declared and
+# applied over it. Its own required scope is `stacks:read`, which the org key
+# in GRAFANA_CLOUD_API_KEY already carries (it creates stacks and access
+# policies). The publisher token is what SM uses to write probe results.
+#
+# `sm_access_token` is exposed as a sensitive output for the alerting stack to
+# adopt in a follow-up (today it still reads the GRAFANA_SM_TOKEN secret).
+# =============================================================================
+resource "grafana_cloud_access_policy" "sm_publisher" {
+  region       = "prod-ap-southeast-0"
+  name         = "sm-publisher"
+  display_name = "Synthetic Monitoring publisher"
+
+  scopes = ["metrics:write", "stacks:read", "logs:write", "traces:write"]
+
+  realm {
+    type       = "stack"
+    identifier = grafana_cloud_stack.qnsc.id
+  }
+}
+
+resource "grafana_cloud_access_policy_token" "sm_publisher" {
+  region           = "prod-ap-southeast-0"
+  access_policy_id = grafana_cloud_access_policy.sm_publisher.policy_id
+  name             = "sm-publisher-token"
+}
+
+resource "grafana_synthetic_monitoring_installation" "qnsc" {
+  stack_id              = grafana_cloud_stack.qnsc.id
+  metrics_publisher_key = grafana_cloud_access_policy_token.sm_publisher.token
+}
+
+# =============================================================================
 # Alerting credential — the STACK SERVICE ACCOUNT lives here (org-level), but
 # every resource it authenticates is in the sibling `observability-alerting`
 # stack. This stack CREATES the credential; that stack CONSUMES it via this

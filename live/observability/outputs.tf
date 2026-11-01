@@ -66,3 +66,14 @@ output "alerting_prometheus_datasource_name" {
     ordering problem there.
   EOT
 }
+
+output "sm_access_token" {
+  value       = grafana_synthetic_monitoring_installation.qnsc.sm_access_token
+  description = "Synthetic Monitoring API token. Sensitive. Not yet consumed: the alerting stack still reads the GRAFANA_SM_TOKEN secret."
+  sensitive   = true
+}
+
+output "sm_api_url" {
+  value       = grafana_synthetic_monitoring_installation.qnsc.stack_sm_api_url
+  description = "Synthetic Monitoring API root for the stack region."
+}

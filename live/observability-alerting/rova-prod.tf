@@ -98,9 +98,9 @@ resource "grafana_synthetic_monitoring_check" "rova_prod_readyz" {
   enabled   = true
   # The probe id comes from the SM API through the data source (uptime-dev.tf),
   # not from a hand-set variable: the fast track cannot wait for a human to read
-  # a number out of the UI. One public probe, "Frankfurt" — §12 caps the estate
+  # a number out of the UI. One public probe, "Singapore" — §12 caps the estate
   # at one probe, and a fixed name keeps the choice reviewable in git.
-  probes = [data.grafana_synthetic_monitoring_probes.main[0].probes["Frankfurt"]]
+  probes = [data.grafana_synthetic_monitoring_probes.main[0].probes["Singapore"]]
   # No alert_sensitivity: SM legacy alerting is forbidden on new installations
   # ("legacy alerts usage is forbidden"); paging is the grafana_rule_group below
   # on probe_success.
