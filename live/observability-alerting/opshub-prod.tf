@@ -91,7 +91,9 @@ resource "grafana_synthetic_monitoring_check" "opshub_prod_readyz" {
   timeout           = 5000   # ms — validate against the SM API's cap in the flip PR
   enabled           = true
   probes            = [var.sm_probe_id]
-  alert_sensitivity = "high"
+  # No alert_sensitivity: SM legacy alerting is forbidden on new installations
+  # ("legacy alerts usage is forbidden"); paging is the grafana_rule_group below
+  # on probe_success.
 
   labels = {
     product = "opshub"

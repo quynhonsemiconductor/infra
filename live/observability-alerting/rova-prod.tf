@@ -101,7 +101,9 @@ resource "grafana_synthetic_monitoring_check" "rova_prod_readyz" {
   # a number out of the UI. One public probe, "Frankfurt" — §12 caps the estate
   # at one probe, and a fixed name keeps the choice reviewable in git.
   probes            = [data.grafana_synthetic_monitoring_probes.main[0].probes["Frankfurt"]]
-  alert_sensitivity = "high"
+  # No alert_sensitivity: SM legacy alerting is forbidden on new installations
+  # ("legacy alerts usage is forbidden"); paging is the grafana_rule_group below
+  # on probe_success.
 
   labels = {
     product = "rova"

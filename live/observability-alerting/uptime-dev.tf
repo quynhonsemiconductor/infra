@@ -55,7 +55,9 @@ resource "grafana_synthetic_monitoring_check" "rova_dev_readyz" {
   timeout           = 5000
   enabled           = true
   probes            = [data.grafana_synthetic_monitoring_probes.main[0].probes["Frankfurt"]]
-  alert_sensitivity = "high"
+  # No alert_sensitivity: SM legacy alerting is forbidden on new installations
+  # ("legacy alerts usage is forbidden"); paging is the grafana_rule_group below
+  # on probe_success.
 
   labels = {
     product = "rova"
@@ -155,7 +157,9 @@ resource "grafana_synthetic_monitoring_check" "opshub_dev_readyz" {
   timeout           = 5000
   enabled           = true
   probes            = [data.grafana_synthetic_monitoring_probes.main[0].probes["Frankfurt"]]
-  alert_sensitivity = "high"
+  # No alert_sensitivity: SM legacy alerting is forbidden on new installations
+  # ("legacy alerts usage is forbidden"); paging is the grafana_rule_group below
+  # on probe_success.
 
   labels = {
     product = "opshub"
