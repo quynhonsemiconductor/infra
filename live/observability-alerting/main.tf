@@ -315,6 +315,31 @@ resource "grafana_notification_policy" "root" {
   # alert is exactly the kind of noise that trains people to ignore it.
   repeat_interval = "12h"
 
+  # DEV → TEAMS, opt-in per rule (owner 2026-11-01 fast track). Dev stays email
+  # by default (the root contact point); a dev rule that must page carries
+  # `paging = "teams"`, and THIS child adds Teams on top of email. Two matchers
+  # are ANDed, so it cannot catch a prod rule and cannot catch any dev rule that
+  # did not opt in. Ordered before the prod children: a matched child stops the
+  # list only when `continue = false`, and this one continues so email still
+  # fires from the root.
+  dynamic "policy" {
+    for_each = local.alerting_enabled ? [1] : []
+    content {
+      matcher {
+        label = "env"
+        match = "="
+        value = "development"
+      }
+      matcher {
+        label = "paging"
+        match = "="
+        value = "teams"
+      }
+      contact_point = grafana_contact_point.teams[0].name
+      continue      = true
+    }
+  }
+
   dynamic "policy" {
     for_each = local.alerting_enabled ? [1] : []
     content {

@@ -15,9 +15,11 @@
 # Require amr=mfa, session 8 h, Entra is the only IdP. There is at most one
 # `warp` Access app per account.
 resource "cloudflare_zero_trust_access_application" "warp" {
-  account_id       = var.cloudflare_account_id
-  type             = "warp"
-  name             = "Cloudflare WARP enrollment"
+  account_id = var.cloudflare_account_id
+  type       = "warp"
+  # Cloudflare names the account's one `warp` app itself and puts the name back
+  # to this value; a different one is permanent drift.
+  name             = "Warp Login App"
   session_duration = "8h"
   allowed_idps     = [cloudflare_zero_trust_access_identity_provider.entra.id]
 

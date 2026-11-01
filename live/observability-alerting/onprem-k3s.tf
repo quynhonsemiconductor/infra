@@ -31,7 +31,7 @@
 variable "onprem_alerts_enabled" {
   description = "Arms the on-prem rule groups. Flip via a one-line PR at the cutover (Stage D2 rehearsal arms it in rehearsal). false = the groups are culled and the plan shows nothing."
   type        = bool
-  default     = false
+  default     = true
 }
 
 locals {

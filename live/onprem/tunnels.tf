@@ -35,20 +35,66 @@ locals {
 
     # rova dev — one Access app on the host (live/edge); the webhook bypass
     # lives in live/edge too, this file only routes what reaches the origin
+    # The webhook rule MUST come before ^/v1/ (first match wins) and carries
+    # no JWT check: a bypass Access app issues no Cf-Access-Jwt-Assertion.
     { hostname = "rova-dev.qnsc.vn", path = "^/api/auth/", service = "http://api.rova-dev.svc:3000" },
+    { hostname = "rova-dev.qnsc.vn", path = "^/v1/scm/webhook/", service = "http://api.rova-dev.svc:3000", bypass = true },
     { hostname = "rova-dev.qnsc.vn", path = "^/v1/", service = "http://api.rova-dev.svc:3000" },
-    { hostname = "rova-dev.qnsc.vn", path = "^/readyz$", service = "http://api.rova-dev.svc:3000" },
+    { hostname = "rova-dev.qnsc.vn", path = "^/readyz$", service = "http://api.rova-dev.svc:3000", bypass = true },
 
     # opshub dev
+    # The door terminal rule is before ^/v1/ for the same reason (bearer token
+    # only, no Access session).
     { hostname = "opshub-dev.qnsc.vn", path = "^/api/auth/", service = "http://api.opshub-dev.svc:3000" },
+    { hostname = "opshub-dev.qnsc.vn", path = "^/v1/door/terminal/", service = "http://api.opshub-dev.svc:3000", bypass = true },
     { hostname = "opshub-dev.qnsc.vn", path = "^/v1/", service = "http://api.opshub-dev.svc:3000" },
-    { hostname = "opshub-dev.qnsc.vn", path = "^/readyz$", service = "http://api.opshub-dev.svc:3000" },
+    { hostname = "opshub-dev.qnsc.vn", path = "^/readyz$", service = "http://api.opshub-dev.svc:3000", bypass = true },
 
     # kb dev — everything under /api (incl. /api/v1/auth/entra/callback) plus
     # /readyz, the alias of /health/ready that Synthetic Monitoring probes
     { hostname = "kb-dev.qnsc.vn", path = "^/api/", service = "http://api.kb-dev.svc:8000" },
     { hostname = "kb-dev.qnsc.vn", path = "^/readyz$", service = "http://api.kb-dev.svc:8000" },
   ]
+}
+
+# ── Access JWT check at the origin (audit items 6) ──────────────────────────
+#
+# cloudflared validates Cf-Access-Jwt-Assertion itself (origin_request.access,
+# required = true), so a request that reaches the tunnel without passing the
+# host's Access app is refused even if the edge Access app is ever detached.
+# Only the DEV hosts that have an Access app; rova PROD and kb-dev are not
+# listed (prod has no Access by design, §8.2). Rules marked `bypass = true`
+# are the Access BYPASS paths of live/edge (/readyz, the rova-dev webhook,
+# the opshub-dev door terminal): those requests carry no JWT and must stay
+# open, so they get no access block.
+#
+# The AUD tags and the team name are read from Cloudflare, not from the edge
+# state: live/edge keeps its state in S3 (the AWS account closes after the
+# move) and this stack's CI identity has no AWS credentials by design.
+# Apps are matched by exact name = host, the name live/edge gives them. The
+# lookup fails the plan if an app is missing, so a host is never left
+# unchecked silently.
+locals {
+  access_jwt_hosts = toset(["rova-dev.qnsc.vn", "opshub-dev.qnsc.vn"])
+}
+
+data "cloudflare_zero_trust_organization" "this" {
+  account_id = var.cloudflare_account_id
+}
+
+data "cloudflare_zero_trust_access_application" "dev" {
+  for_each = local.access_jwt_hosts
+
+  account_id = var.cloudflare_account_id
+  filter = {
+    name  = each.key
+    exact = true
+  }
+}
+
+locals {
+  # team_name comes from auth_domain ("<team>.cloudflareaccess.com"), not the org display name.
+  access_team_name = split(".", data.cloudflare_zero_trust_organization.this.auth_domain)[0]
 }
 
 resource "cloudflare_zero_trust_tunnel_cloudflared" "qnsc_apps" {
@@ -71,10 +117,16 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "qnsc_apps" {
 
     ingress = concat(
       [for r in local.qnsc_apps_ingress : {
-        hostname       = r.hostname
-        path           = r.path
-        service        = r.service
-        origin_request = {}
+        hostname = r.hostname
+        path     = r.path
+        service  = r.service
+        origin_request = {
+          access = contains(local.access_jwt_hosts, r.hostname) && !try(r.bypass, false) ? {
+            required  = true
+            team_name = local.access_team_name
+            aud_tag   = [data.cloudflare_zero_trust_access_application.dev[r.hostname].aud]
+          } : null
+        }
       }],
       [
         # the catch-all — no hostname, always last
