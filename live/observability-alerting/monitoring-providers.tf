@@ -31,9 +31,9 @@ provider "healthchecksio" {
 }
 
 variable "grafana_sm_url" {
-  description = "Grafana Synthetic Monitoring API root (global, not the stack URL)."
+  description = "Grafana Synthetic Monitoring API root for the STACK REGION (qnsc is ap-southeast-0; the token is only valid against its own region: Synthetics > Configuration > General > backend address)."
   type        = string
-  default     = "https://synthetic-monitoring-api.grafana.net"
+  default     = "https://synthetic-monitoring-api-ap-southeast-0.grafana.net"
 }
 
 variable "grafana_sm_token" {
