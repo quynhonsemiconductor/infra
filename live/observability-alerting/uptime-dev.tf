@@ -47,14 +47,14 @@ data "grafana_synthetic_monitoring_probes" "main" {
 
 # ── rova-dev ────────────────────────────────────────────────────────────────
 resource "grafana_synthetic_monitoring_check" "rova_dev_readyz" {
-  count             = local.uptime_live ? 1 : 0
-  provider          = grafana.sm
-  job               = "rova-dev-readyz"
-  target            = "https://rova-dev.qnsc.vn/readyz"
-  frequency         = 300000
-  timeout           = 5000
-  enabled           = true
-  probes            = [data.grafana_synthetic_monitoring_probes.main[0].probes["Frankfurt"]]
+  count     = local.uptime_live ? 1 : 0
+  provider  = grafana.sm
+  job       = "rova-dev-readyz"
+  target    = "https://rova-dev.qnsc.vn/readyz"
+  frequency = 300000
+  timeout   = 5000
+  enabled   = true
+  probes    = [data.grafana_synthetic_monitoring_probes.main[0].probes["Frankfurt"]]
   # No alert_sensitivity: SM legacy alerting is forbidden on new installations
   # ("legacy alerts usage is forbidden"); paging is the grafana_rule_group below
   # on probe_success.
@@ -149,14 +149,14 @@ resource "grafana_rule_group" "rova_dev_readyz_down" {
 
 # ── opshub-dev ──────────────────────────────────────────────────────────────
 resource "grafana_synthetic_monitoring_check" "opshub_dev_readyz" {
-  count             = local.uptime_live ? 1 : 0
-  provider          = grafana.sm
-  job               = "opshub-dev-readyz"
-  target            = "https://opshub-dev.qnsc.vn/readyz"
-  frequency         = 300000
-  timeout           = 5000
-  enabled           = true
-  probes            = [data.grafana_synthetic_monitoring_probes.main[0].probes["Frankfurt"]]
+  count     = local.uptime_live ? 1 : 0
+  provider  = grafana.sm
+  job       = "opshub-dev-readyz"
+  target    = "https://opshub-dev.qnsc.vn/readyz"
+  frequency = 300000
+  timeout   = 5000
+  enabled   = true
+  probes    = [data.grafana_synthetic_monitoring_probes.main[0].probes["Frankfurt"]]
   # No alert_sensitivity: SM legacy alerting is forbidden on new installations
   # ("legacy alerts usage is forbidden"); paging is the grafana_rule_group below
   # on probe_success.

@@ -84,13 +84,13 @@ locals {
 resource "grafana_synthetic_monitoring_check" "opshub_prod_readyz" {
   count = local.opshub_live ? 1 : 0
   # the sm alias never configures while count is 0 (no instances)
-  provider          = grafana.sm
-  job               = "opshub-prod-readyz"
-  target            = "https://opshub.qnsc.vn/readyz"
-  frequency         = 300000 # ms — every 5 min, §12
-  timeout           = 5000   # ms — validate against the SM API's cap in the flip PR
-  enabled           = true
-  probes            = [var.sm_probe_id]
+  provider  = grafana.sm
+  job       = "opshub-prod-readyz"
+  target    = "https://opshub.qnsc.vn/readyz"
+  frequency = 300000 # ms — every 5 min, §12
+  timeout   = 5000   # ms — validate against the SM API's cap in the flip PR
+  enabled   = true
+  probes    = [var.sm_probe_id]
   # No alert_sensitivity: SM legacy alerting is forbidden on new installations
   # ("legacy alerts usage is forbidden"); paging is the grafana_rule_group below
   # on probe_success.
