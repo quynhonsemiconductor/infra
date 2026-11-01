@@ -9,7 +9,7 @@
 #               TEST prefix to prove barman works under the lock
 #
 # The lock is the immutability control: RW tokens scoped to this bucket, no
-# "write-only" claim (§10.3). Lock covers pg-rova/, dumps/, files/ — 14 days,
+# "write-only" claim (§10.3). Lock covers pg-rova/<server>/wals/, dumps/, files/ — 14 days,
 # never longer than the shortest locked lifecycle (daily 15 d > 14 d).
 #
 # Product buckets (rova-dev/opshub-dev/kb-dev + rova-prod files) are imported
@@ -62,8 +62,14 @@ resource "cloudflare_r2_bucket_lock" "qnsc_backups" {
       }
     },
     {
+      # WAL segments only. barman-cloud writes each base backup's backup.info
+      # twice (STARTED, then DONE), and a lock on the base/ objects refuses the
+      # second write (ObjectLockedByBucketPolicy, seen on the first pg-rova
+      # backup 2026-11-01). WAL files are written once, so they lock cleanly.
+      # The path carries the archive generation (serverName in gitops
+      # platform/cnpg/pg-rova.yaml): bump this prefix together with it.
       id      = "lock-pg-rova-14d"
-      prefix  = "pg-rova/"
+      prefix  = "pg-rova/pg-rova-g1/wals/"
       enabled = true
       condition = {
         type            = "Age"
