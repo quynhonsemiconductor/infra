@@ -43,7 +43,9 @@ locals {
   # rova-dev-web deployed (rova#834), api on k3s. rova prod stays on AWS
   # until its move PR. 2026-11-01 opshub-dev: AWS develop destroyed (opshub#488),
   # api on k3s (gitops#75/#76), SPA Worker opshub-dev-web (opshub#521).
-  cutover = ["rova-dev.qnsc.vn", "opshub-dev.qnsc.vn"]
+  # 2026-11-01 rova prod (owner fast track): rova.qnsc.vn moves off AWS on the
+  # move night. Merge ONLY on the night of the move — this line is the switch.
+  cutover = ["rova-dev.qnsc.vn", "opshub-dev.qnsc.vn", "rova.qnsc.vn"]
 
   # Nothing goes live before the tunnels exist (DNS targets them).
   cutover_live = var.tunnels_exist ? local.cutover : []
