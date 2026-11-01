@@ -331,90 +331,6 @@ and the Proxmox ACL key on it).** Keep the two in step.
 ## Mail service apps (`mail.tf`): owner export, plan, go/no-go
 
 One certificate-only Service app per product per env, `<Product> <Env> Service`
-(§7.3): **rova prod** (hand-create the registration FIRST — step 1; the client
-id it gets is what rova records as its Graph client id) plus the three
-**existing dev service apps** (live since 2026-10-18) — all ADOPTED via import.
-NO opshub/kb PROD apps: those products are not live in prod; their service
-apps come with their own prod PRs.
-
-1. Hand-create the ONE missing registration (skip the ones already live;
-   the export loop in step 2 refuses a name that matches 0 or > 1 apps):
-   "Rova Prod Service" — single tenant, no redirect URI, no client secret,
-   notes = repo link. Then remove the default delegated `User.Read` entry if
-   the new-registration wizard added one (the code models NO Graph permission
-   for rova and re-removing it here is an intended change; see step 4).
-
-2. Export the live shape (exact-name filter — NOT `--display-name`, a prefix
-   match; each name must match exactly one app):
-
-   ```sh
-   mkdir -p ~/mail-export && cd ~/mail-export
-   for app in "Rova Prod Service" "Rova Dev Service" "OpsHub Dev Service" "KB Dev Service"; do
-     n=$(az ad app list --filter "displayName eq '$app'" --query 'length(@)' -o tsv)
-     [ "$n" = "1" ] || { echo "expected exactly 1 app named '$app', got $n — STOP"; exit 1; }
-     app_id=$(az ad app list --filter "displayName eq '$app'" --query '[0].appId' -o tsv)
-     slug=$(echo "$app" | tr ' ' '-' | tr 'A-Z' 'a-z')
-     az ad app show --id "$app_id" > "$slug-app.json"
-     az ad sp show  --id "$app_id" > "$slug-sp.json"
-   done
-   ```
-
-3. Export the variables (values stay in your shell):
-
-   - `TF_VAR_mail_service_object_ids` — the app-registrations object ids
-     (the `id` field of each `*-app.json`):
-
-     ```sh
-     jq -n \
-       --slurpfile a rova-prod-service-app.json \
-       --slurpfile b rova-dev-service-app.json \
-       --slurpfile c opshub-dev-service-app.json \
-       --slurpfile d kb-dev-service-app.json \
-       '{rova_prod:$a[0].id, rova_dev:$b[0].id, opshub_dev:$c[0].id, kb_dev:$d[0].id}'
-     ```;
-   - `TF_VAR_mail_service_sp_object_ids` — the SP object ids
-     (`id` field of each `*-sp.json`);
-   - `TF_VAR_mail_service_certificates` — one PEM PUBLIC certificate per app
-     (same keys). Generate locally, one RSA 2048 keypair per app, ≤ 24 months,
-     keys stay outside iCloud-synced folders:
-     `openssl req -x509 -newkey rsa:2048 -nodes -days 730 -keyout <key>
-     -out <crt> -subj "/CN=qnsc-<product>-<env>-mail"`. Pass only the `crt`
-     PEMs; a private key fails the variable validation. THE KEY FILES ARE THE
-     SOURCE OF THE VAULT SECRETS in step 5 — do not delete them before then.
-
-4. `tofu plan` go/no-go — expected: **8 imports** (4 applications + 4 service
-   principals) + **4 `azuread_application_certificate` creates** and NOTHING
-   else. The ONE named in-place change: the rova apps lose a default delegated
-   `User.Read` entry if the export shows one (rova Service apps model NO Graph
-   permission). Anything else on an imported app — a permission add or
-   removal, a redirect URI, a secret credential — is NO-GO: STOP, export
-   again, reconcile in a reviewed commit first. (opshub's five application
-   roles are in the code; if the export shows a different set on the live
-   OpsHub Dev Service app, STOP and reconcile the list in `mail.tf` first.)
-
-5. After apply: record `mail_service_client_ids` (rova_prod's is the value
-   rova's Graph config records; the dev values land in the dev bundles).
-   Then write the combined PEM per app into its vault — the FILE path is the
-   argv, the value never is:
-
-   ```sh
-   cat rova-prod.key rova-prod.crt > /tmp/rova-prod-combined.pem && chmod 600 /tmp/rova-prod-combined.pem
-   az keyvault secret set --vault-name kv-qnsc-prod --name rova-prod-graph-cert --file /tmp/rova-prod-combined.pem
-   # dev, same shape: kv-qnsc-dev, names rova-dev-graph-cert / opshub-dev-graph-cert / kb-dev-graph-cert
-   rm /tmp/rova-prod-combined.pem   # after the vault holds it
-   ```
-
-   The worker reads them as `AZURE_CLIENT_CERTIFICATE_PATH` (§7.3 — one
-   credential mechanism). Exchange-side RBAC (mailbox, scope,
-   `Application Mail.Send`) stays in `scripts/owner/mail-prod-tenant/`.
-
-Rotation (≤ 24 months): new keypair → `tofu apply` the new public cert
-(`create_before_destroy` — the new credential exists before the old is
-removed) → write the new combined PEM to the vault (step 5). Between apply
-and the PEM swap the worker's OLD certificate still authenticates — no gap.
-## Mail service apps (`mail.tf`): owner export, plan, go/no-go
-
-One certificate-only Service app per product per env, `<Product> <Env> Service`
 (§7.3): **rova prod** (hand-create the registration FIRST — step 1) plus the
 three **existing dev service apps** (live since 2026-10-18) — all ADOPTED via
 import. The **dev certificates are adopted too** (SA decision — no rotation):
@@ -558,3 +474,84 @@ Rotation (dev certs expire 2027-10-18, rova_prod ≤ 24 months): new keypair →
 exists before the old is removed) → write the new combined PEM to the vault
 (step 5). Between apply and the PEM swap the worker's OLD certificate still
 authenticates — no gap.
+
+
+## Prod mail readiness: the rova prod fast-track checklist
+
+For the rova prod move (fast track, 2026-11-01). Everything below already
+exists in code (`mail.tf`, `scripts/owner/mail-prod-tenant/`); this section is
+the ordered owner run and the one variable table. Nothing here is applied by CI.
+
+**What is scoped to what.** The Entra app "Rova Prod Service" is certificate-only
+and holds NO `Mail.Send` in Entra. Mail permission is Exchange RBAC for
+Applications: management scope `noreply-rova` (recipient filter = the mailbox
+`noreply-rova@qnsc.vn`) plus an `Application Mail.Send` role assignment on the
+app's service principal limited to that scope. This is the supported successor
+of the legacy "application access policy"; `exchange-prod-mail.ps1` creates both
+and proves that other mailboxes are out of scope. The one Graph application
+permission on the app is `User.Invite.All` (guest invite), admin-consented by
+the owner.
+
+### Owner steps, in order
+
+1. **Hand-create the registration** "Rova Prod Service" (Entra admin center,
+   App registrations, New): single tenant, NO redirect URI, NO client secret,
+   notes `github.com/quynhonsemiconductor/rova`. Leave the wizard's `User.Read`
+   if present; the plan removes it (named in the go/no-go above).
+2. **Export** the live shape and build the variables: "Mail service apps"
+   steps 2 and 3 above, plus the sign-in export in "Sign-in apps" step 1.
+3. **Generate the rova prod keypair** (mail step 3). Keep the key; only the
+   public certificate goes into `TF_VAR_mail_service_certificates`.
+4. **`tofu plan`** with the full variable set below. Mail go/no-go: 8 imports
+   (apps + SPs), 3 dev certificate imports, 1 certificate create, 1 application
+   update (rova_prod: `User.Read` removed, `User.Invite.All` added), nothing
+   replaced. This stack also carries `proxmox.tf` and the sign-in apps: read
+   their sections for their expected lines. Any "must be replaced" is a STOP.
+5. **`tofu apply`** (owner, local, `--profile`/`az login` as in "First apply").
+6. **Admin consent** for `User.Invite.All`:
+   `az ad app permission admin-consent --id <rova prod service app id>`.
+7. **Key Vault certificate** (the file path is argv, never the value), mail
+   step 5: `az keyvault secret set --vault-name kv-qnsc-prod --name rova-prod-graph-cert --file <combined pem>`,
+   then delete the temp file. The on-prem worker reads it through ESO from
+   `kv-qnsc-prod`; ESO authenticates with its own store credential (see "Phase 1"
+   and the workload-identity PR), unrelated to this secret.
+8. **Exchange** (PowerShell 7, ExchangeOnlineManagement, Exchange admin role):
+   run `scripts/owner/mail-prod-tenant/exchange-prod-mail.ps1` exactly as in its
+   README step 2. The run FAILS unless the own mailbox is in scope and the
+   `-ControlMailbox noreply-rova-dev@qnsc.vn` is out of scope. Allow up to an
+   hour for propagation and re-run before debugging.
+9. **Record** `tofu output mail_service_client_ids` (rova_prod) as rova's Graph
+   client id; smoke with `pnpm exec platform-mail-check` from the rova repo
+   (send OK to its own mailbox, 403 to the others).
+10. After a real prod invitation arrived: `-Step RemoveSignInRole` (dry run first).
+
+### Full `TF_VAR_*` list for the next apply
+
+Every plan and apply of this stack needs ALL of these. The repo records the
+source of values only where noted; names of 1Password items other than the mail
+certificates are not recorded in this repo (and tenant details belong in
+product-docs), so the owner reads the rest from Entra or `az` as shown.
+
+| Variable | Value | Where the owner reads it |
+| --- | --- | --- |
+| `TF_VAR_subscription_id` (+ `ARM_SUBSCRIPTION_ID`) | subscription GUID | `az account show --query id -o tsv` |
+| `TF_VAR_budget_period_start` / `_end` | RFC3339 UTC | `az consumption budget list`, the live budget (README "First apply" step 3) |
+| `TF_VAR_break_glass_upn_domain` | tenant primary domain | Entra admin center, Overview, Primary domain |
+| `TF_VAR_office_ip` | office /32, optional (empty disables allowlists) | GitHub repo variable `TF_VAR_office_ip` |
+| `TF_VAR_platform_admins_object_id` | group object id | `az ad group show --group grp-qnsc-platform-admins --query id -o tsv` |
+| `TF_VAR_eso_certificates` | JSON `{dev,prod,platform}` PEM public certs | `~/keys/eso-*-cert.pem` (public halves; combined PEMs live in 1Password) |
+| `TF_VAR_existing_object_ids` | JSON, 4 sign-in app object ids | `*-app.json` `.id` from the sign-in export |
+| `TF_VAR_existing_sp_object_ids` | JSON, 4 sign-in SP object ids | `*-sp.json` `.id` from the sign-in export |
+| `TF_VAR_existing_identifier_uris` | JSON map; default `{}` | sign-in export shows none; leave default |
+| `TF_VAR_opshub_dev_app_role_ids` | JSON, 7 role GUIDs | `opshub-dev-app.json` `.appRoles[].id` |
+| `TF_VAR_owner_operator_object_id` | user object id | Entra, Users, the owner, Object ID |
+| `TF_VAR_second_owner_object_id` | user object id | Entra, Users, the second owner, Object ID |
+| `TF_VAR_proxmox_redirect_uris` | JSON list, `https://<host>/` (trailing slash) | the Proxmox realm host (product-docs) |
+| `TF_VAR_proxmox_admin_object_ids` | JSON list of user object ids | Entra, Users, Object ID; keep equal to the platform admins group |
+| `TF_VAR_mail_service_object_ids` | JSON, 4 service app object ids | mail export `*-app.json` `.id` |
+| `TF_VAR_mail_service_sp_object_ids` | JSON, 4 service SP object ids | mail export `*-sp.json` `.id` |
+| `TF_VAR_mail_service_cert_key_ids` | JSON, 3 dev key GUIDs | `.keyCredentials[0].keyId` of the three dev service apps |
+| `TF_VAR_mail_service_certificates` | JSON, 4 PEM public certs | dev: 1Password "Entra mail cert – <product>-dev – certificate"; rova_prod: the new `.crt` |
+
+The `existing_*` and `mail_service_*` ids are public identifiers, not secrets,
+and can be read with read-only `az ad app list|show` / `az ad sp show`.
