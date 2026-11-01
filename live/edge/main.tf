@@ -69,9 +69,38 @@ module "edge" {
 
   # Managed + OWASP rulesets — requires Pro+. Keep false until the zone plan is
   # confirmed; when enabling for prod, drop the AWS waf module from runtime-prod.
-  enable_managed_waf = var.enable_managed_waf
+  # Owner decision 2026-11-01: the FREE managed ruleset, not the Pro pair. The
+  # module's default list is the Pro Managed + OWASP rulesets, which the zone's
+  # plan refuses ("not entitled"), so the list is explicit here.
+  enable_managed_waf  = var.enable_managed_waf
+  managed_ruleset_ids = ["77454fe2d30c4220b5701f6fdfb893ba"] # Cloudflare Free Managed Ruleset
 
   custom_firewall_rules = var.custom_firewall_rules
+}
+
+# ── Response hardening for the asset host ───────────────────────────────────
+# rova-assets.qnsc.vn serves user-uploaded objects from R2 through Cloudflare.
+# Browsers must not guess a type for them, whatever R2 returns.
+resource "cloudflare_ruleset" "assets_nosniff" {
+  zone_id     = var.cloudflare_zone_id
+  name        = "qnsc asset response headers"
+  description = "X-Content-Type-Options: nosniff on the asset host."
+  kind        = "zone"
+  phase       = "http_response_headers_transform"
+
+  rules = [{
+    ref         = "assets_nosniff"
+    description = "nosniff on rova-assets.qnsc.vn"
+    expression  = "http.host eq \"rova-assets.qnsc.vn\""
+    action      = "rewrite"
+    enabled     = true
+
+    action_parameters = {
+      headers = {
+        "X-Content-Type-Options" = { operation = "set", value = "nosniff" }
+      }
+    }
+  }]
 }
 
 # =============================================================================

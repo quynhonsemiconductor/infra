@@ -30,8 +30,11 @@ variable "certificate_domain" {
 }
 
 variable "enable_managed_waf" {
-  type        = bool
-  default     = false
+  type = bool
+  # Owner decision 2026-11-01: run the FREE managed ruleset on the zone. The
+  # module's default list (Pro Managed + OWASP) is refused on this plan ("not
+  # entitled", CI plan 2026-11-01); the call site passes the free id instead.
+  default     = true
   description = "Deploy Cloudflare Managed + OWASP rulesets (Pro+ plan only). When enabling for prod, drop the AWS waf module from runtime-prod."
 }
 
