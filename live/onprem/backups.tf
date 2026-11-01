@@ -27,16 +27,9 @@ resource "cloudflare_r2_bucket_lock" "qnsc_backups" {
   bucket_name  = cloudflare_r2_bucket.qnsc_backups.name
   jurisdiction = "default"
 
+  # Order = the order the API returns (by id): rules is a list, so any other
+  # order shows as permanent drift.
   rules = [
-    {
-      id      = "lock-pg-rova-14d"
-      prefix  = "pg-rova/"
-      enabled = true
-      condition = {
-        type            = "Age"
-        max_age_seconds = 1209600 # 14 days
-      }
-    },
     {
       id      = "lock-dumps-14d"
       prefix  = "dumps/"
@@ -68,6 +61,15 @@ resource "cloudflare_r2_bucket_lock" "qnsc_backups" {
         max_age_seconds = 1209600
       }
     },
+    {
+      id      = "lock-pg-rova-14d"
+      prefix  = "pg-rova/"
+      enabled = true
+      condition = {
+        type            = "Age"
+        max_age_seconds = 1209600 # 14 days
+      }
+    },
   ]
 }
 
@@ -76,7 +78,29 @@ resource "cloudflare_r2_bucket_lifecycle" "qnsc_backups" {
   bucket_name  = cloudflare_r2_bucket.qnsc_backups.name
   jurisdiction = "default"
 
+  # Order = the order the API returns (by id), same reason as the lock above.
   rules = [
+    {
+      id      = "cleanup-incomplete-uploads"
+      enabled = true
+      conditions = {
+        prefix = ""
+      }
+      abort_multipart_uploads_transition = {
+        condition = { type = "Age", max_age = 604800 } # 7 d
+      }
+    },
+    {
+      id      = "dev"
+      enabled = true
+      conditions = {
+        prefix = "dev/"
+      }
+      # no lock on purpose: a 14-day lock would override the 7-day delete
+      delete_objects_transition = {
+        condition = { type = "Age", max_age = 604800 } # 7 d
+      }
+    },
     {
       id      = "dumps-daily"
       enabled = true
@@ -85,16 +109,6 @@ resource "cloudflare_r2_bucket_lifecycle" "qnsc_backups" {
       }
       delete_objects_transition = {
         condition = { type = "Age", max_age = 1296000 } # 15 d ≥ the 14 d lock
-      }
-    },
-    {
-      id      = "dumps-weekly"
-      enabled = true
-      conditions = {
-        prefix = "dumps/weekly/"
-      }
-      delete_objects_transition = {
-        condition = { type = "Age", max_age = 3024000 } # 35 d
       }
     },
     {
@@ -108,6 +122,16 @@ resource "cloudflare_r2_bucket_lifecycle" "qnsc_backups" {
       }
     },
     {
+      id      = "dumps-weekly"
+      enabled = true
+      conditions = {
+        prefix = "dumps/weekly/"
+      }
+      delete_objects_transition = {
+        condition = { type = "Age", max_age = 3024000 } # 35 d
+      }
+    },
+    {
       # write-once in practice: the 14 d lock on files/ makes any rewrite
       # impossible until expiry — uploads are append-only by key.
       id      = "files"
@@ -117,17 +141,6 @@ resource "cloudflare_r2_bucket_lifecycle" "qnsc_backups" {
       }
       delete_objects_transition = {
         condition = { type = "Age", max_age = 3024000 } # 35 d
-      }
-    },
-    {
-      id      = "dev"
-      enabled = true
-      conditions = {
-        prefix = "dev/"
-      }
-      # no lock on purpose: a 14-day lock would override the 7-day delete
-      delete_objects_transition = {
-        condition = { type = "Age", max_age = 604800 } # 7 d
       }
     },
     {
@@ -152,16 +165,6 @@ resource "cloudflare_r2_bucket_lifecycle" "qnsc_backups" {
       }
       delete_objects_transition = {
         condition = { type = "Age", max_age = 1296000 } # 15 d
-      }
-    },
-    {
-      id      = "cleanup-incomplete-uploads"
-      enabled = true
-      conditions = {
-        prefix = ""
-      }
-      abort_multipart_uploads_transition = {
-        condition = { type = "Age", max_age = 604800 } # 7 d
       }
     },
   ]
