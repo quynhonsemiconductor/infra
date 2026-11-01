@@ -66,7 +66,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: quynhonsemiconductor/ci/actions/setup-tofu-aws@ea2c56bd9b03fb4d52e8fb9fe98dca95fd278638 # v1.24.5
+      - uses: quynhonsemiconductor/ci/actions/setup-tofu-aws@4ab3aaec8d70a2f0fb9a38e8a5a96cebe90e58e5 # v1.27.0
         with:
           role-arn:     arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/qnsc-github-infra-apply
           aws-region:   ${{ env.AWS_REGION }}
