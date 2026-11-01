@@ -168,6 +168,17 @@ resource "cloudflare_r2_bucket_lifecycle" "qnsc_backups" {
       }
     },
   ]
+
+  # The API fills the UNUSED transition of every rule with an empty
+  # `condition = {}` ("type" is required in the schema, so the config cannot
+  # say it). Ignore exactly those two attributes (indexes follow the id order
+  # above); a real change to either rule's own transition still plans.
+  lifecycle {
+    ignore_changes = [
+      rules[0].delete_objects_transition,
+      rules[7].abort_multipart_uploads_transition,
+    ]
+  }
 }
 
 output "qnsc_backups_bucket" {

@@ -323,10 +323,6 @@ resource "cloudflare_pages_project" "landing" {
   production_branch = "main"
 
   lifecycle {
-    # Computed by the API and planned as "(known after apply)" on every run
-    # (provider 5.28 quirk, shows as permanent drift). Direct-upload project:
-    # nothing here is managed.
-    ignore_changes  = [build_config, build_image_auto_upgrade]
     prevent_destroy = true # destroying the Pages project deletes its deployments and detaches its custom domains: the landing site goes down
   }
 }
