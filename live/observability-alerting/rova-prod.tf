@@ -12,15 +12,15 @@
 # the specification this file implements; the Schedules section cites the
 # exact plan lines.
 #
-# DISABLED UNTIL CUTOVER. Every resource is `count = var.rova_prod_live ? 1 : 0`,
-# so a plan today shows NOTHING (drift-detection does not cover this stack; the
-# PR plan matrix's "Plan observability-alerting — no changes" is the standing
-# proof). ONE flip mechanism: a one-word PR that changes the
-# `rova_prod_live` default to `true` in the Stage D window, SA-reviewed like
-# any change, which also sets `sm_probe_id` (default null; the SM probe id is
-# only knowable with a live SM token) and the Healthchecks channel UUIDs.
-# There is deliberately NO CI variable for the flag — a repo variable would
-# flip four alert resources past review.
+# TWO GATES, split 2026-11-01 (fast track: rova prod leaves AWS in 1–2 days).
+#   * the PROD READYZ check + rule arm on `uptime_checks_enabled`
+#     (uptime-dev.tf) — the flag the fast-track PR turns on, together with the
+#     dev checks. The SM probe id comes from the probes data source.
+#   * the BACKUP checks arm on `rova_prod_live`, flipped by ONE one-word PR in
+#     the Stage D window once Healthchecks channel UUIDs exist. There is
+#     deliberately NO CI variable for that flag — a repo variable would flip
+#     three alert resources past review.
+# A plan with both flags false shows NOTHING.
 #
 # ── HOW THE JOBS PING (read before wiring CronJobs) ──────────────────────────
 # Jobs ping by PROJECT PING KEY + SLUG, never by check UUID:
@@ -47,10 +47,11 @@
 #     Synthetic Monitoring page — NOT GRAFANA_CLOUD_API_KEY) and
 #     HEALTHCHECKS_API_TOKEN. The workflow mappings already exist (scoped to
 #     this stack: infra-plan.yml matrix, apply-observability-alerting).
-#  2. One PR: rova_prod_live → true, sm_probe_id → Frankfurt's id
-#     (GET <sm_url>/api/v1/probes with the SM token), healthchecks_channel_ids →
-#     the Teams + devops@ channel UUIDs. The lifecycle preconditions below make
-#     the plan FAIL if any of these is missing, so the flip cannot half-apply.
+#  2. One PR: rova_prod_live → true and healthchecks_channel_ids → the Teams +
+#     devops@ channel UUIDs. The lifecycle preconditions below make the plan
+#     FAIL if the channels are missing, so the flip cannot half-apply. (The
+#     readyz check is already armed by the fast-track flag; sm_probe_id is no
+#     longer used — the probe comes from the SM API data source.)
 #  3. Stage D's gates read these checks: Synthetic green (D5) and the restore
 #     pass green (§10.4) before any announcement.
 #
@@ -69,6 +70,17 @@ variable "rova_prod_live" {
 
 locals {
   rova_live = var.rova_prod_live
+
+  # UPTIME IS ARMED SEPARATELY (2026-11-01, fast track: rova prod leaves AWS in
+  # 1–2 days). The prod readyz check and its rule no longer wait for the full
+  # Stage-D flip: they follow `uptime_checks_enabled` (uptime-dev.tf), which also
+  # arms the dev checks. The BACKUP checks below still wait for `rova_prod_live`
+  # because they need Healthchecks channel ids and a real CronJob to ping.
+  #
+  # Gated on the SM token as well as the flag: with no token the aliased provider
+  # cannot configure, and ANY instance (the probe data source included) would
+  # fail the plan. `count` keeps the data source out of the graph too.
+  uptime_live = var.uptime_checks_enabled && var.grafana_sm_token != ""
 }
 
 # The rova-prod slot of §12's SIX-check budget (rova+opshub prod+dev, kb-dev,
@@ -76,15 +88,19 @@ locals {
 # HTTP GET per §12. alert_sensitivity = "high" records sensitivity on the SM
 # side; the ALERT itself is the flag-gated rule group below.
 resource "grafana_synthetic_monitoring_check" "rova_prod_readyz" {
-  count = local.rova_live ? 1 : 0
+  count = local.uptime_live ? 1 : 0
   # the grafana.sm alias never configures while count is 0 (no instances)
-  provider          = grafana.sm
-  job               = "rova-prod-readyz"
-  target            = "https://rova.qnsc.vn/readyz"
-  frequency         = 300000 # ms — every 5 min, §12
-  timeout           = 5000   # ms — validate against the SM API's cap in the flip PR
-  enabled           = true
-  probes            = [var.sm_probe_id]
+  provider  = grafana.sm
+  job       = "rova-prod-readyz"
+  target    = "https://rova.qnsc.vn/readyz"
+  frequency = 300000 # ms — every 5 min, §12
+  timeout   = 5000   # ms — validate against the SM API's cap in the flip PR
+  enabled   = true
+  # The probe id comes from the SM API through the data source (uptime-dev.tf),
+  # not from a hand-set variable: the fast track cannot wait for a human to read
+  # a number out of the UI. One public probe, "Frankfurt" — §12 caps the estate
+  # at one probe, and a fixed name keeps the choice reviewable in git.
+  probes            = [data.grafana_synthetic_monitoring_probes.main[0].probes["Frankfurt"]]
   alert_sensitivity = "high"
 
   labels = {
@@ -97,13 +113,6 @@ resource "grafana_synthetic_monitoring_check" "rova_prod_readyz" {
       method = "GET"
     }
   }
-
-  lifecycle {
-    precondition {
-      condition     = var.sm_probe_id != null
-      error_message = "sm_probe_id is null — the flip PR must set it (GET <sm_url>/api/v1/probes with GRAFANA_SM_TOKEN; §12 caps at 1 probe)."
-    }
-  }
 }
 
 # ── Synthetic Monitoring alert rule ─────────────────────────────────────────
@@ -114,7 +123,7 @@ resource "grafana_synthetic_monitoring_check" "rova_prod_readyz" {
 # (the stack's managed Prometheus, where SM publishes probe_success) as
 # series_near_cap in main.tf.
 resource "grafana_rule_group" "rova_prod_readyz_down" {
-  count            = local.rova_live ? 1 : 0
+  count            = local.uptime_live ? 1 : 0
   name             = "rova (prod readyz)"
   folder_uid       = grafana_folder.alerts.uid
   interval_seconds = 60
