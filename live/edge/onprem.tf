@@ -230,6 +230,10 @@ resource "cloudflare_zero_trust_access_policy" "dev_allow" {
       identity_provider_id = cloudflare_zero_trust_access_identity_provider.entra.id
     }
   }]
+  # Same requirement as the admin doors and the rova-dev MCP policy: amr=mfa.
+  require = [{
+    auth_method = { auth_method = "mfa" }
+  }]
 }
 
 # Bypass: <dev>/readyz (Synthetic Monitoring) and the rova-dev webhook.

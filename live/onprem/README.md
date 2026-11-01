@@ -18,6 +18,11 @@ this public repo.
   Node 65 s / uvicorn 65 s origins), final catch-all `http_status:404`.
   The Worker/SPA routes and Access apps are live/edge's half of the same
   design; this file routes what falls through to the origin.
+  On the Access-protected dev hosts (rova-dev, opshub-dev) cloudflared also
+  checks the Access JWT (`origin_request.access`, required, AUD read from the
+  Access app named after the host). The Access bypass paths (/readyz, the
+  rova-dev webhook, the opshub-dev door terminal) are separate rules without
+  the check. Prod has no Access, so no check.
 - `qnsc-admin` — the operator door, systemd on pve01, private-network route to
   the office LAN only, gated by Access + Entra `amr=mfa` in live/edge.
 - `qnsc-backups` (R2, Bucket Lock + lifecycle) already lives in backups.tf.
