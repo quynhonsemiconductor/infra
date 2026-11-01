@@ -98,7 +98,9 @@ function Test-MailInScope {
     # [bool] on a 2+ element array is always true, so filter explicitly.
     param([string]$AppId, [string]$Mailbox)
     $rows = @(Test-ServicePrincipalAuthorization -Identity $AppId -Resource $Mailbox)
-    return @($rows | Where-Object { $_.RoleName -eq $MailRole -and $_.InScope }).Count -gt 0
+    # InScope arrives as the STRING 'True'/'False' from the REST-based module (v3), and any
+    # non-empty string is truthy in PowerShell: compare the text, never test truthiness.
+    return @($rows | Where-Object { $_.RoleName -eq $MailRole -and [string]$_.InScope -eq 'True' }).Count -gt 0
 }
 
 function Connect-ProdExchange {
