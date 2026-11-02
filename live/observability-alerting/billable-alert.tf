@@ -101,6 +101,75 @@ resource "grafana_rule_group" "billable_series" {
       summary = "Org billable series is above the Free tier's included allowance (warning line). Series are at risk of being dropped at ingestion; the recorded reductions (Adaptive Metrics rules, infra#213) bring this back down — re-measure 48 h after they apply."
     }
   }
+
+  # EARLY tier (70% of the 10k allowance), added with OBI phase 1 (gitops: eBPF RED metrics
+  # add a few hundred series). Same usage datasource and metric as the warning rule above,
+  # whose name was verified live on 2026-10-25 (the series samples every 5 min). Email only,
+  # no `env` label (notification-policy root), same no-data stance as the warning tier.
+  rule {
+    name           = "org-billable-series-70pct"
+    condition      = "B"
+    for            = "30m"
+    no_data_state  = "Alerting"
+    exec_err_state = "Error"
+
+    data {
+      ref_id         = "A"
+      query_type     = "instant"
+      datasource_uid = data.grafana_data_source.usage.uid
+
+      relative_time_range {
+        from = 600
+        to   = 0
+      }
+
+      model = jsonencode({
+        refId         = "A"
+        datasource    = { type = "prometheus", uid = data.grafana_data_source.usage.uid }
+        expr          = "grafanacloud_org_metrics_billable_series"
+        instant       = true
+        range         = false
+        intervalMs    = 1000
+        maxDataPoints = 43200
+      })
+    }
+
+    data {
+      ref_id         = "B"
+      datasource_uid = "__expr__"
+
+      relative_time_range {
+        from = 0
+        to   = 0
+      }
+
+      model = jsonencode({
+        refId      = "B"
+        type       = "threshold"
+        datasource = { type = "__expr__", uid = "__expr__" }
+        expression = "A"
+        conditions = [
+          {
+            evaluator = {
+              type   = "gt"
+              params = [7000]
+            }
+          }
+        ]
+        intervalMs    = 1000
+        maxDataPoints = 43200
+      })
+    }
+
+    labels = {
+      product  = "platform"
+      severity = "warning"
+    }
+
+    annotations = {
+      summary = "Org billable series is above 7000 (70% of the 10k Free-tier allowance). Check what was added recently (OBI/Beyla series, new scrape jobs) before it reaches the 8000 warning line."
+    }
+  }
 }
 
 variable "billable_critical_enabled" {
