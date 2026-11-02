@@ -1,5 +1,7 @@
 # EKS/k8s spike teardown, 2026-10-13
 
+> **ARCHIVED 2026-11-02.** Describes the AWS/EKS/RDS estate, which no longer exists (AWS exit, `docs/runbooks/aws-exit.md`). Kept as a record of past decisions; do not follow it. The live layout is `live/` and the on-prem platform docs in product-docs.
+
 Record of the teardown of the six spike stacks (`rova-dev`, `cluster-dev`, `cluster-prod`, `data-dev`, `platform-dev`, `platform-prod`). All times +07.
 
 The owner ran a purpose-built teardown kit (see "Archive"), one step at a time, with a fresh MFA session before each. Nothing outside the
