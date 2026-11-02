@@ -1,5 +1,7 @@
 # Finishing the rally → rova rename: rebuilding both RDS instances
 
+> **ARCHIVED 2026-11-02.** Describes the AWS/EKS/RDS estate, which no longer exists (AWS exit, `docs/runbooks/aws-exit.md`). Kept as a record of past decisions; do not follow it. The live layout is `live/` and the on-prem platform docs in product-docs.
+
 Status: **module prerequisite merged pending, cutover not started.** Written 2026-09-13.
 
 ## The problem, and why it cannot be fixed in place
