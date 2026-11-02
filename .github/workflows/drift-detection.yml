@@ -94,6 +94,9 @@ jobs:
           # the S3 one — the ARM_* env blocks below carry it. Talks to Cloudflare, so the read-only
           # token check applies (contains lists updated with it).
           - onprem
+          # github is NOT here: the read app cannot see repository bypass actors or merge settings, so a
+          # nightly read-only refresh would be red every night. It has its own monthly job in
+          # environment production (.github/workflows/github-drift.yml), planned with the apply app.
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
