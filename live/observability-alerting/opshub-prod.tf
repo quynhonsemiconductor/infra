@@ -43,7 +43,7 @@
 #     Synthetic Monitoring page — NOT GRAFANA_CLOUD_API_KEY) and
 #     HEALTHCHECKS_API_TOKEN. The workflow mappings already exist, scoped to
 #     this stack only (infra-plan.yml plan matrix, apply-observability-alerting).
-#  2. One PR: opshub_prod_live → true, sm_probe_id → Frankfurt's id
+#  2. One PR: opshub_prod_live → true, sm_probe_id → Singapore's id
 #     (GET <sm_url>/api/v1/probes with the SM token), healthchecks_channel_ids →
 #     the Teams + devops@ channel UUIDs. The lifecycle preconditions below make
 #     the plan FAIL if any of these is missing, so the flip cannot half-apply.
