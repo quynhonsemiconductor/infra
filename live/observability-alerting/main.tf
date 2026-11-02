@@ -299,7 +299,7 @@ resource "grafana_notification_policy" "root" {
   # Develop (and any alert without env=production) goes to email only. Prod adds Teams,
   # via the first child below, and email via the second; a matched child stops
   # the root, so prod lists both explicitly. The env label is "production" in the
-  # prod stacks (live/prod env = "production"), "develop" in develop.
+  # prod stacks (live/prod env = "production"), "development" in dev (alert label).
   contact_point = grafana_contact_point.email.name
   # "env" is REQUIRED here, not "product" alone — caught in a pre-prod
   # audit, before it could bite: with only develop's alert rules active
@@ -487,8 +487,11 @@ resource "grafana_rule_group" "security_fail_open" {
 
   dynamic "rule" {
     for_each = {
-      develop    = { env = "develop", severity = "warning" }
-      production = { env = "production", severity = "critical" }
+      # `env` is the Loki resource-attribute VALUE ("develop"); `alert_env` is the
+      # alert label, which must match the notification policy and every other
+      # dev rule in this stack ("development").
+      develop    = { env = "develop", alert_env = "development", severity = "warning" }
+      production = { env = "production", alert_env = "production", severity = "critical" }
     }
     iterator = env_rule
     content {
@@ -569,7 +572,7 @@ resource "grafana_rule_group" "security_fail_open" {
 
       labels = {
         product  = "platform"
-        env      = env_rule.value.env
+        env      = env_rule.value.alert_env
         severity = env_rule.value.severity
       }
 
