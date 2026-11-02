@@ -130,6 +130,15 @@ Notes:
 ## Order of operations (before merging this PR)
 
 1. Do the owner steps above for both apps.
+1b. **Seed the state blob once** (owner, with write access to the state account). The read identity
+   that PR plans and drift use cannot create the blob, and `tofu init` takes a lock on it first
+   (`failed to lock azure state ... 403 AuthorizationPermissionMismatch`, as every new stack does
+   until its blob exists). From a checkout of this branch:
+   ```sh
+   az login --tenant <tenant-domain>        # an identity with Storage Blob Data Contributor on stqnsctfstate
+   cd live/github && tofu init              # creates infra/github/terraform.tfstate, empty; changes nothing else
+   ```
+   Then re-run the failed `Plan github` job on the PR.
 2. Merge. The apply job (`apply-github`) mints the apply token, shows `53 to import, 0 to change`,
    waits for the `production` reviewer, then imports into the empty state.
 3. One-line follow-up PR: remove `github` from `NOT_PLANNABLE` in `infra-plan.yml`, so PRs get a plan
