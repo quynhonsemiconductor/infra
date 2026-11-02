@@ -389,13 +389,18 @@ jobs:
           ARM_CLIENT_ID:       ${{ matrix.stack == 'onprem' && vars.AZURE_CLIENT_ID_READ || '' }}
           ARM_TENANT_ID:       ${{ matrix.stack == 'onprem' && vars.ENTRA_TENANT_ID || '' }}
           ARM_USE_OIDC:        ${{ matrix.stack == 'onprem' && 'true' || '' }}
+          # C-1 (audit-infra 2026-11-02): this job runs the PR's own workflow and
+          # HCL, so it gets READ-ONLY tokens only (the *_READONLY secrets). The
+          # write tokens live as environment secrets of `production` and reach
+          # apply jobs only, behind the required reviewer. Residual (no read-only
+          # form exists): ENTRA_IDP_CLIENT_SECRET, GRAFANA_SM_TOKEN, Teams webhook.
           # Stack-specific inputs. Vars a stack doesn't declare are ignored
           # (tofu just warns), so passing the full set to every stack is safe.
           TF_VAR_cloudflare_zone_id:    ${{ vars.CLOUDFLARE_ZONE_ID }}
           TF_VAR_office_ip:             ${{ vars.OFFICE_IP }}
-          TF_VAR_cloudflare_api_token:  ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TF_VAR_cloudflare_api_token:  ${{ secrets.CLOUDFLARE_API_TOKEN_READONLY }}
           TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          TF_VAR_grafana_cloud_api_key: ${{ secrets.GRAFANA_CLOUD_API_KEY }}
+          TF_VAR_grafana_cloud_api_key: ${{ secrets.GRAFANA_CLOUD_API_KEY_READONLY }}
           TF_VAR_teams_webhook_url:     ${{ secrets.TEAMS_ALERTS_WEBHOOK_URL }}
           # secrets, not vars: admin_hostnames is a sensitive label->hostname map —
           # vars print in job logs / PR text, secrets are masked (edge v5 migration)
@@ -410,9 +415,9 @@ jobs:
           # empty until the Stage D2 cutover; see that file's header for the flip
           # procedure. Scoped to the hosting stack's matrix entry.
           TF_VAR_grafana_sm_token:       ${{ matrix.stack == 'observability-alerting' && secrets.GRAFANA_SM_TOKEN || '' }}
-          TF_VAR_adaptive_metrics_api_key: ${{ matrix.stack == 'adaptive-metrics' && secrets.GRAFANA_ADAPTIVE_METRICS_API_TOKEN || '' }}
+          TF_VAR_adaptive_metrics_api_key: ${{ matrix.stack == 'adaptive-metrics' && secrets.GRAFANA_ADAPTIVE_METRICS_API_TOKEN_READONLY || '' }}
           TF_VAR_adaptive_metrics_url:   ${{ matrix.stack == 'adaptive-metrics' && vars.AM_METRICS_URL || '' }}
-          TF_VAR_healthchecks_api_token: ${{ matrix.stack == 'observability-alerting' && secrets.HEALTHCHECKS_API_TOKEN || '' }}
+          TF_VAR_healthchecks_api_token: ${{ matrix.stack == 'observability-alerting' && secrets.HEALTHCHECKS_API_TOKEN_READONLY || '' }}
           # live/onprem — scoped to its matrix entry like adaptive-metrics above.
           # SECRETS, not vars: they are passed through TF_VAR_ into plan logs and
           # the PR plan comment, and a var's value is not masked. #236 marks the
@@ -457,7 +462,7 @@ jobs:
           curl -fsS -u "$AM_TOKEN" "$AM_URL/aggregations/rules"             | jq -c '[.data?.rules[]? | {metric: (.metric // .name), aggregations: (.aggregations // [])}]'
         env:
           AM_URL:   ${{ vars.AM_METRICS_URL }}
-          AM_TOKEN: ${{ secrets.GRAFANA_ADAPTIVE_METRICS_API_TOKEN }}
+          AM_TOKEN: ${{ secrets.GRAFANA_ADAPTIVE_METRICS_API_TOKEN_READONLY }}
 
       - name: Post plan comment
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
