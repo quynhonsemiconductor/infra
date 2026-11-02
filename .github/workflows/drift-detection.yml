@@ -119,10 +119,25 @@ jobs:
           # Read-only: the installation can write org-wide; this job only reads modules.
           permission-contents: read
 
+      # Which backend does this stack use? A stack that declares
+      # `backend "azurerm"` (stqnsctfstate, Entra OIDC) gets NO AWS credentials
+      # and the ARM_* environment below; every other stack keeps the AWS role.
+      # Moving a stack to Azure is then a backend-block change only.
+      - name: Detect the state backend
+        id: backend
+        env:
+          STACK: ${{ matrix.stack }}
+        run: |
+          if grep -qs 'backend "azurerm"' "live/${STACK}"/*.tf; then
+            echo "azure=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "azure=false" >> "$GITHUB_OUTPUT"
+          fi
+
       # Read-only role, same as infra-plan. A detector never needs write credentials.
       # live/onprem skips AWS entirely (azurerm backend, Entra OIDC below).
       - uses: quynhonsemiconductor/ci/actions/setup-tofu-aws@ea2c56bd9b03fb4d52e8fb9fe98dca95fd278638 # v1.24.5
-        if: matrix.stack != 'onprem'
+        if: steps.backend.outputs.azure != 'true'
         with:
           role-arn:     arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/qnsc-github-infra-plan
           aws-region:   ${{ env.AWS_REGION }}
@@ -130,7 +145,7 @@ jobs:
           git-token:    ${{ steps.module-token.outputs.token }}
 
       - uses: quynhonsemiconductor/ci/actions/iac-lint@ea2c56bd9b03fb4d52e8fb9fe98dca95fd278638 # v1.24.5
-        if: matrix.stack == 'onprem'
+        if: steps.backend.outputs.azure == 'true'
         with:
           tofu-version: ${{ env.TOFU_VERSION }}
           fmt: 'false'   # install only
@@ -143,9 +158,9 @@ jobs:
           # The `&& … || ''` ternary renders an EMPTY STRING, not an unset
           # variable — harmless here (the azurerm backend and the cloudflare
           # provider only run for onprem), but do not read "" as "absent".
-          ARM_CLIENT_ID:       ${{ matrix.stack == 'onprem' && vars.AZURE_CLIENT_ID_READ || '' }}
-          ARM_TENANT_ID:       ${{ matrix.stack == 'onprem' && vars.ENTRA_TENANT_ID || '' }}
-          ARM_USE_OIDC:        ${{ matrix.stack == 'onprem' && 'true' || '' }}
+          ARM_CLIENT_ID:       ${{ steps.backend.outputs.azure == 'true' && vars.AZURE_CLIENT_ID_READ || '' }}
+          ARM_TENANT_ID:       ${{ steps.backend.outputs.azure == 'true' && vars.ENTRA_TENANT_ID || '' }}
+          ARM_USE_OIDC:        ${{ steps.backend.outputs.azure == 'true' && 'true' || '' }}
 
       - name: Require the read-only Cloudflare token
         if: ${{ contains(fromJSON('["edge","storage-dev","storage-prod","onprem"]'), matrix.stack) }}
@@ -187,9 +202,9 @@ jobs:
           # SAME TF_VAR_admin_* as the config pass — a refresh-only plan still
           # needs every required variable, and a missing one reads as drift. The
           # ternary below renders an empty string, not an unset variable.
-          ARM_CLIENT_ID:       ${{ matrix.stack == 'onprem' && vars.AZURE_CLIENT_ID_READ || '' }}
-          ARM_TENANT_ID:       ${{ matrix.stack == 'onprem' && vars.ENTRA_TENANT_ID || '' }}
-          ARM_USE_OIDC:        ${{ matrix.stack == 'onprem' && 'true' || '' }}
+          ARM_CLIENT_ID:       ${{ steps.backend.outputs.azure == 'true' && vars.AZURE_CLIENT_ID_READ || '' }}
+          ARM_TENANT_ID:       ${{ steps.backend.outputs.azure == 'true' && vars.ENTRA_TENANT_ID || '' }}
+          ARM_USE_OIDC:        ${{ steps.backend.outputs.azure == 'true' && 'true' || '' }}
           TF_VAR_admin_private_cidr: ${{ contains(fromJSON('["onprem","edge"]'), matrix.stack) && secrets.ADMIN_PRIVATE_CIDR || '' }}
           TF_VAR_warp_extra_excludes: ${{ matrix.stack == 'edge' && secrets.WARP_EXTRA_EXCLUDES || '[]' }}
         run: |
@@ -222,9 +237,9 @@ jobs:
           TF_VAR_adaptive_metrics_api_key: ${{ matrix.stack == 'adaptive-metrics' && secrets.GRAFANA_ADAPTIVE_METRICS_API_TOKEN || '' }}
           # onprem: Azure OIDC (read identity) for the azurerm backend, plus the
           # stack's inputs (same secrets the apply job uses).
-          ARM_CLIENT_ID:       ${{ matrix.stack == 'onprem' && vars.AZURE_CLIENT_ID_READ || '' }}
-          ARM_TENANT_ID:       ${{ matrix.stack == 'onprem' && vars.ENTRA_TENANT_ID || '' }}
-          ARM_USE_OIDC:        ${{ matrix.stack == 'onprem' && 'true' || '' }}
+          ARM_CLIENT_ID:       ${{ steps.backend.outputs.azure == 'true' && vars.AZURE_CLIENT_ID_READ || '' }}
+          ARM_TENANT_ID:       ${{ steps.backend.outputs.azure == 'true' && vars.ENTRA_TENANT_ID || '' }}
+          ARM_USE_OIDC:        ${{ steps.backend.outputs.azure == 'true' && 'true' || '' }}
           TF_VAR_admin_private_cidr: ${{ contains(fromJSON('["onprem","edge"]'), matrix.stack) && secrets.ADMIN_PRIVATE_CIDR || '' }}
           TF_VAR_warp_extra_excludes: ${{ matrix.stack == 'edge' && secrets.WARP_EXTRA_EXCLUDES || '[]' }}
         run: |

@@ -322,13 +322,28 @@ jobs:
           # Read-only: the installation can write org-wide; this job only reads modules.
           permission-contents: read
 
+      # Which backend does this stack use? A stack that declares
+      # `backend "azurerm"` (stqnsctfstate, Entra OIDC) gets NO AWS credentials
+      # and the ARM_* environment below; every other stack keeps the AWS role.
+      # Moving a stack to Azure is then a backend-block change only.
+      - name: Detect the state backend
+        id: backend
+        env:
+          STACK: ${{ matrix.stack }}
+        run: |
+          if grep -qs 'backend "azurerm"' "live/${STACK}"/*.tf; then
+            echo "azure=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "azure=false" >> "$GITHUB_OUTPUT"
+          fi
+
       # AWS OIDC for the S3-backend stacks. live/onprem is the exception: its
       # backend is the azurerm one (stqnsctfstate, Entra auth), so it gets NO AWS
       # credentials — just tofu, then the ARM_* environment on its steps below
       # (the read identity vars.AZURE_CLIENT_ID_READ; NO `environment:` here, its
       # OIDC subjects are pull_request/main, see the job-level note).
       - uses: quynhonsemiconductor/ci/actions/setup-tofu-aws@ea2c56bd9b03fb4d52e8fb9fe98dca95fd278638 # v1.24.5
-        if: matrix.stack != 'onprem'
+        if: steps.backend.outputs.azure != 'true'
         with:
           role-arn:     arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/qnsc-github-infra-plan
           aws-region:   ${{ env.AWS_REGION }}
@@ -336,7 +351,7 @@ jobs:
           git-token:    ${{ steps.module-token.outputs.token }}
 
       - uses: quynhonsemiconductor/ci/actions/iac-lint@ea2c56bd9b03fb4d52e8fb9fe98dca95fd278638 # v1.24.5
-        if: matrix.stack == 'onprem'
+        if: steps.backend.outputs.azure == 'true'
         with:
           tofu-version: ${{ env.TOFU_VERSION }}
           fmt: 'false'   # install only — the gates run in the fmt job
@@ -348,9 +363,9 @@ jobs:
           # The `&& … || ''` ternary renders an EMPTY STRING, not an unset
           # variable — harmless here (the azurerm backend and the cloudflare
           # provider only run for onprem), but do not read "" as "absent".
-          ARM_CLIENT_ID:       ${{ matrix.stack == 'onprem' && vars.AZURE_CLIENT_ID_READ || '' }}
-          ARM_TENANT_ID:       ${{ matrix.stack == 'onprem' && vars.ENTRA_TENANT_ID || '' }}
-          ARM_USE_OIDC:        ${{ matrix.stack == 'onprem' && 'true' || '' }}
+          ARM_CLIENT_ID:       ${{ steps.backend.outputs.azure == 'true' && vars.AZURE_CLIENT_ID_READ || '' }}
+          ARM_TENANT_ID:       ${{ steps.backend.outputs.azure == 'true' && vars.ENTRA_TENANT_ID || '' }}
+          ARM_USE_OIDC:        ${{ steps.backend.outputs.azure == 'true' && 'true' || '' }}
 
       - name: tofu validate
         working-directory: live/${{ matrix.stack }}
@@ -359,9 +374,9 @@ jobs:
           # The `&& … || ''` ternary renders an EMPTY STRING, not an unset
           # variable — harmless here (the azurerm backend and the cloudflare
           # provider only run for onprem), but do not read "" as "absent".
-          ARM_CLIENT_ID:       ${{ matrix.stack == 'onprem' && vars.AZURE_CLIENT_ID_READ || '' }}
-          ARM_TENANT_ID:       ${{ matrix.stack == 'onprem' && vars.ENTRA_TENANT_ID || '' }}
-          ARM_USE_OIDC:        ${{ matrix.stack == 'onprem' && 'true' || '' }}
+          ARM_CLIENT_ID:       ${{ steps.backend.outputs.azure == 'true' && vars.AZURE_CLIENT_ID_READ || '' }}
+          ARM_TENANT_ID:       ${{ steps.backend.outputs.azure == 'true' && vars.ENTRA_TENANT_ID || '' }}
+          ARM_USE_OIDC:        ${{ steps.backend.outputs.azure == 'true' && 'true' || '' }}
 
       - name: tofu plan
         id: plan
@@ -387,9 +402,9 @@ jobs:
         env:
           # Azure OIDC for the onprem azurerm backend (read identity — this job
           # plans lock-free, so write access is never needed).
-          ARM_CLIENT_ID:       ${{ matrix.stack == 'onprem' && vars.AZURE_CLIENT_ID_READ || '' }}
-          ARM_TENANT_ID:       ${{ matrix.stack == 'onprem' && vars.ENTRA_TENANT_ID || '' }}
-          ARM_USE_OIDC:        ${{ matrix.stack == 'onprem' && 'true' || '' }}
+          ARM_CLIENT_ID:       ${{ steps.backend.outputs.azure == 'true' && vars.AZURE_CLIENT_ID_READ || '' }}
+          ARM_TENANT_ID:       ${{ steps.backend.outputs.azure == 'true' && vars.ENTRA_TENANT_ID || '' }}
+          ARM_USE_OIDC:        ${{ steps.backend.outputs.azure == 'true' && 'true' || '' }}
           # Stack-specific inputs. Vars a stack doesn't declare are ignored
           # (tofu just warns), so passing the full set to every stack is safe.
           TF_VAR_cloudflare_zone_id:    ${{ vars.CLOUDFLARE_ZONE_ID }}
