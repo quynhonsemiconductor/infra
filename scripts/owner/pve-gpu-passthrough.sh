@@ -175,9 +175,17 @@ fi
 if pvesh get "/cluster/mapping/pci/$MAPPING_ID" >/dev/null 2>&1; then
 	say "mapping $MAPPING_ID already exists"
 else
+	# Proxmox validates a mapping against the hardware at VM start: every entry needs
+	# iommugroup and subsystem-id, or qmstart fails "PCI device mapping invalid".
+	map_entry() { # $1 = function (0|1), $2 = vendor:device
+		local dev="$GPU_SLOT.$1" grp sub
+		grp=$(basename "$(readlink -f "/sys/bus/pci/devices/$dev/iommu_group")")
+		sub="$(sed 's/^0x//' "/sys/bus/pci/devices/$dev/subsystem_vendor"):$(sed 's/^0x//' "/sys/bus/pci/devices/$dev/subsystem_device")"
+		echo "node=$(hostname -s),path=$dev,id=$2,iommugroup=$grp,subsystem-id=$sub"
+	}
 	pvesh create /cluster/mapping/pci --id "$MAPPING_ID" --description "RTX 5060 Ti (ai-01, §9.1)" \
-		--map "node=$(hostname -s),path=$GPU_SLOT.0,id=$GPU_ID" \
-		--map "node=$(hostname -s),path=$GPU_SLOT.1,id=$AUDIO_ID"
+		--map "$(map_entry 0 "$GPU_ID")" \
+		--map "$(map_entry 1 "$AUDIO_ID")"
 	say "created mapping $MAPPING_ID"
 fi
 
