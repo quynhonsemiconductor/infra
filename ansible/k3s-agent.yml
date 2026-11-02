@@ -1,0 +1,20 @@
+---
+# vlsi-01 (group vlsi): the AppArmor profile override and the kernel policy (both BEFORE k3s), then a plain k3s agent
+# join with the label and taint qnsc.vn/pool=vlsi. The join token is read from the environment of the run:
+#   op run --env-file=<local template> -- ansible-playbook k3s-agent.yml --check --diff
+- name: Join the VLSI node to k3s
+  hosts: vlsi
+  become: true
+  gather_facts: true
+  serial: 1
+  roles:
+    - role: vm_guest
+      tags: [vm_guest]
+    - role: apparmor_containerd
+      vars:
+        apparmor_containerd_k3s_unit: k3s-agent
+      tags: [apparmor_containerd]
+    - role: kernel
+      tags: [kernel]
+    - role: k3s_agent
+      tags: [k3s_agent]

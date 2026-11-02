@@ -1,0 +1,19 @@
+---
+# Where the agent joins: a SITE value, set in the local inventory (https://<k3s-01 address>:6443).
+k3s_agent_gpu_server_url: ""
+
+k3s_agent_gpu_node_label: "qnsc.vn/pool=ai"
+k3s_agent_gpu_node_taint: "qnsc.vn/pool=ai:NoSchedule"
+
+# The card must be visible in the VM before anything else is worth doing (vendor:device).
+k3s_agent_gpu_pci_id: "10de:2d04"
+
+# Blackwell (sm_120) needs 570.86.16 or newer; branch 580 is the production branch.
+k3s_agent_gpu_driver_package: nvidia-driver-580-open
+
+# The join token comes from the environment of the run (op run ...), never from a vars file. It is read only when
+# the node has no token yet; an existing token in config.yaml is kept.
+k3s_agent_gpu_token_env: QNSC_K3S_TOKEN
+
+# A config change needs an agent restart (the node drops out of the cluster for a moment). Default: report only.
+k3s_agent_gpu_allow_restart: false

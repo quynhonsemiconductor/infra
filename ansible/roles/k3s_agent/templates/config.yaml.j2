@@ -1,0 +1,6 @@
+server: {{ k3s_agent_server_url }}
+node-label:
+  - {{ k3s_agent_node_label }}
+node-taint:
+  - {{ k3s_agent_node_taint }}
+token: "{{ k3s_agent_token }}"

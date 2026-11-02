@@ -1,0 +1,12 @@
+---
+galaxy_info:
+  author: QNSC platform
+  description: pve_base (see docs/runbooks/host-config-inventory.md)
+  license: proprietary
+  min_ansible_version: "2.20"
+  platforms:
+    - name: Debian
+      versions: [all]
+    - name: Ubuntu
+      versions: [all]
+dependencies: []

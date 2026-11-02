@@ -65,6 +65,15 @@ Priority: **P1** wave 1 (in `ansible/` now), **P2** wave 2 (next), **P3** later,
 |---|---|---|
 | ai-01 user data (`live/onprem-vm/ai01.tf`) | hostname, hosts file, time zone, operator keys, qemu-guest-agent, chrony | **stays**: this is the minimum for Ansible to reach the VM. Everything else about ai-01 (driver, k3s) is Ansible |
 | k3s-01 initialization (`live/onprem-vm/vm.tf`) | user, keys, DNS, address (described, not replaced) | stays as is |
+| vlsi-01 initialization (`live/onprem-vm/vlsi01.tf`) | user, keys, DNS, address; **no** user data | stays as is. The stock Ubuntu cloud image behind template 9000 has **no qemu-guest-agent** (vlsi-01 booted without one, 2026-11-03), so the guest agent is not a first-boot item that can be assumed |
+
+**qemu-guest-agent** is owned by the Ansible role `vm_guest`, the first role of every VM playbook (`k3s-server.yml`,
+`k3s-agent-gpu.yml`, `k3s-agent.yml`): installs the package and starts `qemu-guest-agent.service` (a static unit that
+udev starts when the agent's virtio port appears; nothing to enable); it refuses a VM whose config has no agent port.
+Template 9000 should carry it too, so `qm guest cmd` works before Ansible has run: `scripts/owner/pve-template-9000.sh`
+imports the stock cloud image unchanged today; add it at the next template rebuild (`virt-customize -a <image>
+--install qemu-guest-agent` before the import, which needs `libguestfs-tools` on the host). Until then a fresh clone
+gets the agent from its first `vm_guest` run.
 
 ## D. Order for a new or rebuilt site
 
