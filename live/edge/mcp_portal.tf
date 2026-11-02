@@ -65,10 +65,22 @@ resource "cloudflare_zero_trust_access_ai_controls_mcp_portal" "qnsc" {
   hostname    = local.mcp_portal_host
   description = "QNSC MCP server portal"
 
-  servers = [{
-    server_id = cloudflare_zero_trust_access_ai_controls_mcp_server.rova_dev[0].id
-    on_behalf = true # "Require user auth" ON — never false (MCP-PLAN §5)
-  }]
+  # on_behalf = true is "Require user auth" ON — never false (MCP-PLAN §5).
+  # The hub servers (mcp_hub.tf) join only when var.mcp_hub_enabled.
+  servers = concat(
+    [{
+      server_id = cloudflare_zero_trust_access_ai_controls_mcp_server.rova_dev[0].id
+      on_behalf = true
+    }],
+    [for k in sort(keys(cloudflare_zero_trust_access_ai_controls_mcp_server.github)) : {
+      server_id = cloudflare_zero_trust_access_ai_controls_mcp_server.github[k].id
+      on_behalf = true
+    }],
+    [for s in cloudflare_zero_trust_access_ai_controls_mcp_server.grafana : {
+      server_id = s.id
+      on_behalf = true
+    }],
+  )
 }
 
 # Portal login policy (owner decision 2026-10-24): company Entra identity,
