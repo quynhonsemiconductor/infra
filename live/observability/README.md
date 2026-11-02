@@ -22,10 +22,9 @@ that job would be red every night.
 The apply job fails early, with the cause, if `GRAFANA_CLOUD_API_KEY` is empty or unset (an empty value
 otherwise reaches the provider as "no token": "the Cloud API client is required for this resource").
 
-## Temporary: forgotten orphans
+## Orphans: already gone
 
-The state still lists ten Grafana-instance objects from before the stack split, and a dead push token.
-`removed` blocks plus a read-only `grafana.stack` provider alias (configured from this stack's own
-outputs) forget them without destroying anything; see the comments in `main.tf`. Delete the alias, the
-`data.terraform_remote_state.self` source and the `removed` blocks in one PR after the first apply that
-forgets them.
+The ten Grafana-instance objects left over from the stack split (folders, dashboard, contact point,
+notification policy, rule group) are no longer in this stack's state: the PR plan lists no forget for them,
+and live/observability-alerting owns them. Only the AWS-era push token was still in state (deleted in Grafana);
+it is forgotten by one `removed` block in `main.tf`, which can be deleted after the first apply.
