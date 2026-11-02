@@ -473,6 +473,14 @@ jobs:
   # the required reviewer is the human gate, and the plan below is what the reviewer
   # approves. The stack has prevent_destroy on every ruleset and repository, so a bad
   # edit fails the plan instead of deleting branch protection.
+  #
+  # REFRESH IS ON here, on purpose: the read app cannot see repository bypass actors or the
+  # merge settings, so PR plans of this stack run with -refresh=false (config vs state) and
+  # this job is the first place a real read of the organisation happens. EXCEPTION to a
+  # plan-first flow (#299, plan in the PR, apply what was approved): for `github` the plan
+  # that counts is the one made INSIDE this production job with the apply app, because no
+  # token a PR may hold can produce a faithful one. The monthly github-drift workflow
+  # repeats that plan on a schedule (see live/github/README.md).
   apply-github:
     name: Apply github
     needs: [detect]

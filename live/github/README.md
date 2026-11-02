@@ -54,6 +54,28 @@ rulesets already restrict PR merges to `squash`, so these flags are latent, not 
   provider support. Edits to `status_checks` or `bypass` carry the same caveat on
   those rulesets that have a pull-request rule.
 
+## Plans, refresh and drift: who sees what (decided 2026-11-02)
+
+The read app (`qnsc-iac-read`, Administration read) **cannot see** ruleset `bypass_actors` or the
+repository merge settings (`allow_*_merge`, `delete_branch_on_merge`, commit-message formats):
+GitHub returns those only to admin/push callers. A refreshed plan with the read app therefore shows a
+phantom change on every repo and ruleset (the first PR plan showed `48 to change` for that reason; a plan
+with an admin token showed `50 to import, 0 to change`). No write scope is ever added to the read app to
+fix this. Instead:
+
+| where | credential | refresh | what it proves |
+|---|---|---|---|
+| PR plan (`infra-plan.yml`) | read app | **off** (`-refresh=false`) | config vs state, a review of what the PR changes, like `observability`. The one PR that carries the import blocks also shows the phantom diff once; the owner's local admin plan (50 import / 0 change / 0 destroy) is the proof for that one. |
+| apply (`infra-apply.yml`, `apply-github`) | apply app, environment `production` | **on** | the real comparison, behind the reviewer. |
+| drift (`github-drift.yml`) | apply app, environment `production` | **on** | monthly (1st, 03:00 UTC) and on demand (*Actions > GitHub drift > Run workflow*); the owner approves the run. PLAN ONLY, never applies. A diff or an error opens/updates one issue labelled `github-drift`; a clean run closes it. |
+| nightly drift (`drift-detection.yml`) | | | `github` is **excluded** (a read-app refresh would be red every night). |
+
+**Exception to a plan-first flow (#299).** Where #299 plans in the PR and applies exactly what was
+approved, `github` is the one stack whose faithful plan can only be made inside the `production` job with
+the apply app (no token a PR may hold can read what this stack manages). So its reviewable plan is the
+`-refresh=false` PR plan plus the refreshing plan in the apply job, which is approved on the run page
+before `tofu apply` runs.
+
 ## Credentials: two org-owned GitHub Apps (the owner creates them; code cannot)
 
 Terraform cannot create GitHub Apps, so each app is created from a committed **manifest**
@@ -63,7 +85,7 @@ same pin as our other repos) and GitHub revokes it when the job ends.
 
 | app | manifest | permissions | used by |
 |---|---|---|---|
-| `qnsc-iac-read` | `apps/qnsc-iac-read.json` | Administration **read**, Environments **read**, Metadata read | PR plans (once `github` leaves `NOT_PLANNABLE`) and the nightly drift job |
+| `qnsc-iac-read` | `apps/qnsc-iac-read.json` | Administration **read**, Environments **read**, Metadata read | PR plans of this stack (`-refresh=false`) |
 | `qnsc-iac-apply` | `apps/qnsc-iac-apply.json` | Administration **read/write**, Environments **read/write**, Metadata read | the `apply-github` job only (environment `production`) |
 
 Both: no webhook, no subscribed events, **not public** (installable only on this
@@ -79,8 +101,8 @@ Where the credentials live (names the workflows read):
 | apply app id | `IAC_APPLY_APP_ID` | variable | environment `production` of `infra` |
 | apply app key | `IAC_APPLY_APP_KEY` | secret | environment `production` of `infra` (never a repository secret) |
 
-PR plans and drift see only the read app; the apply app exists for the one job that pins
-`environment: production` and so waits for its required reviewer.
+PR plans see only the read app; the apply app exists for the jobs that pin
+`environment: production` (apply and the monthly drift plan) and so wait for the owner.
 
 ### Owner steps (about 10 minutes, once per app; do both before merging this PR)
 
@@ -131,7 +153,7 @@ Notes:
 
 1. Do the owner steps above for both apps.
 1b. **Seed the state blob once** (owner, with write access to the state account). The read identity
-   that PR plans and drift use cannot create the blob, and `tofu init` takes a lock on it first
+   that PR plans use cannot create the blob, and `tofu init` takes a lock on it first
    (`failed to lock azure state ... 403 AuthorizationPermissionMismatch`, as every new stack does
    until its blob exists). From a checkout of this branch:
    ```sh
@@ -140,12 +162,11 @@ Notes:
    ```
    Then re-run the failed `Plan github` job on the PR.
 2. Merge. The apply job (`apply-github`) mints the apply token, shows `50 to import, 0 to change`,
-   waits for the `production` reviewer, then imports into the empty state.
-3. One-line follow-up PR: remove `github` from `NOT_PLANNABLE` in `infra-plan.yml`, so PRs get a plan
-   of this stack from then on.
+   waits for the `production` reviewer, then imports into the empty state. From then on PRs get a
+   `-refresh=false` plan of this stack, and the monthly `github-drift` workflow compares it with the
+   organisation.
 
-Merging before step 1 makes `apply-github` and the nightly drift job fail loudly (no app credentials);
-nothing else is affected.
+Merging before step 1 makes `apply-github` fail loudly (no app credentials); nothing else is affected.
 
 ## Local run (read-only)
 

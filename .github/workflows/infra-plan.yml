@@ -351,8 +351,14 @@ jobs:
           # never refresh grafana_cloud_stack_service_account.alerting (403), and the write key must not
           # reach a PR plan. The real refresh runs in the production-environment apply job with the write
           # key (infra-apply.yml, apply-observability). See live/observability/README.md.
+          # `github` plans with -refresh=false too, for a different reason: the READ app cannot see
+          # repository `bypass_actors` or the merge settings (GitHub returns them to admin/push callers
+          # only), so a refreshed read-only plan shows phantom diffs on every repo and ruleset. The PR
+          # plan is therefore config-vs-state; the real refresh runs in the production-environment apply
+          # job with the apply app, and the monthly `github drift` workflow. No write scope is ever added
+          # to the read app. See live/github/README.md.
           REFRESH_ARG=""
-          if [ "$STACK" = "observability" ]; then REFRESH_ARG="-refresh=false"; fi
+          if [ "$STACK" = "observability" ] || [ "$STACK" = "github" ]; then REFRESH_ARG="-refresh=false"; fi
           set -o pipefail
           set +e
           # shellcheck disable=SC2086  # REFRESH_ARG is a fixed flag or empty
