@@ -19,7 +19,7 @@ vm_name = "k3s-01"
 datastore_id = "local-zfs"
 
 vm_cores     = 28
-vm_memory_mb = 36864
+vm_memory_mb = 24576
 
 os_disk_gb   = 120
 data_disk_gb = 1200
@@ -34,7 +34,7 @@ bridge = "vmbr0"
 ai01_vm_id     = 101
 ai01_vm_name   = "ai-01"
 ai01_cores     = 8
-ai01_memory_mb = 20480
+ai01_memory_mb = 12288
 ai01_data_disk_gb = 300
 # The GPU node's address on the same VLAN (replace: 192.0.2.x is documentation).
 k3s01_ipv4_address = "192.0.2.20/24"
@@ -42,7 +42,11 @@ ai01_ipv4_address  = "192.0.2.21/24"
 ipv4_gateway      = "192.0.2.1"
 dns_servers       = ["192.0.2.1"]
 
-# Operator keys for ai-01's cloud-init user (public halves only).
+# ── vlsi-01 (EDA / JupyterLab workspaces, Phase 3) ─────────────────────────
+# Next free address after ai-01 on the same VLAN (replace: 192.0.2.x is documentation).
+vlsi01_ipv4_address = "192.0.2.22/24"
+
+# Operator keys for the cloud-init user of ai-01 and vlsi-01 (public halves only).
 ssh_public_keys = [
   "ssh-ed25519 AAAA... owner@laptop",
 ]

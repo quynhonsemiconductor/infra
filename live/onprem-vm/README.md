@@ -10,7 +10,7 @@ holds no Proxmox token, and the API endpoint is the admin door.
 
 ## Owns
 
-- `proxmox_virtual_environment_vm.k3s_01` — 28 vCPU, 56 GiB (balloon off),
+- `proxmox_virtual_environment_vm.k3s_01` — 28 vCPU, 24 GiB since Phase 3 (balloon off),
   q35 + OVMF, virtio-scsi-single, scsi0 120 G, scsi1 1200 G, net0 on the
   server VLAN, serial0 socket, VGA std. `prevent_destroy` is set: the VM holds
   every PVC. `reboot_after_update = false` — this stack never power-cycles the
@@ -92,7 +92,7 @@ after editing the file.
 ## ai-01 — the GPU agent node (§9.1)
 
 Same stack, second VM: `ai-01` (101), cloned from template 9000, 8 vCPU,
-20 GiB with ballooning off, 40 GiB system disk + 300 GiB model-cache disk, the
+12 GiB (Phase 3; was 20) with ballooning off, 40 GiB system disk + 300 GiB model-cache disk, the
 RTX 5060 Ti via the `gpu-rtx5060ti` mapping, and only the `ai` namespace by
 taint. k3s-01 keeps 28 vCPU; the split leaves the hypervisor headroom.
 
@@ -103,7 +103,7 @@ taint. k3s-01 keeps 28 vCPU; the split leaves the hypervisor headroom.
    `qm start 100`.
 3. `tofu apply` in this stack. Expected plan:
    - `1 to add` — ai-01 and its cloud-init snippet;
-   - `1 to change` — VM 100 memory 57344 → 36864, **in place, needs a restart**
+   - `1 to change` — VM 100 memory → its current default, **in place, needs a restart**
      (the stack keeps `reboot_after_update = false`, so nothing power-cycles
      behind your back);
    - `0 to replace` — VM 100 must not show a replacement.
@@ -131,3 +131,30 @@ kubectl run gpu-smoke --rm -it --restart=Never   --image=nvcr.io/nvidia/cuda:12.
 
 The `RuntimeClass nvidia` and the device plugin are gitops objects (namespace
 `ai`); k3s only has to report the runtime, which step 2 of the join script does.
+
+## Phase 3 — resize and vlsi-01 (2026-11-02)
+
+Owner-local, in one maintenance window: **docs/runbooks/phase3-window.md** (snapshots, backup,
+apply, verification, rollback).
+
+| VM | change | how it shows in the plan |
+|---|---|---|
+| `k3s-01` (100) | memory 36 → 24 GiB (28 vCPU unchanged) | `~ memory { dedicated = 36864 -> 24576 }`, in-place |
+| `ai-01` (101) | memory 20 → 12 GiB (8 vCPU unchanged) | `~ memory { dedicated = 20480 -> 12288 }`, in-place |
+| `vlsi-01` (102) | **new**: clone of template 9000, 12 vCPU, 20 GiB, scsi0 40 GiB + scsi1 300 GiB on local-zfs, `cpu.units = 25`, startup order 3, no GPU, cloud-init user `qnsc` + the operator keys | `+ create` |
+
+Expected plan: `1 to add, 2 to change, 0 to destroy`, and **no** replacement on VM 100 or 101.
+Needs one new line in `site.tfvars` (git-ignored): `vlsi01_ipv4_address = "<next free address after ai-01>/24"`;
+`site.tfvars.example` shows the shape.
+
+**Does the provider reboot by itself?** bpg's `reboot_after_update` defaults to **true**: with it the provider
+may reboot or power off a VM during an update when a change needs it. This stack sets it to **false** on all
+three VMs, so nothing is power-cycled as a side effect: an update that cannot be applied online fails, and one
+that is applied but needs a later restart (these memory changes: no memory hotplug, so the new size takes effect
+at the next stop/start) emits a warning. Recommendation: **shut the VMs down first, then apply, then start**
+(the runbook does this), so the memory change is written to a stopped VM and there is no pending state. Do not
+flip `reboot_after_update` to true for this window: it would restart whichever VM the provider decides, at the
+moment it decides.
+
+`cpu.units`: vlsi-01 has weight 25, k3s-01 and ai-01 keep the Proxmox default (100 on cgroup v2, 1024 on v1),
+so production wins when the host runs out of CPU. It only matters under contention.
