@@ -23,12 +23,13 @@ manual RDS snapshot is Stage D's own D1 step. The SES-removal order is plan
 identity + DNS removal, lands last in the AWS-exit teardown; #413/#216 cover
 opshub's and KB's prod SES paths).
 
-1. **Entra side (owner, from `live/identity`):** hand-create the missing
-   "Rova Prod Service" registration (README "Mail service apps" step 1),
-   export the ids/certs, `tofu plan` go/no-go (8 app/SP imports + 3 dev cert
-   imports + 1 cert create, nothing else), `tofu apply`, then the vault
-   one-liners — `kv-qnsc-prod/rova-prod-graph-cert` and the three dev
-   `<product>-<env>-graph-cert` secrets. Record `mail_service_client_ids`.
+1. **Entra side (owner, from `live/identity`):** the "Rova Prod Service"
+   registration already exists (hand-made 2026-11-01, certificate attached,
+   secret `kv-qnsc-prod/rova-prod-graph-cert` already written). Export the ids
+   and the public certificate, check the certificate thumbprint by hand (README
+   "Mail service apps" step 3), `tofu plan` go/no-go (8 app/SP imports + 4 cert
+   imports, no cert create, nothing else), `tofu apply`. Record
+   `mail_service_client_ids`.
 2. **Exchange side (this directory, rova prod):**
 
    ```powershell
