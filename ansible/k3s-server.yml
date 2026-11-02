@@ -1,11 +1,19 @@
 ---
-# k3s on k3s-01: the pinned version, config.yaml, kernel settings. Restart is gated (k3s_server_allow_restart).
+# k3s on k3s-01: the AppArmor profile override and the kernel policy (both BEFORE k3s), then the pinned version,
+# config.yaml, kernel settings. Restart is gated (k3s_server_allow_restart); nothing here reboots.
 #   ansible-playbook k3s-server.yml --check --diff
+#   ansible-playbook k3s-server.yml --tags apparmor_containerd,kernel --check --diff    # node policy only
 - name: Install and configure the k3s server
   hosts: k3s_server
   become: true
   gather_facts: true
   serial: 1
   roles:
+    - role: apparmor_containerd
+      vars:
+        apparmor_containerd_k3s_unit: k3s
+      tags: [apparmor_containerd]
+    - role: kernel
+      tags: [kernel]
     - role: k3s_server
       tags: [k3s_server]

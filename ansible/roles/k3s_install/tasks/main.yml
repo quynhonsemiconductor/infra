@@ -1,7 +1,7 @@
 ---
 # Install (or upgrade to) the pinned k3s. The installer is fetched from the TAG (not get.k3s.io, which moves) and
 # verified against k3s_install_script_sha256. Skipped entirely when the pinned version is already installed.
-# Called by k3s_server and k3s_agent_gpu AFTER they wrote their config.yaml.
+# Called by k3s_server, k3s_agent_gpu and k3s_agent AFTER they wrote their config.yaml.
 - name: Assert the pin is set
   ansible.builtin.assert:
     that:

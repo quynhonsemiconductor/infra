@@ -1,5 +1,6 @@
 ---
-# ai-01: NVIDIA driver and toolkit, k3s agent join. The join token is read from the environment of the run:
+# ai-01: the AppArmor profile override and the kernel policy (both BEFORE k3s), NVIDIA driver and toolkit, k3s agent
+# join. The join token is read from the environment of the run:
 #   op run --env-file=<local template> -- ansible-playbook k3s-agent-gpu.yml --check --diff
 - name: Join the GPU node to k3s
   hosts: k3s_agent_gpu
@@ -7,5 +8,11 @@
   gather_facts: true
   serial: 1
   roles:
+    - role: apparmor_containerd
+      vars:
+        apparmor_containerd_k3s_unit: k3s-agent
+      tags: [apparmor_containerd]
+    - role: kernel
+      tags: [kernel]
     - role: k3s_agent_gpu
       tags: [k3s_agent_gpu]

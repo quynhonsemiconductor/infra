@@ -1,0 +1,124 @@
+---
+- name: Assert the pin format
+  ansible.builtin.assert:
+    that: kernel_pin_version == '' or kernel_pin_version is match('^[0-9]+\.[0-9]+\.[0-9]+-[0-9]+$')
+    fail_msg: "kernel_pin_version must be empty or like 7.0.0-38 (without -generic)"
+    quiet: true
+
+# ── unattended upgrades: security yes, automatic reboot no ──────────────────
+- name: Unattended upgrades are installed
+  ansible.builtin.apt:
+    name: unattended-upgrades
+    state: present
+  tags: [kernel_updates]
+
+- name: Unattended upgrades run daily
+  ansible.builtin.template:
+    src: 20auto-upgrades.j2
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [kernel_updates]
+
+- name: Unattended upgrades never reboot the node
+  ansible.builtin.template:
+    src: 52qnsc-unattended-upgrades.j2
+    dest: /etc/apt/apt.conf.d/52qnsc-unattended-upgrades
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [kernel_updates]
+
+# ── the kernel pin ──────────────────────────────────────────────────────────
+- name: The pinned kernel is installed
+  ansible.builtin.stat:
+    path: "/boot/vmlinuz-{{ kernel_pin_version }}-generic"
+  register: kernel_pin_image
+  when: kernel_pin_version | length > 0
+  failed_when: not kernel_pin_image.stat.exists
+  tags: [kernel_pin]
+
+- name: GRUB boots the saved entry (pinned) or the first entry (not pinned)
+  ansible.builtin.lineinfile:
+    path: /etc/default/grub
+    regexp: '^GRUB_DEFAULT='
+    line: "GRUB_DEFAULT={{ 'saved' if kernel_pin_version | length > 0 else '0' }}"
+  notify: Regenerate the GRUB configuration
+  tags: [kernel_pin]
+
+- name: Read the saved GRUB entry
+  ansible.builtin.command: grub-editenv list
+  register: kernel_grubenv
+  changed_when: false
+  check_mode: false
+  when: kernel_pin_version | length > 0
+  tags: [kernel_pin]
+
+- name: Save the pinned kernel as the GRUB default
+  ansible.builtin.command:
+    argv:
+      - grub-set-default
+      - "{{ kernel_pin_entry }}"
+  vars:
+    kernel_pin_entry: "Advanced options for Ubuntu>Ubuntu, with Linux {{ kernel_pin_version }}-generic"
+  when:
+    - kernel_pin_version | length > 0
+    - ('saved_entry=' ~ kernel_pin_entry) not in kernel_grubenv.stdout_lines
+  changed_when: true
+  tags: [kernel_pin]
+
+- name: Read the installed packages
+  ansible.builtin.package_facts:
+    manager: apt
+  tags: [kernel_pin]
+
+- name: Read the held packages
+  ansible.builtin.command: apt-mark showhold
+  register: kernel_held
+  changed_when: false
+  check_mode: false
+  tags: [kernel_pin]
+
+- name: Hold the kernel meta packages (pinned)
+  ansible.builtin.command:
+    argv: "{{ ['apt-mark', 'hold'] + kernel_to_hold }}"
+  vars:
+    kernel_to_hold: "{{ kernel_hold_packages | intersect(ansible_facts.packages.keys() | list) | difference(kernel_held.stdout_lines) }}"
+  when:
+    - kernel_pin_version | length > 0
+    - kernel_to_hold | length > 0
+  changed_when: true
+  tags: [kernel_pin]
+
+- name: Release the kernel meta packages (not pinned)
+  ansible.builtin.command:
+    argv: "{{ ['apt-mark', 'unhold'] + kernel_to_unhold }}"
+  vars:
+    kernel_to_unhold: "{{ kernel_hold_packages | intersect(kernel_held.stdout_lines) }}"
+  when:
+    - kernel_pin_version | length == 0
+    - kernel_to_unhold | length > 0
+  changed_when: true
+  tags: [kernel_pin]
+
+- name: Apply the GRUB change before reporting
+  ansible.builtin.meta: flush_handlers
+  tags: [kernel_pin]
+
+# ── report (this role never reboots) ────────────────────────────────────────
+- name: Does the node wait for a reboot?
+  ansible.builtin.stat:
+    path: /var/run/reboot-required
+  register: kernel_reboot_required
+  tags: [kernel_pin, kernel_updates]
+
+- name: Report the running kernel against the policy
+  ansible.builtin.debug:
+    msg: >-
+      Running {{ ansible_facts.kernel }}.
+      {{ ('Pinned to ' ~ kernel_pin_version ~ '-generic: ' ~
+          ('active.' if ansible_facts.kernel == kernel_pin_version ~ '-generic' else 'reboot in a maintenance window to activate it.'))
+         if kernel_pin_version | length > 0 else 'Not pinned: GRUB boots the newest installed kernel.' }}
+      {{ 'A reboot is pending (/var/run/reboot-required): schedule it in a maintenance window.' if kernel_reboot_required.stat.exists else '' }}
+  tags: [kernel_pin, kernel_updates]
