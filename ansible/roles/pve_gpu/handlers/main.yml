@@ -1,0 +1,16 @@
+---
+- name: Rebuild the initramfs
+  ansible.builtin.command: update-initramfs -u -k all
+  changed_when: true
+  notify: Report that a reboot is needed
+
+- name: Refresh the boot loader
+  ansible.builtin.command: proxmox-boot-tool refresh
+  changed_when: true
+  notify: Report that a reboot is needed
+
+- name: Report that a reboot is needed
+  ansible.builtin.debug:
+    msg: >-
+      Boot-time GPU configuration changed. NOTHING was rebooted. Stop the VMs cleanly (qm shutdown <id>
+      --timeout 180), reboot the host in a window, then run this role with --tags pve_gpu_verify.

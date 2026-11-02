@@ -1,0 +1,162 @@
+---
+- name: Assert a Debian-family host (Proxmox VE is Debian)
+  ansible.builtin.assert:
+    that: ansible_facts['os_family'] == 'Debian'
+    fail_msg: "pve_base is for a Proxmox VE (Debian) host"
+    quiet: true
+
+# ── repositories ────────────────────────────────────────────────────────────
+- name: Repositories
+  when: pve_base_disable_enterprise_repos | bool
+  tags: [pve_base_repos]
+  block:
+    - name: Read the enterprise source files that exist
+      ansible.builtin.slurp:
+        src: "{{ item }}"
+      loop:
+        - /etc/apt/sources.list.d/pve-enterprise.sources
+        - /etc/apt/sources.list.d/ceph.sources
+      register: pve_base_enterprise_files
+      failed_when: false
+
+    - name: Disable the enterprise sources (they need a subscription)
+      ansible.builtin.lineinfile:
+        path: "{{ item.item }}"
+        regexp: "^Enabled:"
+        line: "Enabled: no"
+        insertafter: "^Types:"
+        mode: "0644"
+      loop: "{{ pve_base_enterprise_files.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when:
+        - item.content is defined
+        - "'enterprise.proxmox.com' in (item.content | b64decode)"
+      notify: Update apt cache
+
+- name: Add the no-subscription repository when no source names it yet
+  when: pve_base_manage_no_subscription_repo | bool
+  tags: [pve_base_repos]
+  block:
+    - name: Look for an existing no-subscription source
+      ansible.builtin.command: grep -rlE "pve-no-subscription" /etc/apt/sources.list /etc/apt/sources.list.d
+      register: pve_base_nosub_existing
+      changed_when: false
+      failed_when: pve_base_nosub_existing.rc > 1
+      check_mode: false
+
+    - name: Write our no-subscription source
+      ansible.builtin.copy:
+        dest: "{{ pve_base_no_subscription_file }}"
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          Types: deb
+          URIs: http://download.proxmox.com/debian/pve
+          Suites: {{ ansible_facts['distribution_release'] }}
+          Components: pve-no-subscription
+          Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+      when: pve_base_nosub_existing.rc == 1 or (pve_base_no_subscription_file in pve_base_nosub_existing.stdout_lines)
+      notify: Update apt cache
+
+# ── packages and security updates ───────────────────────────────────────────
+- name: Install the base packages
+  ansible.builtin.apt:
+    name: "{{ pve_base_packages }}"
+    state: present
+  tags: [pve_base_packages]
+
+- name: Enable the periodic unattended-upgrades run
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+  tags: [pve_base_updates]
+
+- name: Unattended upgrades limited to Debian security, never a reboot
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/52qnsc-unattended-upgrades
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      // {{ pve_base_managed_comment }}
+      // Proxmox and kernel packages are upgraded in a deliberate window, never automatically.
+      #clear Unattended-Upgrade::Origins-Pattern;
+      Unattended-Upgrade::Origins-Pattern {
+        "origin=Debian,codename=${distro_codename}-security,label=Debian-Security";
+      };
+      Unattended-Upgrade::Automatic-Reboot "false";
+      Unattended-Upgrade::Remove-Unused-Dependencies "false";
+  tags: [pve_base_updates]
+
+# ── time ────────────────────────────────────────────────────────────────────
+- name: Write the chrony sources
+  ansible.builtin.copy:
+    dest: /etc/chrony/sources.d/qnsc.sources
+    owner: root
+    group: root
+    mode: "0644"
+    content: "{{ pve_base_chrony_sources | join('\n') }}\n"
+  notify: Reload chrony sources
+  tags: [pve_base_time]
+
+- name: Enable and start chrony
+  ansible.builtin.service:
+    name: chrony
+    state: started
+    enabled: true
+  tags: [pve_base_time]
+
+# ── ssh ─────────────────────────────────────────────────────────────────────
+- name: SSH hardening (key only)
+  when: pve_base_ssh_harden | bool
+  tags: [pve_base_ssh]
+  block:
+    - name: Find the connecting user's authorized keys
+      ansible.builtin.stat:
+        path: "{{ pve_base_ssh_authorized_keys_file }}"
+        follow: true
+      register: pve_base_ssh_keys
+
+    - name: Refuse to disable password login without a key (lock-out guard)
+      ansible.builtin.assert:
+        that:
+          - pve_base_ssh_keys.stat.exists
+          - pve_base_ssh_keys.stat.size > 0
+        fail_msg: "{{ pve_base_ssh_authorized_keys_file }} is missing or empty: install your key first (ssh-copy-id), or set pve_base_ssh_harden=false"
+        quiet: true
+
+    - name: Write the sshd drop-in
+      ansible.builtin.copy:
+        dest: /etc/ssh/sshd_config.d/10-qnsc.conf
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          # {{ pve_base_managed_comment }}
+          PermitRootLogin prohibit-password
+          PasswordAuthentication no
+          KbdInteractiveAuthentication no
+      notify: Reload ssh
+
+    - name: Check that sshd accepts the configuration before any reload
+      ansible.builtin.command: sshd -t
+      changed_when: false
+      check_mode: false
+
+# ── ZFS properties ──────────────────────────────────────────────────────────
+- name: ZFS dataset properties
+  community.general.zfs:
+    name: "{{ item.key }}"
+    state: present
+    extra_zfs_properties: "{{ item.value }}"
+  loop: "{{ pve_base_zfs_properties | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  tags: [pve_base_zfs]

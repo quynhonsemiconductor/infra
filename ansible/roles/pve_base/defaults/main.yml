@@ -1,0 +1,30 @@
+---
+# Packages every Proxmox host carries (jq was missing on pve01 on 2026-11-02).
+pve_base_packages:
+  - jq
+  - chrony
+  - unattended-upgrades
+  - smartmontools
+
+# Repositories. The enterprise repos need a subscription: switched off. The no-subscription repo is added
+# only when NO apt source already names it (the GUI may have added one), so a first run changes nothing.
+pve_base_disable_enterprise_repos: true
+pve_base_manage_no_subscription_repo: true
+pve_base_no_subscription_file: /etc/apt/sources.list.d/qnsc-pve-no-subscription.sources
+
+# Time (public servers, the same as the server-setup runbook).
+pve_base_chrony_sources:
+  - server time.cloudflare.com iburst
+  - pool vn.pool.ntp.org iburst
+
+# SSH: key only. The role refuses to apply this unless the connecting user has an authorized key.
+pve_base_ssh_harden: true
+pve_base_ssh_authorized_keys_file: "{{ '/root' if (ansible_user | default('root')) == 'root' else '/home/' ~ ansible_user }}/.ssh/authorized_keys"
+
+# ZFS dataset properties (pool: {property: value}). Only properties that are safe to set online.
+pve_base_zfs_properties:
+  rpool:
+    atime: "off"
+
+# Header comment of the files this role writes (group_vars/all.yml sets qnsc_ansible_managed).
+pve_base_managed_comment: "{{ qnsc_ansible_managed | default('Managed by infra/ansible. Do not edit by hand.') }}"

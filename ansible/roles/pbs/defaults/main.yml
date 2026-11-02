@@ -1,0 +1,33 @@
+---
+# Proxmox Backup Server, co-located on the PVE host. The pool `backup` (mirror of the two HDDs) already exists
+# and is never created here: only a dataset on it.
+pbs_apt_suite: "{{ ansible_facts['distribution_release'] }}"
+pbs_repository_file: /etc/apt/sources.list.d/pbs-no-subscription.sources
+
+pbs_zfs_dataset: backup/pbs
+pbs_datastore_name: qnsc
+pbs_datastore_path: /backup/pbs
+
+# Calendar events (systemd syntax). Prune before the 01:00 backup window is irrelevant: it only drops snapshots
+# outside the keep policy. GC after the backups. A weekly verify re-reads chunks.
+pbs_gc_schedule: "03:00"
+pbs_prune_job_id: qnsc-prune
+pbs_prune_schedule: "daily"
+pbs_prune_keep_daily: 7
+pbs_prune_keep_weekly: 4
+pbs_prune_keep_monthly: 6
+pbs_verify_job_id: qnsc-verify
+pbs_verify_schedule: "sat 04:00"
+pbs_verify_outdated_after_days: 30
+
+# The identity PVE uses: an API token with DatastoreBackup on the datastore only.
+pbs_pve_user: backup@pbs
+pbs_pve_token_name: pve
+pbs_pve_role: DatastoreBackup
+
+# The token secret exists once, at creation, and is handed to 1Password through stdin (never printed, never logged,
+# never stored by Ansible). `op` must be installed and signed in on the machine running Ansible; the role checks
+# BEFORE it creates anything, so a missing `op` cannot lose a secret. Set to false only to skip creating the token.
+pbs_token_to_onepassword: true
+pbs_onepassword_vault: QNSC
+pbs_onepassword_item_title: "PBS - pve backup - API token"

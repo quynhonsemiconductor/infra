@@ -1,0 +1,11 @@
+---
+# k3s on k3s-01: the pinned version, config.yaml, kernel settings. Restart is gated (k3s_server_allow_restart).
+#   ansible-playbook k3s-server.yml --check --diff
+- name: Install and configure the k3s server
+  hosts: k3s_server
+  become: true
+  gather_facts: true
+  serial: 1
+  roles:
+    - role: k3s_server
+      tags: [k3s_server]
