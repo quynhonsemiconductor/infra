@@ -79,6 +79,8 @@ provider "grafana" {
 # reads), and the plan only ever issues GET requests against it (checked: with a stub API the
 # plan made two GETs and reported "to forget"; nothing else).
 #
+# (The alias is used only by those orphaned state entries, hence the tflint ignore on it.)
+#
 # SUNSET: once an apply has forgotten the ten objects, delete this data source, this provider
 # alias and the ten `removed` blocks in one PR. Until then do not add resources to the alias.
 data "terraform_remote_state" "self" {
@@ -92,7 +94,7 @@ data "terraform_remote_state" "self" {
   }
 }
 
-# tflint-ignore: terraform_unused_declarations (used only by the orphaned state entries it forgets)
+# tflint-ignore: terraform_unused_declarations
 provider "grafana" {
   alias = "stack"
   url   = data.terraform_remote_state.self.outputs.alerting_grafana_url
@@ -179,10 +181,11 @@ resource "grafana_cloud_access_policy" "otlp_push" {
   }
 }
 
-resource "grafana_cloud_access_policy_token" "otlp_push" {
-  region           = "prod-ap-southeast-0"
-  access_policy_id = grafana_cloud_access_policy.otlp_push.policy_id
-  name             = "otlp-sidecar-push-token"
+# The AWS-era sidecar push token. It no longer exists in Grafana (a plan shows "has been deleted") and nothing
+# consumes it (no stack, workflow or script reads `otlp_push_token`; on-prem Alloy has its own credential), so it is
+# FORGOTTEN instead of being recreated: no new credential is minted by this stack. The policy above stays.
+removed {
+  from = grafana_cloud_access_policy_token.otlp_push
 }
 
 # =============================================================================

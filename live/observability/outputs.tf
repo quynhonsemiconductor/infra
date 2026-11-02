@@ -18,12 +18,6 @@ output "otlp_stack_id" {
   description = "Instance id half of the Basic auth pair — see observability-agent's README for the exact `aws secretsmanager put-secret-value` command."
 }
 
-output "otlp_push_token" {
-  value       = grafana_cloud_access_policy_token.otlp_push.token
-  description = "Token half of the Basic auth pair. Sensitive — read via `tofu output -raw` when populating a product's observability-token secret, never logged."
-  sensitive   = true
-}
-
 # ── The three outputs below are THIS stack's contract with the sibling
 # `observability-alerting` stack, which reads them via `terraform_remote_state`
 # to configure its single, non-aliased `grafana` provider — the split that
