@@ -55,8 +55,10 @@ resource "cloudflare_zero_trust_access_ai_controls_mcp_server" "github" {
 
   lifecycle {
     precondition {
-      condition     = var.mcp_github_oauth_client_id != "" && var.mcp_github_oauth_client_secret != ""
-      error_message = "mcp_hub_enabled needs mcp_github_oauth_client_id and mcp_github_oauth_client_secret (HUB-SETUP.md)."
+      # The secret is NOT checked: PR plans run without environment secrets
+      # (read-only tokens) and must still plan; the apply job holds it.
+      condition     = var.mcp_github_oauth_client_id != ""
+      error_message = "mcp_hub_enabled needs mcp_github_oauth_client_id (HUB-SETUP.md)."
     }
   }
 }
