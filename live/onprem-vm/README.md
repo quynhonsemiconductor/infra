@@ -76,17 +76,12 @@ tofu plan        # must be: No changes.
 ```
 
 ## The k3s config on the node
-
-`files/k3s/config.yaml` is the live node's `/etc/rancher/k3s/config.yaml` plus
-the `kube-apiserver-arg` block: the new OIDC issuer FIRST (k3s signs with the
-first value) and the old default SECOND (accepted, never issued, so tokens
-minted before the restart keep working). Diff before restarting:
-
+`files/k3s/config.yaml` is the live node's `/etc/rancher/k3s/config.yaml`, byte for byte
+(verified 2026-11-02). The OIDC issuer args for ESO workload identity (infra#252) are
+added in that PR, not here. Diff before any change:
 ```sh
 scp files/k3s/config.yaml qnsc@<node>:/tmp/config.yaml
 ssh qnsc@<node> 'sudo diff -u /etc/rancher/k3s/config.yaml /tmp/config.yaml'
-# expect ONLY the added kube-apiserver-arg block
-ssh qnsc@<node> 'sudo install -m 0600 /tmp/config.yaml /etc/rancher/k3s/config.yaml && sudo systemctl restart k3s'
 ```
 
 `files/k3s/version` pins `vX.Y.Z+k3s1`: an upgrade is
