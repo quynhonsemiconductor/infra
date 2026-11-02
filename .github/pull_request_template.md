@@ -8,7 +8,10 @@
 - [ ] CI/CD change
 
 ## Environments affected
-- [ ] `live/bootstrap` (account-level: OIDC provider, state backend)
+- [ ] `live/edge`, `live/onprem` (Cloudflare edge and tunnels)
+- [ ] `live/identity` (Entra, Key Vault; owner-applied)
+- [ ] `live/observability*`, `live/adaptive-metrics` (Grafana)
+- [ ] `live/storage-*` (R2)
 
 ## OpenTofu Plan
 <details>

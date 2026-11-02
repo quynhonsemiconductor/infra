@@ -2,26 +2,28 @@
 # Infrastructure · Apply — applies changed live/ stacks on push to main.
 # (OpenTofu under the hood — named by capability, not tool.)
 #
-# A `detect` job diffs the push and selects candidate stacks (a modules/ or
-# workflow change selects everything; manual dispatch selects all). Each stack
+# A `detect` job diffs the push and selects candidate stacks (a change to this
+# workflow selects everything; manual dispatch selects all). Each stack
 # then plans to a saved file with -detailed-exitcode and applies ONLY that exact
 # file, and ONLY when the plan shows changes (exit 2) — an unchanged stack is
 # skipped, so a workflow/module edit never silently re-applies live infra.
 # EVERY apply job runs in the GitHub Environment `production` (audit-infra
 # 2026-11-02 C-2/A-4): it is the reviewer gate (the owner), the OIDC trust
 # boundary (the Azure apply identity federates only environment:production; the
-# AWS apply role trusts it too), and the home of the WRITE tokens (environment
+# state backend is Azure for every stack), and the home of the WRITE tokens (environment
 # secrets CLOUDFLARE_API_TOKEN, GRAFANA_CLOUD_API_KEY, ... — PR plans only get
 # the *_READONLY ones). A merge that changes a stack therefore waits for the
 # owner's approval on the run page; while it waits it holds the apply
 # concurrency lock (cancel-in-progress:false), so approve or reject promptly.
 #
-# runtime-prod and storage-prod stay DELIBERATE-ONLY: they run only via a manual
-# workflow_dispatch with apply_prod=true (still gated by the same reviewer).
+# storage-prod stays DELIBERATE-ONLY: it runs only via a manual workflow_dispatch
+# with apply_prod=true (still gated by the same reviewer).
 #
-# NOTE: First-time bootstrap must be run manually (see live/bootstrap/main.tf
-# history — the state-backend/OIDC-provider chicken-and-egg). This workflow
-# handles subsequent changes and first-time apply of every later stack.
+# AWS EXIT (2026-11-02): bootstrap, security-baseline, runtime-dev, runtime-prod
+# and organization are RETIRED and are no longer applied here (their state is
+# archived; account closure removes what is left). No job in this workflow holds
+# AWS credentials: every stack uses the Azure backend and the Entra OIDC
+# identity (environment: production).
 # =============================================================================
 name: Infrastructure · Apply
 
@@ -30,16 +32,15 @@ on:
     branches: [main]
     paths:
       - "live/**"
-      - "modules/**"
       - ".github/workflows/infra-apply.yml"
   workflow_dispatch:
     inputs:
       apply_prod:
-        description: "Also apply the production-tier stacks (runtime-prod, storage-prod). Still gated by the production environment reviewer."
+        description: "Also apply the production-tier stack (storage-prod). Still gated by the production environment reviewer."
         type: boolean
         default: false
       allow_destructive:
-        description: "Allow this run to DELETE or REPLACE DNS / identity resources (Cloudflare records, SES identities, ACM certificates, ...). Read the plan first: see docs/incidents/2026-10-09-edge-dns.md."
+        description: "Allow this run to DELETE or REPLACE DNS / identity resources (Cloudflare records, Access apps, tunnels, ...). Read the plan first: see docs/incidents/2026-10-09-edge-dns.md."
         type: boolean
         default: false
 
@@ -54,11 +55,10 @@ permissions:
 
 env:
   TOFU_VERSION: "1.9.1"
-  AWS_REGION: ap-southeast-1
 
 jobs:
   # ───────────────────────────────────────────────────────────────────────
-  # Which live/ stacks changed in this push? (modules/ or workflow change, or a
+  # Which live/ stacks changed in this push? (workflow change, or a
   # manual dispatch → apply all.) Downstream jobs gate on this list.
   # ───────────────────────────────────────────────────────────────────────
   detect:
@@ -84,18 +84,18 @@ jobs:
           # 2026-09-20 split removed, so every plan fails with "Provider configuration not present ... (orphan)"), and an all-stacks run
           # that includes it is red every time. A change under live/observability/ still selects it below, so that remains visible.
           # Put it back in this list with the state migration: docs/runbooks/observability-state-migration.md.
-          ALL='"bootstrap","security-baseline","runtime-dev","runtime-prod","edge","storage-dev","storage-prod","observability-alerting","adaptive-metrics","onprem"'
+          ALL='"edge","storage-dev","storage-prod","observability-alerting","adaptive-metrics","onprem"'
           # Manual dispatch or an unknown/zero base commit → apply everything.
           if [ -z "${BEFORE:-}" ] || [[ "$BEFORE" =~ ^0+$ ]] || ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
             echo "stacks=[$ALL]" >> "$GITHUB_OUTPUT"; exit 0
           fi
           CHANGED="$(git diff --name-only "$BEFORE" "$AFTER")"
           echo "Changed files:"; echo "$CHANGED"
-          if echo "$CHANGED" | grep -qE '^(modules/|\.github/workflows/infra-apply\.yml$)'; then
+          if echo "$CHANGED" | grep -qE '^\.github/workflows/infra-apply\.yml$'; then
             echo "stacks=[$ALL]" >> "$GITHUB_OUTPUT"; exit 0
           fi
           SEL=""
-          for s in bootstrap security-baseline runtime-dev runtime-prod edge storage-dev storage-prod observability observability-alerting adaptive-metrics onprem; do
+          for s in edge storage-dev storage-prod observability observability-alerting adaptive-metrics onprem; do
             if echo "$CHANGED" | grep -qE "^live/$s/"; then SEL="$SEL\"$s\","; fi
           done
           echo "stacks=[${SEL%,}]" >> "$GITHUB_OUTPUT"
@@ -113,7 +113,7 @@ jobs:
           UNMANAGED=""
           for d in $(find live -name '*.tf' -not -path '*/.terraform/*' -exec dirname {} \; \
                        | sed 's|^live/||' | sort -u); do
-            case " bootstrap security-baseline runtime-dev runtime-prod edge storage-dev storage-prod observability observability-alerting adaptive-metrics onprem " in
+            case " edge storage-dev storage-prod observability observability-alerting adaptive-metrics onprem " in
               *" $d "*) ;;
               *) UNMANAGED="$UNMANAGED $d" ;;
             esac
@@ -122,124 +122,10 @@ jobs:
             echo "::warning::on disk but never applied by this pipeline:$UNMANAGED"
           fi
 
-  # ───────────────────────────────────────────────────────────────────────
-  # shared tier — bootstrap first (everything reads its remote state).
-  # ───────────────────────────────────────────────────────────────────────
-  apply-bootstrap:
-    name: Apply bootstrap
-    needs: detect
-    if: ${{ contains(fromJson(needs.detect.outputs.stacks), 'bootstrap') }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    environment: production   # platform blast radius — auto-apply on merge (parity with observability-alerting); the PR review is the gate
-    permissions:
-      contents: read
-      id-token: write
-      pull-requests: read   # destructive-guard reads the PR labels
-
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-
-      - uses: quynhonsemiconductor/ci/actions/setup-tofu-aws@ea2c56bd9b03fb4d52e8fb9fe98dca95fd278638 # v1.24.5
-        with:
-          role-arn:     arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/qnsc-github-infra-apply
-          aws-region:   ${{ env.AWS_REGION }}
-          tofu-version: ${{ env.TOFU_VERSION }}
-
-      - name: tofu init
-        working-directory: live/bootstrap
-        run: tofu init -input=false
-
-      # Plan to a saved file (-detailed-exitcode: 0=no change, 1=error, 2=changes).
-      # We apply ONLY that exact file, and only when there are changes — an
-      # unchanged stack is skipped, so a workflow/module edit never re-applies it.
-      - name: tofu plan
-        id: plan
-        working-directory: live/bootstrap
-        run: |
-          set +e
-          tofu plan -input=false -detailed-exitcode -out tfplan -no-color 2>&1 | tee plan.txt
-          ec=${PIPESTATUS[0]}   # tofu's real exit, independent of the tee pipe
-          echo "tofu plan detailed exit code: $ec (0=no change, 2=changes, 1=error)"
-          echo "exitcode=$ec" >> "$GITHUB_OUTPUT"
-          if [ "$ec" = "1" ]; then exit 1; fi
-        env:
-          TF_VAR_cloudflare_zone_id: ${{ vars.CLOUDFLARE_ZONE_ID }}
-
-      # A provider bump, a lock-file change or an empty variable can turn a plan into "replace every DNS record" (2026-10-09).
-      # The plan is applied unreviewed here, so it is read first: deleting or replacing a DNS/identity resource needs the
-      # `allow-dns-destroy` label on the merged PR (or the allow_destructive dispatch input).
-      - name: Refuse destructive DNS / identity changes
-        if: steps.plan.outputs.exitcode == '2'
-        uses: quynhonsemiconductor/ci/actions/destructive-guard@ea2c56bd9b03fb4d52e8fb9fe98dca95fd278638 # v1.24.5
-        with:
-          working-directory: live/bootstrap
-          dispatch-allow: ${{ inputs.allow_destructive }}
-
-      - name: tofu apply
-        if: steps.plan.outputs.exitcode == '2'
-        working-directory: live/bootstrap
-        run: tofu apply -input=false tfplan
-
-  apply-security-baseline:
-    name: Apply security-baseline
-    needs: [detect, apply-bootstrap]
-    if: ${{ always() && contains(fromJson(needs.detect.outputs.stacks), 'security-baseline') && needs.apply-bootstrap.result != 'failure' && needs.apply-bootstrap.result != 'cancelled' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    environment: production   # account-wide audit controls
-    permissions:
-      contents: read
-      id-token: write
-      pull-requests: read   # destructive-guard reads the PR labels
-
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-
-      - uses: quynhonsemiconductor/ci/actions/setup-tofu-aws@ea2c56bd9b03fb4d52e8fb9fe98dca95fd278638 # v1.24.5
-        with:
-          role-arn:     arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/qnsc-github-infra-apply
-          aws-region:   ${{ env.AWS_REGION }}
-          tofu-version: ${{ env.TOFU_VERSION }}
-
-      - name: tofu init
-        working-directory: live/security-baseline
-        run: tofu init -input=false
-
-      - name: tofu plan
-        id: plan
-        working-directory: live/security-baseline
-        run: |
-          set +e
-          tofu plan -input=false -detailed-exitcode -out tfplan -no-color 2>&1 | tee plan.txt
-          ec=${PIPESTATUS[0]}   # tofu's real exit, independent of the tee pipe
-          echo "tofu plan detailed exit code: $ec (0=no change, 2=changes, 1=error)"
-          echo "exitcode=$ec" >> "$GITHUB_OUTPUT"
-          if [ "$ec" = "1" ]; then exit 1; fi
-
-      # A provider bump, a lock-file change or an empty variable can turn a plan into "replace every DNS record" (2026-10-09).
-      # The plan is applied unreviewed here, so it is read first: deleting or replacing a DNS/identity resource needs the
-      # `allow-dns-destroy` label on the merged PR (or the allow_destructive dispatch input).
-      - name: Refuse destructive DNS / identity changes
-        if: steps.plan.outputs.exitcode == '2'
-        uses: quynhonsemiconductor/ci/actions/destructive-guard@ea2c56bd9b03fb4d52e8fb9fe98dca95fd278638 # v1.24.5
-        with:
-          working-directory: live/security-baseline
-          dispatch-allow: ${{ inputs.allow_destructive }}
-
-      - name: tofu apply
-        if: steps.plan.outputs.exitcode == '2'
-        working-directory: live/security-baseline
-        run: tofu apply -input=false tfplan
-
   apply-edge:
     name: Apply edge
-    needs: [detect, apply-bootstrap]
-    if: ${{ always() && contains(fromJson(needs.detect.outputs.stacks), 'edge') && needs.apply-bootstrap.result != 'failure' && needs.apply-bootstrap.result != 'cancelled' }}
+    needs: [detect]
+    if: ${{ contains(fromJson(needs.detect.outputs.stacks), 'edge') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: production   # Cloudflare edge — account/zone-wide
@@ -335,68 +221,12 @@ jobs:
           ARM_USE_OIDC:        'true'
 
   # ───────────────────────────────────────────────────────────────────────
-  # develop / production tiers — shared runtime networking per env.
-  # ───────────────────────────────────────────────────────────────────────
-  apply-runtime-dev:
-    name: Apply runtime-dev
-    needs: [detect, apply-bootstrap, apply-edge]
-    if: ${{ always() && contains(fromJson(needs.detect.outputs.stacks), 'runtime-dev') && needs.apply-bootstrap.result != 'failure' && needs.apply-bootstrap.result != 'cancelled' && needs.apply-edge.result != 'failure' && needs.apply-edge.result != 'cancelled' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    environment: production
-    permissions:
-      contents: read
-      id-token: write
-      pull-requests: read   # destructive-guard reads the PR labels
-
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-
-      - uses: quynhonsemiconductor/ci/actions/setup-tofu-aws@ea2c56bd9b03fb4d52e8fb9fe98dca95fd278638 # v1.24.5
-        with:
-          role-arn:     arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/qnsc-github-infra-apply
-          aws-region:   ${{ env.AWS_REGION }}
-          tofu-version: ${{ env.TOFU_VERSION }}
-
-      - name: tofu init
-        working-directory: live/runtime-dev
-        run: tofu init -input=false
-
-      - name: tofu plan
-        id: plan
-        working-directory: live/runtime-dev
-        run: |
-          set +e
-          tofu plan -input=false -detailed-exitcode -out tfplan -no-color 2>&1 | tee plan.txt
-          ec=${PIPESTATUS[0]}   # tofu's real exit, independent of the tee pipe
-          echo "tofu plan detailed exit code: $ec (0=no change, 2=changes, 1=error)"
-          echo "exitcode=$ec" >> "$GITHUB_OUTPUT"
-          if [ "$ec" = "1" ]; then exit 1; fi
-
-      # A provider bump, a lock-file change or an empty variable can turn a plan into "replace every DNS record" (2026-10-09).
-      # The plan is applied unreviewed here, so it is read first: deleting or replacing a DNS/identity resource needs the
-      # `allow-dns-destroy` label on the merged PR (or the allow_destructive dispatch input).
-      - name: Refuse destructive DNS / identity changes
-        if: steps.plan.outputs.exitcode == '2'
-        uses: quynhonsemiconductor/ci/actions/destructive-guard@ea2c56bd9b03fb4d52e8fb9fe98dca95fd278638 # v1.24.5
-        with:
-          working-directory: live/runtime-dev
-          dispatch-allow: ${{ inputs.allow_destructive }}
-
-      - name: tofu apply
-        if: steps.plan.outputs.exitcode == '2'
-        working-directory: live/runtime-dev
-        run: tofu apply -input=false tfplan
-
-  # ───────────────────────────────────────────────────────────────────────
   # Shared observability — the one Grafana Cloud stack every product's
   # already-wired OTel sidecar (tf-modules/modules/observability-agent)
   # pushes to. No VPC, no ALB, no other stack's remote state — this is a
   # standalone Grafana Cloud resource, so it depends on nothing but the
   # Grafana credential. Platform blast radius, same reviewer gate as
-  # bootstrap/edge.
+  # edge.
   # ───────────────────────────────────────────────────────────────────────
   apply-observability:
     name: Apply observability
@@ -650,7 +480,7 @@ jobs:
         with:
           persist-credentials: false
 
-      # tofu only — no setup-tofu-aws: this stack never touches AWS, so the job
+      # tofu only: this stack never touches AWS, so the job
       # must not hold AWS credentials it cannot use.
       - uses: quynhonsemiconductor/ci/actions/iac-lint@ea2c56bd9b03fb4d52e8fb9fe98dca95fd278638 # v1.24.5
         with:
@@ -712,71 +542,15 @@ jobs:
           TF_VAR_admin_private_cidr:    ${{ secrets.ADMIN_PRIVATE_CIDR }}
           TF_VAR_admin_hostnames:       ${{ secrets.ADMIN_HOSTNAMES }}
 
-  apply-runtime-prod:
-    name: Apply runtime-prod
-    needs: [detect, apply-bootstrap, apply-edge]
-    # Prod is deliberate-only: runs solely on a manual workflow_dispatch with
-    # apply_prod=true (then still reviewer-gated). Never queued on a push, so a
-    # normal merge can't leave a pending prod job holding the concurrency lock.
-    if: ${{ always() && contains(fromJson(needs.detect.outputs.stacks), 'runtime-prod') && needs.apply-bootstrap.result != 'failure' && needs.apply-bootstrap.result != 'cancelled' && needs.apply-edge.result != 'failure' && needs.apply-edge.result != 'cancelled' && github.event_name == 'workflow_dispatch' && inputs.apply_prod }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    environment: production   # PROTECT with required reviewers
-    permissions:
-      contents: read
-      id-token: write
-      pull-requests: read   # destructive-guard reads the PR labels
-
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-
-      - uses: quynhonsemiconductor/ci/actions/setup-tofu-aws@ea2c56bd9b03fb4d52e8fb9fe98dca95fd278638 # v1.24.5
-        with:
-          role-arn:     arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/qnsc-github-infra-apply
-          aws-region:   ${{ env.AWS_REGION }}
-          tofu-version: ${{ env.TOFU_VERSION }}
-
-      - name: tofu init
-        working-directory: live/runtime-prod
-        run: tofu init -input=false
-
-      - name: tofu plan
-        id: plan
-        working-directory: live/runtime-prod
-        run: |
-          set +e
-          tofu plan -input=false -detailed-exitcode -out tfplan -no-color 2>&1 | tee plan.txt
-          ec=${PIPESTATUS[0]}   # tofu's real exit, independent of the tee pipe
-          echo "tofu plan detailed exit code: $ec (0=no change, 2=changes, 1=error)"
-          echo "exitcode=$ec" >> "$GITHUB_OUTPUT"
-          if [ "$ec" = "1" ]; then exit 1; fi
-
-      # A provider bump, a lock-file change or an empty variable can turn a plan into "replace every DNS record" (2026-10-09).
-      # The plan is applied unreviewed here, so it is read first: deleting or replacing a DNS/identity resource needs the
-      # `allow-dns-destroy` label on the merged PR (or the allow_destructive dispatch input).
-      - name: Refuse destructive DNS / identity changes
-        if: steps.plan.outputs.exitcode == '2'
-        uses: quynhonsemiconductor/ci/actions/destructive-guard@ea2c56bd9b03fb4d52e8fb9fe98dca95fd278638 # v1.24.5
-        with:
-          working-directory: live/runtime-prod
-          dispatch-allow: ${{ inputs.allow_destructive }}
-
-      - name: tofu apply
-        if: steps.plan.outputs.exitcode == '2'
-        working-directory: live/runtime-prod
-        run: tofu apply -input=false tfplan
-
   # ───────────────────────────────────────────────────────────────────────
   # storage tier — Cloudflare R2 attachment buckets (v5 provider), isolated so
-  # the v4 product/edge stacks are untouched. Only needs the state backend
-  # (bootstrap) + the Cloudflare account/token vars; independent of edge.
+  # the v4 product/edge stacks are untouched. Only needs the Cloudflare
+  # account/token vars; independent of edge.
   # ───────────────────────────────────────────────────────────────────────
   apply-storage-dev:
     name: Apply storage-dev
-    needs: [detect, apply-bootstrap]
-    if: ${{ always() && contains(fromJson(needs.detect.outputs.stacks), 'storage-dev') && needs.apply-bootstrap.result != 'failure' && needs.apply-bootstrap.result != 'cancelled' }}
+    needs: [detect]
+    if: ${{ contains(fromJson(needs.detect.outputs.stacks), 'storage-dev') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: production
@@ -844,11 +618,11 @@ jobs:
 
   apply-storage-prod:
     name: Apply storage-prod
-    needs: [detect, apply-bootstrap]
+    needs: [detect]
     # Prod is deliberate-only: runs solely on a manual workflow_dispatch with
     # apply_prod=true (then still reviewer-gated). Never queued on a push, so a
     # normal merge can't leave a pending prod job holding the concurrency lock.
-    if: ${{ always() && contains(fromJson(needs.detect.outputs.stacks), 'storage-prod') && needs.apply-bootstrap.result != 'failure' && needs.apply-bootstrap.result != 'cancelled' && github.event_name == 'workflow_dispatch' && inputs.apply_prod }}
+    if: ${{ always() && contains(fromJson(needs.detect.outputs.stacks), 'storage-prod') && github.event_name == 'workflow_dispatch' && inputs.apply_prod }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: production   # PROTECT with required reviewers

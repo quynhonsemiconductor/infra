@@ -2,7 +2,7 @@
 # Infrastructure · Plan — dry-run on every PR to main.
 # (OpenTofu under the hood — named by capability, not tool.)
 # A `detect` job diffs the PR and plans only the live/ stacks it touches (a
-# change under modules/ or to this workflow plans every stack). A `tofu fmt`
+# change to this workflow plans every stack). A `tofu fmt`
 # job gates formatting drift across the whole tree.
 # =============================================================================
 name: Infrastructure · Plan
@@ -24,12 +24,11 @@ permissions:
 
 env:
   TOFU_VERSION: "1.9.1"
-  AWS_REGION: ap-southeast-1
 
 jobs:
   # ───────────────────────────────────────────────────────────────────────
   # Detect which live/ stacks this PR touches → we plan only those. A change
-  # under modules/ (shared) or to this workflow plans every stack. Keeps
+  # to this workflow plans every stack. Keeps
   # unrelated PRs fast and avoids planning stacks whose inputs aren't wired.
   # ───────────────────────────────────────────────────────────────────────
   detect:
@@ -107,26 +106,7 @@ jobs:
           #                 its Grafana objects are removed from its state (owner
           #                 `tofu state rm`), then it leaves the list.
           #
-          #   organization  AccessDenied on sso:DescribePermissionSet,
-          #                 organizations:ListAccounts and
-          #                 organizations:DescribePolicy, as qnsc-github-infra-plan.
-          #
-          #                 CAUSE NOT ESTABLISHED, and stated that way on purpose:
-          #                 that role carries AWS-managed ReadOnlyAccess, which
-          #                 already allows organizations:List*/Describe* and
-          #                 sso:Describe*, so "the role is missing the action" does
-          #                 not survive a look at the policy. The SSO message says
-          #                 "the resource does not exist in this Region", and both
-          #                 Organizations and Identity Center are scoped in ways a
-          #                 region-pinned provider can miss — the stack pins
-          #                 ap-southeast-1 while an Identity Center instance lives
-          #                 in one home region, and some Organizations calls answer
-          #                 only in the management account.
-          #
-          #                 Verifying needs credentials this checkout does not
-          #                 have. Naming a cause that turns out to be wrong costs
-          #                 the next person an afternoon — see observability above,
-          #                 where exactly that happened.
+          #   organization  RETIRED 2026-11-02 (AWS exit): the stack is deleted.
           #
           #   observability       RE-TESTED 2026-10-12 (infra#161, plan with the list
           #                       emptied of it): still fails, three times, with
@@ -183,7 +163,7 @@ jobs:
           # AM_METRICS_URL. It is planned here and applied by the apply-adaptive-metrics job.
           # identity stays here on purpose: owner-only plan/apply (public repo; plan output would expose break-glass UPNs and the Entra role layout).
           # onprem-vm is owner-only too: CI has no Proxmox token, and the endpoint is the admin door.
-          NOT_PLANNABLE="observability organization identity onprem-vm"
+          NOT_PLANNABLE="observability identity onprem-vm"
 
           SKIPPED=""
           PLANNABLE=""
@@ -200,7 +180,7 @@ jobs:
           fi
 
           # A shared/module or workflow change affects every stack.
-          if echo "$CHANGED" | grep -qE '^(modules/|\.github/workflows/infra-plan\.yml$)'; then
+          if echo "$CHANGED" | grep -qE '^\.github/workflows/infra-plan\.yml$'; then
             SEL=""
             for s in $PLANNABLE; do SEL="$SEL\"$s\","; done
             echo "stacks=[${SEL%,}]" >> "$GITHUB_OUTPUT"; exit 0
@@ -227,11 +207,8 @@ jobs:
         with:
           persist-credentials: false
 
-      # No AWS, and no `id-token: write` above. This job used to assume
-      # qnsc-github-infra-plan via setup-tofu-aws in order to run a FORMATTER — a
-      # cloud role held by a job that reads no cloud state and calls no cloud API.
-      # The credential was granted because the shared setup action requires one,
-      # not because the work did. iac-lint installs tofu and nothing else.
+      # No cloud credentials and no `id-token: write` above: iac-lint installs
+      # tofu and runs the formatter, nothing else.
       - uses: quynhonsemiconductor/ci/actions/iac-lint@ea2c56bd9b03fb4d52e8fb9fe98dca95fd278638 # v1.24.5
         with:
           tofu-version: ${{ env.TOFU_VERSION }}
@@ -312,46 +289,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510  # v3.3.0
-        id: module-token
-        continue-on-error: true
-        with:
-          app-id: ${{ vars.QNSC_REPO_READER_APP_ID }}
-          private-key: ${{ secrets.QNSC_REPO_READER_PRIVATE_KEY }}
-          repositories: tf-modules
-          # Read-only: the installation can write org-wide; this job only reads modules.
-          permission-contents: read
-
-      # Which backend does this stack use? A stack that declares
-      # `backend "azurerm"` (stqnsctfstate, Entra OIDC) gets NO AWS credentials
-      # and the ARM_* environment below; every other stack keeps the AWS role.
-      # Moving a stack to Azure is then a backend-block change only.
-      - name: Detect the state backend
-        id: backend
-        env:
-          STACK: ${{ matrix.stack }}
-        run: |
-          if grep -qs 'backend "azurerm"' "live/${STACK}"/*.tf; then
-            echo "azure=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "azure=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      # AWS OIDC for the S3-backend stacks. live/onprem is the exception: its
-      # backend is the azurerm one (stqnsctfstate, Entra auth), so it gets NO AWS
-      # credentials — just tofu, then the ARM_* environment on its steps below
-      # (the read identity vars.AZURE_CLIENT_ID_READ; NO `environment:` here, its
-      # OIDC subjects are pull_request/main, see the job-level note).
-      - uses: quynhonsemiconductor/ci/actions/setup-tofu-aws@ea2c56bd9b03fb4d52e8fb9fe98dca95fd278638 # v1.24.5
-        if: steps.backend.outputs.azure != 'true'
-        with:
-          role-arn:     arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/qnsc-github-infra-plan
-          aws-region:   ${{ env.AWS_REGION }}
-          tofu-version: ${{ env.TOFU_VERSION }}
-          git-token:    ${{ steps.module-token.outputs.token }}
-
       - uses: quynhonsemiconductor/ci/actions/iac-lint@ea2c56bd9b03fb4d52e8fb9fe98dca95fd278638 # v1.24.5
-        if: steps.backend.outputs.azure == 'true'
         with:
           tofu-version: ${{ env.TOFU_VERSION }}
           fmt: 'false'   # install only — the gates run in the fmt job
@@ -360,23 +298,17 @@ jobs:
         working-directory: live/${{ matrix.stack }}
         run: tofu init -input=false
         env:
-          # The `&& … || ''` ternary renders an EMPTY STRING, not an unset
-          # variable — harmless here (the azurerm backend and the cloudflare
-          # provider only run for onprem), but do not read "" as "absent".
-          ARM_CLIENT_ID:       ${{ steps.backend.outputs.azure == 'true' && vars.AZURE_CLIENT_ID_READ || '' }}
-          ARM_TENANT_ID:       ${{ steps.backend.outputs.azure == 'true' && vars.ENTRA_TENANT_ID || '' }}
-          ARM_USE_OIDC:        ${{ steps.backend.outputs.azure == 'true' && 'true' || '' }}
+          ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID_READ }}
+          ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
+          ARM_USE_OIDC:        'true'
 
       - name: tofu validate
         working-directory: live/${{ matrix.stack }}
         run: tofu validate
         env:
-          # The `&& … || ''` ternary renders an EMPTY STRING, not an unset
-          # variable — harmless here (the azurerm backend and the cloudflare
-          # provider only run for onprem), but do not read "" as "absent".
-          ARM_CLIENT_ID:       ${{ steps.backend.outputs.azure == 'true' && vars.AZURE_CLIENT_ID_READ || '' }}
-          ARM_TENANT_ID:       ${{ steps.backend.outputs.azure == 'true' && vars.ENTRA_TENANT_ID || '' }}
-          ARM_USE_OIDC:        ${{ steps.backend.outputs.azure == 'true' && 'true' || '' }}
+          ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID_READ }}
+          ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
+          ARM_USE_OIDC:        'true'
 
       - name: tofu plan
         id: plan
@@ -402,9 +334,9 @@ jobs:
         env:
           # Azure OIDC for the onprem azurerm backend (read identity — this job
           # plans lock-free, so write access is never needed).
-          ARM_CLIENT_ID:       ${{ steps.backend.outputs.azure == 'true' && vars.AZURE_CLIENT_ID_READ || '' }}
-          ARM_TENANT_ID:       ${{ steps.backend.outputs.azure == 'true' && vars.ENTRA_TENANT_ID || '' }}
-          ARM_USE_OIDC:        ${{ steps.backend.outputs.azure == 'true' && 'true' || '' }}
+          ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID_READ }}
+          ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
+          ARM_USE_OIDC:        'true'
           # C-1 (audit-infra 2026-11-02): this job runs the PR's own workflow and
           # HCL, so it gets READ-ONLY tokens only (the *_READONLY secrets). The
           # write tokens live as environment secrets of `production` and reach
