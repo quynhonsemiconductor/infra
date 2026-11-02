@@ -49,7 +49,7 @@ jobs:
           persist-credentials: false
           fetch-depth: 1 # tree scan, not history
 
-      - uses: quynhonsemiconductor/ci/actions/leak-guard@4ab3aaec8d70a2f0fb9a38e8a5a96cebe90e58e5 # v1.27.0
+      - uses: quynhonsemiconductor/ci/actions/leak-guard@5295d2dc6c0be1c6d9175b626e96705a0893bc0d # v1.28.0
         with:
           entra-tenant-id: ${{ vars.ENTRA_TENANT_ID }}
           azure-subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
