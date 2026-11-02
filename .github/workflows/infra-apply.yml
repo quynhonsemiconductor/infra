@@ -7,21 +7,17 @@
 # then plans to a saved file with -detailed-exitcode and applies ONLY that exact
 # file, and ONLY when the plan shows changes (exit 2) — an unchanged stack is
 # skipped, so a workflow/module edit never silently re-applies live infra.
-# Each stack runs under a GitHub Environment that doubles as the OIDC trust
-# boundary AND the reviewer gate, mapped to the three tiers the infra-apply
-# role trusts (see tf-modules/modules/iam-oidc infra_apply_subjects):
-#   • shared     → bootstrap, security-baseline, edge, observability,
-#                  observability-alerting, adaptive-metrics (account/platform-wide)
-#   • develop    → runtime-dev, storage-dev
-#   • production → runtime-prod, storage-prod (protect with required reviewers)
+# EVERY apply job runs in the GitHub Environment `production` (audit-infra
+# 2026-11-02 C-2/A-4): it is the reviewer gate (the owner), the OIDC trust
+# boundary (the Azure apply identity federates only environment:production; the
+# AWS apply role trusts it too), and the home of the WRITE tokens (environment
+# secrets CLOUDFLARE_API_TOKEN, GRAFANA_CLOUD_API_KEY, ... — PR plans only get
+# the *_READONLY ones). A merge that changes a stack therefore waits for the
+# owner's approval on the run page; while it waits it holds the apply
+# concurrency lock (cancel-in-progress:false), so approve or reject promptly.
 #
-# PROD IS DELIBERATE-ONLY: the production-tier jobs never run on an ordinary
-# push to main. On a push they would sit pending on the reviewer gate and, with
-# cancel-in-progress:false, hold the apply concurrency lock — blocking every
-# later dev apply. They run ONLY via a manual workflow_dispatch with
-# apply_prod=true, and are still gated by the production environment's required
-# reviewer. A normal merge applies shared + develop only. (Mirrors the
-# tag-gated prod model in the product repos.)
+# runtime-prod and storage-prod stay DELIBERATE-ONLY: they run only via a manual
+# workflow_dispatch with apply_prod=true (still gated by the same reviewer).
 #
 # NOTE: First-time bootstrap must be run manually (see live/bootstrap/main.tf
 # history — the state-backend/OIDC-provider chicken-and-egg). This workflow
@@ -135,7 +131,7 @@ jobs:
     if: ${{ contains(fromJson(needs.detect.outputs.stacks), 'bootstrap') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    environment: shared   # platform blast radius — auto-apply on merge (parity with observability-alerting); the PR review is the gate
+    environment: production   # platform blast radius — auto-apply on merge (parity with observability-alerting); the PR review is the gate
     permissions:
       contents: read
       id-token: write
@@ -193,7 +189,7 @@ jobs:
     if: ${{ always() && contains(fromJson(needs.detect.outputs.stacks), 'security-baseline') && needs.apply-bootstrap.result != 'failure' && needs.apply-bootstrap.result != 'cancelled' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    environment: shared   # account-wide audit controls
+    environment: production   # account-wide audit controls
     permissions:
       contents: read
       id-token: write
@@ -246,7 +242,7 @@ jobs:
     if: ${{ always() && contains(fromJson(needs.detect.outputs.stacks), 'edge') && needs.apply-bootstrap.result != 'failure' && needs.apply-bootstrap.result != 'cancelled' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    environment: shared   # Cloudflare edge — account/zone-wide
+    environment: production   # Cloudflare edge — account/zone-wide
     permissions:
       contents: read
       id-token: write
@@ -335,7 +331,7 @@ jobs:
     if: ${{ always() && contains(fromJson(needs.detect.outputs.stacks), 'runtime-dev') && needs.apply-bootstrap.result != 'failure' && needs.apply-bootstrap.result != 'cancelled' && needs.apply-edge.result != 'failure' && needs.apply-edge.result != 'cancelled' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    environment: develop
+    environment: production
     permissions:
       contents: read
       id-token: write
@@ -396,7 +392,7 @@ jobs:
     if: ${{ contains(fromJson(needs.detect.outputs.stacks), 'observability') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    environment: shared   # platform blast radius — auto-apply on merge (parity with observability-alerting); the PR review is the gate
+    environment: production   # platform blast radius — auto-apply on merge (parity with observability-alerting); the PR review is the gate
     permissions:
       contents: read
       id-token: write
@@ -537,7 +533,7 @@ jobs:
     if: ${{ contains(fromJson(needs.detect.outputs.stacks), 'adaptive-metrics') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    environment: shared   # platform blast radius — auto-apply on merge (parity with observability-alerting); the PR review is the gate
+    environment: production   # platform blast radius — auto-apply on merge (parity with observability-alerting); the PR review is the gate
     permissions:
       contents: read
       id-token: write
@@ -748,7 +744,7 @@ jobs:
     if: ${{ always() && contains(fromJson(needs.detect.outputs.stacks), 'storage-dev') && needs.apply-bootstrap.result != 'failure' && needs.apply-bootstrap.result != 'cancelled' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    environment: develop
+    environment: production
     permissions:
       contents: read
       id-token: write
