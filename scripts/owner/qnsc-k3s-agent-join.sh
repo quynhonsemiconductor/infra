@@ -44,10 +44,12 @@ else
 	say "driver already installed: $(nvidia-smi --query-gpu=driver_version --format=csv,noheader)"
 fi
 
-# 2. hand the runtime to containerd through k3s's own templating
-$SUDO nvidia-ctk runtime configure --runtime=containerd \
-	--config=/var/lib/rancher/k3s/agent/etc/containerd/config.toml.tmpl 2>/dev/null ||
-	$SUDO mkdir -p /var/lib/rancher/k3s/agent/etc/containerd
+# 2. containerd runtime: nothing to write. k3s detects nvidia-container-runtime on
+#    the PATH and adds the `nvidia` runtime to its own generated containerd config
+#    (the gitops RuntimeClass `nvidia` selects it). Do NOT run `nvidia-ctk runtime
+#    configure` against config.toml.tmpl: it writes a near-empty template that
+#    replaces k3s's, and the node loses its CNI ("cni plugin not initialized").
+$SUDO rm -f /var/lib/rancher/k3s/agent/etc/containerd/config.toml.tmpl
 
 # 3. the agent config: server, label, taint (the token is appended in step 4).
 $SUDO install -d -m 0755 /etc/rancher/k3s
