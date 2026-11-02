@@ -116,23 +116,14 @@ resource "cloudflare_ruleset" "assets_nosniff" {
 # =============================================================================
 removed {
   from = aws_acm_certificate.wildcard
-  lifecycle {
-    destroy = false
-  }
 }
 
 removed {
   from = cloudflare_dns_record.acm_validation
-  lifecycle {
-    destroy = false
-  }
 }
 
 removed {
   from = aws_acm_certificate_validation.wildcard
-  lifecycle {
-    destroy = false
-  }
 }
 
 # =============================================================================
