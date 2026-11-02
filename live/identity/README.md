@@ -336,7 +336,9 @@ three **existing dev service apps** (live since 2026-10-18) — all ADOPTED via
 import. The **dev certificates are adopted too** (SA decision — no rotation):
 imported by `<app object id>/certificate/<keyId>`, value = the exact public
 certificate already in 1Password ("Entra mail cert – <product>-dev –
-certificate"). Only **rova_prod's certificate is created** (new keypair).
+certificate"). **rova_prod's certificate is adopted the same way**: the hand-made
+app already carries it (2026-11-01; its combined PEM is
+`kv-qnsc-prod/rova-prod-graph-cert`), so nothing is created in this stack.
 Import id form (azuread 3.10 parser): EXACTLY
 `<app OBJECT id>/certificate/<keyId>` — no `/applications/` prefix.
 NO opshub/kb PROD apps: those products are not live in prod; their service
@@ -347,13 +349,12 @@ rova SIGN-IN apps keep NO application permissions of their own (the dev
 sign-in apps still hold `User.Invite.All` today until rova's P0-7 code moves
 the invite to the Service cert — a rova-track change, not this stack's).
 
-1. Hand-create the ONE missing registration (skip the ones already live;
-   the export loop in step 2 refuses a name that matches 0 or > 1 apps):
-   "Rova Prod Service" — single tenant, no redirect URI, no client secret,
-   notes = `github.com/quynhonsemiconductor/rova`. If the wizard added a
-   default delegated `User.Read`, leave it: the code models NO delegated
-   permission for rova, so the plan REMOVING it is an intended, named change
-   (step 4).
+1. The ONE registration that was missing, "Rova Prod Service", was hand-made
+   on 2026-11-01 (single tenant, no redirect URI, no client secret, certificate
+   attached, `User.Invite.All` consented) and is imported like the others. If
+   it still carries the wizard's default delegated `User.Read`, leave it: the
+   code models NO delegated permission for rova, so the plan REMOVING it is an
+   intended, named change (step 4).
 
 2. Export the live shape (umask first; the loop prints STOP and keeps going —
    it never `exit`s your shell; read the summary before continuing):
@@ -393,51 +394,64 @@ the invite to the Service cert — a rova-track change, not this stack's).
      ```;
    - `TF_VAR_mail_service_sp_object_ids` — the SP object ids
      (`id` field of each `*-sp.json`);
-   - `TF_VAR_mail_service_cert_key_ids` — the three dev `keyId`s:
+   - `TF_VAR_mail_service_cert_key_ids` — the four `keyId`s (each app has exactly
+     one certificate credential; the check below fails otherwise):
 
      ```sh
+     for f in rova-prod rova-dev opshub-dev kb-dev; do
+       n=$(jq '.keyCredentials|length' "$f-service-app.json")
+       [ "$n" = "1" ] || echo "STOP: $f-service-app.json has $n key credentials, expected 1"
+     done
      jq -n \
+       --slurpfile p rova-prod-service-app.json \
        --slurpfile a rova-dev-service-app.json \
        --slurpfile b opshub-dev-service-app.json \
        --slurpfile c kb-dev-service-app.json \
-       '{rova_dev:$a[0].keyCredentials[0].keyId, opshub_dev:$b[0].keyCredentials[0].keyId, kb_dev:$c[0].keyCredentials[0].keyId}'
+       '{rova_prod:$p[0].keyCredentials[0].keyId, rova_dev:$a[0].keyCredentials[0].keyId, opshub_dev:$b[0].keyCredentials[0].keyId, kb_dev:$c[0].keyCredentials[0].keyId}'
      ```
 
    - `TF_VAR_mail_service_certificates` — one PEM PUBLIC certificate per app.
      Dev: the EXACT live certificates from 1Password ("Entra mail cert –
      <product>-dev – certificate") — different bytes would plan a certificate
-     replacement, which is NO-GO. rova_prod: the owner's NEW keypair, made in
-     a private temp dir:
+     replacement, which is NO-GO. rova_prod: the PUBLIC half of the certificate
+     already on the app, taken from the vault (`openssl x509` reads only the
+     first CERTIFICATE block and writes only it: the private key in the same
+     file is neither read out nor printed):
 
      ```sh
      umask 077
      mkdir -p "$HOME/keys"
-     keydir=$(mktemp -d "$HOME/keys/mail-rova-prod.XXXXXX")   # outside iCloud-synced folders
-     openssl req -x509 -newkey rsa:2048 -nodes -days 730 \
-       -keyout "$keydir/rova-prod.key" -out "$keydir/rova-prod.crt" \
-       -subj "/CN=qnsc-rova-prod-service"
+     az keyvault secret show --vault-name kv-qnsc-prod --name rova-prod-graph-cert \
+       --query value -o tsv | openssl x509 -outform PEM > "$HOME/keys/rova-prod.crt"
+     grep -c "PRIVATE KEY" "$HOME/keys/rova-prod.crt"   # must print 0
      ```
+
+     Its fingerprint must equal the app's key credential (a different
+     certificate would plan a replacement, NO-GO).
 
      Build the JSON with `jq --rawfile` so multi-line PEMs stay intact
      (adjust the dev paths to wherever 1Password wrote them):
 
      ```sh
      jq -n \
-       --rawfile rova_prod "$keydir/rova-prod.crt" \
+       --rawfile rova_prod "$HOME/keys/rova-prod.crt" \
        --rawfile rova_dev "$HOME/keys/rova-dev.crt" \
        --rawfile opshub_dev "$HOME/keys/opshub-dev.crt" \
        --rawfile kb_dev "$HOME/keys/kb-dev.crt" \
        '{rova_prod:$rova_prod, rova_dev:$rova_dev, opshub_dev:$opshub_dev, kb_dev:$kb_dev}'
      ```
 
-     A private key in any value fails the variable validation. KEEP the key
-     files — they are the source of the vault secrets in step 5.
+     A private key in any value fails the variable validation.
 
-4. `tofu plan` go/no-go — the plan must read EXACTLY: **8 imports** (4
-   applications + 4 service principals) + **3 certificate imports** (the dev
-   certs) + **1 certificate create** (rova_prod) + **1 application update**
-   (the hand-created rova_prod app: the wizard-default delegated `User.Read`
-   REMOVED, `User.Invite.All` (application role) ADDED) — nothing else.
+4. `tofu plan` go/no-go — the mail part of the plan must read EXACTLY: **8
+   imports** (4 applications + 4 service principals) + **4 certificate
+   imports** (rova_prod and the three dev certs) — and at most ONE application
+   update, on rova_prod only: the wizard-default delegated `User.Read` REMOVED
+   and/or the `User.Invite.All` application role ADDED, whichever the export
+   shows is not yet in line (the role is already consented on the live app, so
+   the plan may show no permission line at all). NO certificate create. A
+   plan that creates a certificate means `rova_prod` is missing from
+   `mail_service_cert_key_ids`: STOP.
    Any change on an imported app — a permission add or removal, a redirect
    URI, a secret credential — is NO-GO, and **any certificate showing
    "must be replaced" is STOP** (the dev certs are imported write-only; see
@@ -451,15 +465,15 @@ the invite to the Service cert — a rova-track change, not this stack's).
    ```
 
 5. After apply: record `mail_service_client_ids` (rova_prod's is the value
-   rova's Graph config records; the dev values land in the dev bundles).
-   Then write the combined PEM per app into its vault — the FILE path is the
-   argv, the value never is. Dev combined PEMs already exist (1Password, key +
-   cert — the pre-2026-10-18 shape); rova_prod's is built from the new
-   keypair:
+   rova's Graph config records; the dev values land in the dev bundles). The
+   vault secrets already exist (rova_prod: `kv-qnsc-prod/rova-prod-graph-cert`,
+   written when the app was hand-made; dev: 1Password combined PEMs, key +
+   cert). Nothing is written to a vault in this step. A vault write is needed
+   only on rotation: the FILE path is the argv, the value never is:
 
    ```sh
-   pem=$(mktemp /tmp/rova-prod-combined.XXXXXX) && chmod 600 "$pem"
-   cat "$keydir/rova-prod.key" "$keydir/rova-prod.crt" > "$pem"
+   pem=$(mktemp /tmp/graph-combined.XXXXXX) && chmod 600 "$pem"
+   cat <new key pem> <new cert pem> > "$pem"
    az keyvault secret set --vault-name kv-qnsc-prod --name rova-prod-graph-cert --file "$pem"
    rm -f "$pem"   # after the vault holds it
    # dev, same shape: kv-qnsc-dev, names rova-dev-graph-cert / opshub-dev-graph-cert / kb-dev-graph-cert
@@ -494,25 +508,23 @@ the owner.
 
 ### Owner steps, in order
 
-1. **Hand-create the registration** "Rova Prod Service" (Entra admin center,
-   App registrations, New): single tenant, NO redirect URI, NO client secret,
-   notes `github.com/quynhonsemiconductor/rova`. Leave the wizard's `User.Read`
-   if present; the plan removes it (named in the go/no-go above).
+1. **The registration "Rova Prod Service" already exists** (hand-made 2026-11-01,
+   single tenant, no redirect URI, no secret, certificate attached, `User.Invite.All`
+   consented). Nothing to create; it is imported.
 2. **Export** the live shape and build the variables: "Mail service apps"
    steps 2 and 3 above, plus the sign-in export in "Sign-in apps" step 1.
-3. **Generate the rova prod keypair** (mail step 3). Keep the key; only the
-   public certificate goes into `TF_VAR_mail_service_certificates`.
+3. **No new keypair**: the app already has its certificate. Extract the public
+   half from the vault (mail step 3) for `TF_VAR_mail_service_certificates`.
 4. **`tofu plan`** with the full variable set below. Mail go/no-go: 8 imports
-   (apps + SPs), 3 dev certificate imports, 1 certificate create, 1 application
-   update (rova_prod: `User.Read` removed, `User.Invite.All` added), nothing
-   replaced. This stack also carries `proxmox.tf` and the sign-in apps: read
+   (apps + SPs), 4 certificate imports, at most 1 application update (rova_prod,
+   see step 4 above), no certificate create, nothing replaced. This stack also carries `proxmox.tf` and the sign-in apps: read
    their sections for their expected lines. Any "must be replaced" is a STOP.
 5. **`tofu apply`** (owner, local, `--profile`/`az login` as in "First apply").
 6. **Admin consent** for `User.Invite.All`:
    `az ad app permission admin-consent --id <rova prod service app id>`.
-7. **Key Vault certificate** (the file path is argv, never the value), mail
-   step 5: `az keyvault secret set --vault-name kv-qnsc-prod --name rova-prod-graph-cert --file <combined pem>`,
-   then delete the temp file. The on-prem worker reads it through ESO from
+7. **Key Vault certificate**: nothing to write. `kv-qnsc-prod/rova-prod-graph-cert`
+   already holds the combined PEM; the apply only registers its public half in
+   Entra by import. The on-prem worker reads the secret through ESO from
    `kv-qnsc-prod`; ESO authenticates with its own store credential (see "Phase 1"
    and the workload-identity PR), unrelated to this secret.
 8. **Exchange** (PowerShell 7, ExchangeOnlineManagement, Exchange admin role):
@@ -550,8 +562,8 @@ product-docs), so the owner reads the rest from Entra or `az` as shown.
 | `TF_VAR_proxmox_admin_object_ids` | JSON list of user object ids | Entra, Users, Object ID; keep equal to the platform admins group |
 | `TF_VAR_mail_service_object_ids` | JSON, 4 service app object ids | mail export `*-app.json` `.id` |
 | `TF_VAR_mail_service_sp_object_ids` | JSON, 4 service SP object ids | mail export `*-sp.json` `.id` |
-| `TF_VAR_mail_service_cert_key_ids` | JSON, 3 dev key GUIDs | `.keyCredentials[0].keyId` of the three dev service apps |
-| `TF_VAR_mail_service_certificates` | JSON, 4 PEM public certs | dev: 1Password "Entra mail cert – <product>-dev – certificate"; rova_prod: the new `.crt` |
+| `TF_VAR_mail_service_cert_key_ids` | JSON, 4 key GUIDs (rova_prod included) | `.keyCredentials[0].keyId` of each service app export |
+| `TF_VAR_mail_service_certificates` | JSON, 4 PEM public certs | dev: 1Password "Entra mail cert – <product>-dev – certificate"; rova_prod: `az keyvault secret show ... | openssl x509` (mail step 3) |
 
 The `existing_*` and `mail_service_*` ids are public identifiers, not secrets,
 and can be read with read-only `az ad app list|show` / `az ad sp show`.
