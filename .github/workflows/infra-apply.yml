@@ -297,6 +297,9 @@ jobs:
           TF_VAR_admin_hostnames: ${{ secrets.ADMIN_HOSTNAMES }}
           # WARP split-tunnel exclude = the default list minus this range. Same secret live/onprem uses.
           TF_VAR_admin_private_cidr: ${{ secrets.ADMIN_PRIVATE_CIDR }}
+          # Extra WARP split-tunnel excludes (partner VPN endpoints), JSON list of {address, description}.
+          # A secret, not a var: partner addresses must not print in public logs.
+          TF_VAR_warp_extra_excludes: ${{ secrets.WARP_EXTRA_EXCLUDES || '[]' }}
           TF_VAR_tunnels_exist: ${{ vars.TUNNELS_EXIST }}
           TF_VAR_grp_platform_admins_id: ${{ vars.ENTRA_GRP_PLATFORM_ADMINS_ID }}
           TF_VAR_grp_developers_id: ${{ vars.ENTRA_GRP_DEVELOPERS_ID }}

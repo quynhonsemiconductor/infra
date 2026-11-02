@@ -113,7 +113,8 @@ locals {
     ) * pow(2, 32 - i)
   }
 
-  warp_exclude = concat(local.warp_exclude_v4, local.warp_default_exclude_v6)
+  # extra_excludes: partner VPN endpoints etc. (var.warp_extra_excludes), appended as-is.
+  warp_exclude = concat(local.warp_exclude_v4, var.warp_extra_excludes, local.warp_default_exclude_v6)
 }
 
 resource "cloudflare_zero_trust_device_custom_profile" "platform_admins" {

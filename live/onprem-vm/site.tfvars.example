@@ -1,0 +1,48 @@
+# ── Site values for live/onprem-vm ──────────────────────────────────────────
+#
+# Copy to site.tfvars (git-ignored) and change THAT file for a new site:
+#
+#   cp site.tfvars.example site.tfvars
+#   chmod 600 site.tfvars
+#
+# Nothing here is a credential: the Proxmox endpoint and API token are
+# environment variables (TF_VAR_proxmox_*), so this file can be copied between
+# sites without carrying access. The VLAN tag is REQUIRED — it is site
+# topology, which this public repo does not carry.
+
+proxmox_node        = "pve01"
+proxmox_ssh_address = "192.0.2.10"
+
+vm_id   = 100
+vm_name = "k3s-01"
+
+datastore_id = "local-zfs"
+
+vm_cores     = 28
+vm_memory_mb = 36864
+
+os_disk_gb   = 120
+data_disk_gb = 1200
+
+bridge = "vmbr0"
+
+# The tag `qm config 100` shows as tag=<n> on net0. Replace before applying:
+# 0 means "untagged", which would move a tagged node.
+# vlan_id = 10   # only when net0 carries a tag; the live k3s-01 has none
+
+# ── ai-01 (GPU agent node) ────────────────────────────────────────────────
+ai01_vm_id     = 101
+ai01_vm_name   = "ai-01"
+ai01_cores     = 8
+ai01_memory_mb = 20480
+ai01_data_disk_gb = 300
+# The GPU node's address on the same VLAN (replace: 192.0.2.x is documentation).
+k3s01_ipv4_address = "192.0.2.20/24"
+ai01_ipv4_address  = "192.0.2.21/24"
+ipv4_gateway      = "192.0.2.1"
+dns_servers       = ["192.0.2.1"]
+
+# Operator keys for ai-01's cloud-init user (public halves only).
+ssh_public_keys = [
+  "ssh-ed25519 AAAA... owner@laptop",
+]

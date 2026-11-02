@@ -2,8 +2,8 @@
 #
 # One certificate-only Service app per product per env, named
 # "<Product> <Env> Service". The registrations are ADOPTED via import (no new
-# ids): rova prod (the owner hand-creates the registration FIRST — README
-# "Mail service apps") and the three EXISTING dev service apps (live since
+# ids): rova prod (hand-made by the owner on 2026-11-01, already with its
+# certificate — README "Mail service apps") and the three EXISTING dev service apps (live since
 # 2026-10-18, reconciled to the 2026-10-28 exports). NO opshub/kb PROD apps —
 # those products are not live in prod; their service apps come with their own
 # prod PRs and stay draft until then.
@@ -14,8 +14,8 @@
 # (ObjectSubResourceID: 3 slash-parts, bare UUID, no /applications/ prefix;
 # keyIds via TF_VAR_mail_service_cert_key_ids — public identifiers), the
 # VALUE being the public certificate already in 1Password ("Entra mail cert –
-# <product>-dev – certificate"). Only rova_prod's certificate is CREATED (new
-# keypair, README). ignore_changes on value/encoding keeps the imported certs
+# <product>-dev – certificate"). rova_prod's certificate is ADOPTED too (the
+# hand-made app already has it; README). ignore_changes on value/encoding keeps the imported certs
 # imported (see the resource comment).
 #
 # Certificate auth ONLY (§7.2): the PUBLIC half is terraformed from
@@ -77,7 +77,7 @@ variable "mail_service_object_ids" {
     opshub_dev = string
     kb_dev     = string
   })
-  description = "Object ids of the EXISTING mail service-app registrations (adopted, not replaced). rova_prod's registration is hand-created by the owner FIRST (README). TF_VAR_mail_service_object_ids exported by the owner, never committed."
+  description = "Object ids of the EXISTING mail service-app registrations (adopted, not replaced). rova_prod's registration was hand-made by the owner on 2026-11-01 (README). TF_VAR_mail_service_object_ids exported by the owner, never committed."
 }
 
 variable "mail_service_sp_object_ids" {
@@ -92,11 +92,12 @@ variable "mail_service_sp_object_ids" {
 
 variable "mail_service_cert_key_ids" {
   type = object({
+    rova_prod  = string
     rova_dev   = string
     opshub_dev = string
     kb_dev     = string
   })
-  description = "keyId of the EXISTING certificate credential on each dev service app, from the owner's `az ad app show` export (keyCredentials[].keyId) — public identifiers, used only to build the import ids. TF_VAR_mail_service_cert_key_ids (JSON), never committed."
+  description = "keyId of the EXISTING certificate credential on each service app (rova_prod included: hand-made, already carries its certificate), from the owner's `az ad app show` export (keyCredentials[].keyId) — public identifiers, used only to build the import ids. TF_VAR_mail_service_cert_key_ids (JSON), never committed."
 
   validation {
     condition = alltrue([
@@ -114,7 +115,7 @@ variable "mail_service_certificates" {
     opshub_dev = string
     kb_dev     = string
   })
-  description = "PEM PUBLIC certificate per app, keyed like local.mail_service_apps. Dev values are the certificates ALREADY LIVE (1Password 'Entra mail cert – <product>-dev – certificate' — the same bytes the export shows); rova_prod's comes from the owner's NEW keypair (README step 3). Passed through TF_VAR_mail_service_certificates, never committed. A private key must never be passed."
+  description = "PEM PUBLIC certificate per app, keyed like local.mail_service_apps. Dev values are the certificates ALREADY LIVE (1Password 'Entra mail cert – <product>-dev – certificate' — the same bytes the export shows); rova_prod's is the PUBLIC half of the certificate already on the hand-made app (extracted from kv-qnsc-prod/rova-prod-graph-cert, README step 3). Passed through TF_VAR_mail_service_certificates, never committed. A private key must never be passed."
 
   validation {
     condition = alltrue([
@@ -217,18 +218,25 @@ import {
 # Dev certificates: ADOPTED (SA decision — no rotation). Import id shape
 # (azuread 3.10 parse.CertificateID = ObjectSubResourceID): exactly
 # "{app OBJECT id}/certificate/{keyId}" — 3 slash-parts, NO /applications/
-# prefix. rova_prod's certificate is the one create in this apply.
+# prefix. rova_prod's certificate is ADOPTED the same way: the hand-made app
+# already carries the credential whose public half is inside
+# kv-qnsc-prod/rova-prod-graph-cert, so creating a second one would add a
+# duplicate key credential.
+import {
+  to = azuread_application_certificate.mail_service["rova_prod"]
+  id = "${var.mail_service_object_ids.rova_prod}/certificate/${var.mail_service_cert_key_ids.rova_prod}"
+}
 import {
   to = azuread_application_certificate.mail_service["rova_dev"]
-  id = "/applications/${var.mail_service_object_ids.rova_dev}/certificate/${var.mail_service_cert_key_ids.rova_dev}"
+  id = "${var.mail_service_object_ids.rova_dev}/certificate/${var.mail_service_cert_key_ids.rova_dev}"
 }
 import {
   to = azuread_application_certificate.mail_service["opshub_dev"]
-  id = "/applications/${var.mail_service_object_ids.opshub_dev}/certificate/${var.mail_service_cert_key_ids.opshub_dev}"
+  id = "${var.mail_service_object_ids.opshub_dev}/certificate/${var.mail_service_cert_key_ids.opshub_dev}"
 }
 import {
   to = azuread_application_certificate.mail_service["kb_dev"]
-  id = "/applications/${var.mail_service_object_ids.kb_dev}/certificate/${var.mail_service_cert_key_ids.kb_dev}"
+  id = "${var.mail_service_object_ids.kb_dev}/certificate/${var.mail_service_cert_key_ids.kb_dev}"
 }
 
 # Client ids are public identifiers — rova #727 records the rova_prod one as

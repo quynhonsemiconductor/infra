@@ -23,7 +23,7 @@
 # The Stage-D flip procedure assumed a human reads the probe id out of the SM
 # UI and hard-codes it. The fast track does not have a human in the loop: the
 # probes data source reads the SM API with the same token the resources use and
-# pins the name "Frankfurt" in git. One probe for the whole estate (§12).
+# pins the name "Singapore" in git. One probe for the whole estate (§12).
 #
 # ── GATE ────────────────────────────────────────────────────────────────────
 # `uptime_checks_enabled` defaults true: the PR is the review, and the merge is
@@ -54,7 +54,7 @@ resource "grafana_synthetic_monitoring_check" "rova_dev_readyz" {
   frequency = 300000
   timeout   = 5000
   enabled   = true
-  probes    = [data.grafana_synthetic_monitoring_probes.main[0].probes["Frankfurt"]]
+  probes    = [data.grafana_synthetic_monitoring_probes.main[0].probes["Singapore"]]
   # No alert_sensitivity: SM legacy alerting is forbidden on new installations
   # ("legacy alerts usage is forbidden"); paging is the grafana_rule_group below
   # on probe_success.
@@ -67,6 +67,9 @@ resource "grafana_synthetic_monitoring_check" "rova_dev_readyz" {
   settings {
     http {
       method = "GET"
+      # The endpoint answers 200 JSON {"status":"ok",...}. A 200 alone also comes
+      # from the SPA index.html when routing is wrong, so assert the body too.
+      fail_if_body_not_matches_regexp = ["\"status\":\"ok\""]
     }
   }
 }
@@ -156,7 +159,7 @@ resource "grafana_synthetic_monitoring_check" "opshub_dev_readyz" {
   frequency = 300000
   timeout   = 5000
   enabled   = true
-  probes    = [data.grafana_synthetic_monitoring_probes.main[0].probes["Frankfurt"]]
+  probes    = [data.grafana_synthetic_monitoring_probes.main[0].probes["Singapore"]]
   # No alert_sensitivity: SM legacy alerting is forbidden on new installations
   # ("legacy alerts usage is forbidden"); paging is the grafana_rule_group below
   # on probe_success.
@@ -169,6 +172,9 @@ resource "grafana_synthetic_monitoring_check" "opshub_dev_readyz" {
   settings {
     http {
       method = "GET"
+      # The endpoint answers 200 JSON {"status":"ok",...}. A 200 alone also comes
+      # from the SPA index.html when routing is wrong, so assert the body too.
+      fail_if_body_not_matches_regexp = ["\"status\":\"ok\""]
     }
   }
 }

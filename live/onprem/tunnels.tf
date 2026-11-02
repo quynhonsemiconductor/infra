@@ -97,6 +97,28 @@ locals {
   access_team_name = split(".", data.cloudflare_zero_trust_organization.this.auth_domain)[0]
 }
 
+# ── ArgoCD UI (optional admin door label `argocd`) ──────────────────────────
+#
+# Served by the in-cluster cloudflared (this tunnel): origin = the ArgoCD server
+# Service over plain HTTP (the chart runs `server.insecure`; TLS ends at
+# Cloudflare). Access (platform admins + amr=mfa, live/edge, same app shape as
+# pve/pbs) is the door; cloudflared also checks its JWT. The hostname is an
+# admin-door hostname (a secret in this public repo), so it only ever appears
+# in sensitive attributes. Absent from ADMIN_HOSTNAMES = nothing here.
+locals {
+  argocd_enabled = contains(nonsensitive(keys(var.admin_hostnames)), "argocd")
+}
+
+data "cloudflare_zero_trust_access_application" "argocd" {
+  count = local.argocd_enabled ? 1 : 0
+
+  account_id = var.cloudflare_account_id
+  filter = {
+    name  = var.admin_hostnames["argocd"]
+    exact = true
+  }
+}
+
 resource "cloudflare_zero_trust_tunnel_cloudflared" "qnsc_apps" {
   account_id = var.cloudflare_account_id
   name       = "qnsc-apps"
@@ -126,6 +148,18 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "qnsc_apps" {
             team_name = local.access_team_name
             aud_tag   = [data.cloudflare_zero_trust_access_application.dev[r.hostname].aud]
           } : null
+        }
+      }],
+      [for h in data.cloudflare_zero_trust_access_application.argocd : {
+        hostname = var.admin_hostnames["argocd"]
+        path     = null
+        service  = "http://argocd-server.argocd.svc:80"
+        origin_request = {
+          access = {
+            required  = true
+            team_name = local.access_team_name
+            aud_tag   = [h.aud]
+          }
         }
       }],
       [

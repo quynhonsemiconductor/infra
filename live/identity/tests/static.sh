@@ -88,4 +88,11 @@ KEYS=$(sed -n '/^locals {/,/^}/s/^[[:space:]]*\([a-z]*\)[[:space:]]*=[[:space:]]
 platform
 prod" ] || fail "local.eso keys are not exactly dev/prod/platform: $KEYS"
 
+# 5. Certificate import ids: azuread 3.10 parses EXACTLY "{app object id}/certificate/{keyId}"
+#    (3 slash-parts). A "/applications/" prefix fails the whole plan at parse time.
+grep -vE '^[[:space:]]*#' mail.tf | grep -qE '/applications/[^"]*/certificate/' &&
+	fail "mail.tf: a certificate import id has the /applications/ prefix (azuread 3.10 rejects it)"
+grep -vE '^[[:space:]]*#' mail.tf | grep -qE 'azuread_application_certificate\.mail_service\["rova_prod"\]' ||
+	fail "mail.tf: rova_prod certificate is not imported (a create would add a duplicate credential)"
+
 echo "PASS: static guard"

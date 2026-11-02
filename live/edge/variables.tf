@@ -75,3 +75,16 @@ variable "cloudflare_account_id" {
     error_message = "cloudflare_account_id must be the 32-hex-character Cloudflare account id (CI: the CLOUDFLARE_ACCOUNT_ID Actions variable)."
   }
 }
+
+variable "warp_extra_excludes" {
+  description = "Extra WARP split-tunnel excludes for the platform-admins profile, e.g. a partner's WireGuard endpoint (/32), so another VPN is not tunnelled inside WARP. JSON from the WARP_EXTRA_EXCLUDES secret (public repo: partner addresses stay out of code and logs)."
+  type = list(object({
+    address     = string
+    description = string
+  }))
+  default = []
+  validation {
+    condition     = alltrue([for e in var.warp_extra_excludes : can(cidrhost(e.address, 0)) && length(e.description) > 0])
+    error_message = "Each warp_extra_excludes entry needs a CIDR address (use /32 for one host) and a description."
+  }
+}
