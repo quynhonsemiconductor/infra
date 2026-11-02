@@ -1,15 +1,25 @@
 # =============================================================================
 # P0 data-safety alerts for the on-prem prod data plane (audit G-06, PLAN
-# 2026-11-02). All five read series that gitops platform/alloy keeps in its
-# allowlists; each metric name was proven in Grafana before this merged (see the
-# PR body). Gated like the rest of the on-prem set by `onprem_alerts_enabled`.
+# 2026-11-02). All of them read series that gitops platform/alloy keeps in its
+# allowlists. Gated like the rest of the on-prem set by `onprem_alerts_enabled`.
+#
+# STATUS: the metric names are NOT yet proven in Grafana by this PR. The SA
+# proves each one (PromQL count) after gitops#98 (and the follow-up that adds
+# kube_job_owner / kube_job_status_start_time) is synced; this stays a draft
+# until then.
 #
 # no_data_state is per rule and deliberate:
-#   Alerting  the SIGNAL is "this thing happened recently" (a backup, a dump, a
-#             redis_up of 1). If the series disappears the evidence disappears
-#             with it, so silence would be the wrong answer.
-#   OK        the series only exists while there is something wrong (failed
-#             Jobs) or the metric set is open-ended (PVCs).
+#   Alerting  the SIGNAL is "this thing happened recently" (a backup, a redis_up
+#             of 1). If the series disappears the evidence disappears with it,
+#             so silence would be the wrong answer.
+#   OK        the series only exists while something is wrong (failed Jobs),
+#             the metric set is open-ended (PVCs), or the series legitimately
+#             does not exist yet (the dump CronJob before its first success).
+#
+# Labels: env/severity route through the notification policy. Prod is
+# env=production (Teams + email). Dev is env=development, severity warning, no
+# `paging` label, so it is email only. product=rova only where the rule is
+# about rova's own data; generic rules are product=platform.
 # =============================================================================
 locals {
   onprem_p0_rules = {
@@ -23,6 +33,9 @@ locals {
       threshold = 26 * 3600
       for       = "15m"
       no_data   = "Alerting"
+      product   = "rova"
+      env       = "production"
+      severity  = "critical"
       summary   = "No successful pg-rova base backup for over 26 hours (or the backup metric is missing). WAL archiving alone cannot restore; check the ScheduledBackup and the R2 token."
     }
     pg_rova_dump_age = {
@@ -31,17 +44,31 @@ locals {
       op        = "gt"
       threshold = 26 * 3600
       for       = "15m"
-      no_data   = "Alerting"
-      summary   = "The pg-rova-dump CronJob has not succeeded for over 26 hours (or kube-state-metrics has no record of it). The locked nightly dump is the immutable restore source."
+      # OK: the series does not exist until the CronJob's first success, and a
+      # fresh cluster must not page before that. Once it exists, age keeps
+      # growing and the rule fires. (A dead kube-state-metrics is a separate
+      # signal: the pg-rova readiness rule and the node rules read it too.)
+      no_data  = "OK"
+      product  = "rova"
+      env      = "production"
+      severity = "critical"
+      summary  = "The pg-rova-dump CronJob has not succeeded for over 26 hours. The locked nightly dump is the immutable restore source."
     }
     failed_jobs = {
-      name      = "k3s-job-failed"
-      expr      = "max by (namespace, job_name) (kube_job_failed{condition=\"true\", namespace=~\"data-prod|rova-prod|restore-test\"})"
+      name = "k3s-job-failed"
+      # The LATEST Job of each CronJob only (a later success clears the alert),
+      # plus every Job that no CronJob owns (ArgoCD hook Jobs: migrator PreSync,
+      # role-timeouts, restore test), which are replaced on the next sync.
+      # Needs kube_job_owner and kube_job_status_start_time in the allowlist.
+      expr      = "(max by (namespace, job_name) (kube_job_failed{condition=\"true\", namespace=~\"data-prod|rova-prod|restore-test\"}) and on (namespace, job_name) ((kube_job_status_start_time * on (namespace, job_name) group_left (owner_name) max by (namespace, job_name, owner_name) (kube_job_owner{owner_kind=\"CronJob\"})) == on (namespace, owner_name) group_left () max by (namespace, owner_name) (kube_job_status_start_time * on (namespace, job_name) group_left (owner_name) max by (namespace, job_name, owner_name) (kube_job_owner{owner_kind=\"CronJob\"})))) or (max by (namespace, job_name) (kube_job_failed{condition=\"true\", namespace=~\"data-prod|rova-prod|restore-test\"}) unless on (namespace, job_name) kube_job_owner{owner_kind=\"CronJob\"})"
       op        = "gt"
       threshold = 0
       for       = "5m"
       no_data   = "OK"
-      summary   = "Job {{ $labels.namespace }}/{{ $labels.job_name }} failed (migrator PreSync, role-timeouts, restore test or dump)."
+      product   = "platform"
+      env       = "production"
+      severity  = "critical"
+      summary   = "Job {{ $labels.namespace }}/{{ $labels.job_name }} failed and has not been superseded by a successful run."
     }
     valkey_down = {
       name      = "k3s-valkey-prod-down"
@@ -50,16 +77,34 @@ locals {
       threshold = 1
       for       = "5m"
       no_data   = "Alerting"
+      product   = "rova"
+      env       = "production"
+      severity  = "critical"
       summary   = "valkey-rova exporter reports redis_up below 1 (or is not scraped) for 5 minutes. rova rate limits and security controls depend on it."
     }
-    pvc_usage = {
-      name      = "k3s-pvc-over-80-percent"
-      expr      = "max by (namespace, persistentvolumeclaim) (kubelet_volume_stats_used_bytes / kubelet_volume_stats_capacity_bytes)"
+    pvc_usage_prod = {
+      name      = "k3s-pvc-over-80-percent-prod"
+      expr      = "max by (namespace, persistentvolumeclaim) (kubelet_volume_stats_used_bytes{namespace=~\"data-prod|rova-prod\"} / kubelet_volume_stats_capacity_bytes{namespace=~\"data-prod|rova-prod\"})"
       op        = "gt"
       threshold = 0.8
       for       = "15m"
       no_data   = "OK"
+      product   = "platform"
+      env       = "production"
+      severity  = "critical"
       summary   = "PVC {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} is over 80% full."
+    }
+    pvc_usage_dev = {
+      name      = "k3s-pvc-over-80-percent-dev"
+      expr      = "max by (namespace, persistentvolumeclaim) (kubelet_volume_stats_used_bytes{namespace=~\"data-dev|rova-dev|opshub-dev|kb-dev|ai|ai-lab|platform\"} / kubelet_volume_stats_capacity_bytes{namespace=~\"data-dev|rova-dev|opshub-dev|kb-dev|ai|ai-lab|platform\"})"
+      op        = "gt"
+      threshold = 0.8
+      for       = "15m"
+      no_data   = "OK"
+      product   = "platform"
+      env       = "development"
+      severity  = "warning"
+      summary   = "Dev PVC {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} is over 80% full."
     }
   }
 }
@@ -129,9 +174,9 @@ resource "grafana_rule_group" "onprem_data_p0" {
       }
 
       labels = {
-        product  = "rova"
-        env      = "production"
-        severity = "critical"
+        product  = r.value.product
+        env      = r.value.env
+        severity = r.value.severity
       }
 
       annotations = {
