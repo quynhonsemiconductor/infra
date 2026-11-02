@@ -71,7 +71,8 @@ provider "grafana" {
 # now owned by live/observability-alerting (its plan is "No changes"). With the alias gone,
 # OpenTofu refuses to plan at all ("Provider configuration not present ... (orphan)").
 #
-# `removed { destroy = false }` forgets an object without touching it, but OpenTofu still needs
+# A bare `removed { from = ... }` forgets an object without destroying it (OpenTofu 1.9, the CI version, has no
+# `lifecycle` option on `removed`; forgetting is its only behaviour), but OpenTofu still needs
 # the ORIGINAL provider configuration to refresh the object first. So the alias comes back, as
 # a READ-ONLY bridge: it is configured from this stack's own last-applied outputs (the instance
 # URL and the stack service-account token, the same two values live/observability-alerting
@@ -91,6 +92,7 @@ data "terraform_remote_state" "self" {
   }
 }
 
+# tflint-ignore: terraform_unused_declarations (used only by the orphaned state entries it forgets)
 provider "grafana" {
   alias = "stack"
   url   = data.terraform_remote_state.self.outputs.alerting_grafana_url
@@ -99,43 +101,33 @@ provider "grafana" {
 
 removed {
   from = grafana_folder.company
-  lifecycle { destroy = false }
 }
 removed {
   from = grafana_folder.alerts
-  lifecycle { destroy = false }
 }
 removed {
   from = grafana_folder.dashboards
-  lifecycle { destroy = false }
 }
 removed {
   from = grafana_folder.slos
-  lifecycle { destroy = false }
 }
 removed {
   from = grafana_folder.rally_dashboards
-  lifecycle { destroy = false }
 }
 removed {
   from = grafana_folder.opshub_dashboards
-  lifecycle { destroy = false }
 }
 removed {
   from = grafana_dashboard.system_overview
-  lifecycle { destroy = false }
 }
 removed {
   from = grafana_contact_point.teams
-  lifecycle { destroy = false }
 }
 removed {
   from = grafana_notification_policy.root
-  lifecycle { destroy = false }
 }
 removed {
   from = grafana_rule_group.series_near_cap
-  lifecycle { destroy = false }
 }
 
 variable "grafana_cloud_api_key" {
