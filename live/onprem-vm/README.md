@@ -19,6 +19,11 @@ holds no Proxmox token, and the API endpoint is the admin door.
   should stand on the node, and the version pin. Applied **by hand** on the
   node; nothing here writes into a running VM.
 
+- Proxmox API objects of the host, imported (`proxmox_iam.tf`, `proxmox_host.tf`): the user
+  `terraform@pve`, the API token `tofu`, the role `TofuStartupOrder` (Sys.Modify), the ACL entries, the PCI
+  mapping `gpu-rtx5060ti`, the storages `local` and `local-zfs`, and the vzdump jobs. Provider
+  `bpg/proxmox ~> 0.120`. See "Proxmox API objects" and "Where IaC stops" below.
+
 ## Not managed, on purpose
 
 - `clone {}` — every field is ForceNew, and an import never sets it. Creating a
@@ -88,6 +93,81 @@ ssh qnsc@<node> 'sudo diff -u /etc/rancher/k3s/config.yaml /tmp/config.yaml'
 `files/k3s/version` pins `vX.Y.Z+k3s1`: an upgrade is
 `curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION=<version> sh -` on the node
 after editing the file.
+
+## Proxmox API objects (import, then No changes)
+
+Everything here already exists on pve01, made by hand. `imports.tf` carries the `import {}` blocks; they run
+on the first apply, nothing is created, and the target is a plan that reports **No changes** for them. A diff
+means a `.tf` value disagrees with the host: change the file (or your `site.tfvars`), never the host.
+
+**Site values stay local.** The ACL entries, the PCI mapping details and the vzdump jobs are variables
+(`pve_acls`, `gpu_pci_mapping`, `vzdump_jobs`, default empty/null); put the real ones in the git-ignored
+`site.tfvars` (the SA's copy is `sa-local/onprem-vm.site.tfvars`). `site.tfvars.example` shows the shapes.
+
+Read the facts on pve01 (owner, as root; read-only, nothing here prints a secret):
+
+```sh
+# 1. identity: the user, the token (look at `privsep`), the role, the ACLs
+pveum user list --output-format json | jq '.[] | select(.userid=="terraform@pve")'
+pveum user token list terraform@pve --output-format json            # tokenid "tofu", privsep 0|1
+pveum role list --output-format json | jq '.[] | select(.roleid=="TofuStartupOrder")'
+pveum acl list --output-format json | jq '.[] | select(.ugid | startswith("terraform@pve"))'
+#   one pve_acls entry per row: path, roleid -> role_id, propagate; ugid `terraform@pve` -> user_id,
+#   `terraform@pve!tofu` -> token_id
+
+# 2. the PCI mapping (iommugroup and subsystem-id are what Proxmox validates at VM start)
+pvesh get /cluster/mapping/pci/gpu-rtx5060ti --output-format json
+scripts/owner/pve-gpu-passthrough.sh --check        # also prints a gpu_pci_mapping snippet from sysfs
+
+# 3. storages and backup jobs
+pvesh get /storage --output-format json | jq '.[] | {storage, type, path, pool, content, nodes}'
+pvesh get /storage/local --output-format json
+pvesh get /storage/local-zfs --output-format json
+pvesh get /cluster/backup --output-format json      # one vzdump_jobs entry per row, keyed by its id
+```
+
+The import ids the blocks use (so you can also run them by hand with `tofu import`):
+
+| Resource | Import id |
+|---|---|
+| `proxmox_virtual_environment_role.tofu_startup_order` | `TofuStartupOrder` |
+| `proxmox_virtual_environment_user.terraform` | `terraform@pve` |
+| `proxmox_user_token.tofu` | `terraform@pve!tofu` |
+| `proxmox_acl.managed["<key>"]` | `<path>?<terraform@pve or terraform@pve!tofu>?<role>` |
+| `proxmox_hardware_mapping_pci.gpu[0]` | `gpu-rtx5060ti` |
+| `proxmox_storage_directory.local` / `proxmox_storage_zfspool.local_zfs` | `local` / `local-zfs` |
+| `proxmox_backup_job.managed["<id>"]` | the job id |
+
+Then, as for VM 100: `tofu plan` must say **No changes** for all of them before any apply. Reconcile field
+by field if not (`comment`, `email`, `enabled` of the user; the storage `content` and `thin_provision`;
+the job fields): the host is the authority. Four things to know:
+
+- **The token secret is not in IaC.** `proxmox_user_token.value` is only returned on creation; an import leaves it
+  null, so nothing is rotated and no secret enters state. This stack authenticates with that token, so every one of
+  these resources has `prevent_destroy`, and the token must never be recreated from here.
+- **The user has no `password`**, for the same reason (an import cannot read it back; setting one is a write).
+- **A PBS storage is not managed.** Its password cannot be imported, and an apply would try to write it. It stays
+  defined by hand (`pvesm status`), listed in the site-from-zero runbook.
+- **`proxmox_acl` / `proxmox_hardware_mapping_pci` / `proxmox_backup_job` / the storages use the provider's
+  newer `proxmox_*` resource names** (the legacy `proxmox_virtual_environment_*` twins exist for some, not for
+  `proxmox_backup_job`); the user and role, and the VMs, only exist under the legacy names.
+
+## Where IaC stops
+
+| Layer | Owner | Where |
+|---|---|---|
+| Proxmox **API objects**: VMs, users, token, role, ACLs, PCI mapping, storages, vzdump jobs | OpenTofu | this stack |
+| Host **OS**: kernel cmdline (`iommu=pt`), vfio / nouveau modprobe files, initramfs, ZFS ARC limit, `snippets` on `local`, UPS/NUT, PBS install | idempotent owner scripts and runbooks run as root on pve01 | `scripts/owner/pve-gpu-passthrough.sh`, the server-setup runbook |
+| The VM **template** 9000 (an Ubuntu cloud image turned into a template) | idempotent owner script | `scripts/owner/pve-template-9000.sh` |
+| Inside the VMs: k3s install and config, drivers | owner scripts and the files in `files/k3s/` | `qnsc-k3s-agent-join.sh`, runbook |
+
+Why the template is a script, not `proxmox_download_file` + a `template = true` VM (the usual bpg pattern):
+`disk.import_from` is a create-time argument the provider cannot read back, so importing the existing template
+would plan a REPLACEMENT of the VM every clone depends on, and "No changes" cannot be proven without the host;
+and a template is a build artefact, not desired state. The stack consumes it by id (`clone { vm_id = 9000 }`).
+`pve-template-9000.sh --check` reports it, `--apply` builds it once and never deletes anything.
+
+Order for a whole new site: `docs/runbooks/site-from-zero.md`.
 
 ## ai-01 — the GPU agent node (§9.1)
 

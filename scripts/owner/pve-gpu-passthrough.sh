@@ -13,8 +13,11 @@
 #      mappings; without it every DMA is translated for the whole host);
 #   4. refreshes the initramfs (proxmox-boot-tool — this host boots ZFS from
 #      systemd-boot, so update-initramfs alone would not reach the ESP);
-#   5. creates the cluster-wide PCI mapping "gpu-rtx5060ti" used by
-#      live/onprem-vm (the API token path cannot pass a raw hostpci id).
+#   5. PRINTS the `gpu_pci_mapping` tfvars snippet for the cluster-wide PCI mapping
+#      "gpu-rtx5060ti" (read from sysfs). The mapping itself is Proxmox API state and
+#      belongs to IaC: live/onprem-vm imports and manages it (proxmox_host.tf). Only
+#      with --create-mapping does this script create it by hand, for a first bring-up
+#      before the stack exists.
 #
 # A HOST REBOOT TAKES EVERY VM DOWN. Order:
 #   1. qm shutdown 100 --timeout 180     (clean stop of k3s-01)
@@ -32,8 +35,8 @@ GPU_SLOT="0000:01:00"
 MAPPING_ID="gpu-rtx5060ti"
 
 MODE="${1:---check}"
-case "$MODE" in --check | --apply) ;; *)
-	echo "usage: $0 [--check|--apply]" >&2
+case "$MODE" in --check | --apply | --create-mapping) ;; *)
+	echo "usage: $0 [--check|--apply|--create-mapping]" >&2
 	exit 2
 	;;
 esac
@@ -51,6 +54,37 @@ BLACKLIST=/etc/modprobe.d/blacklist-qnsc-gpu.conf
 VFIO=/etc/modprobe.d/vfio-qnsc-gpu.conf
 MODLOAD=/etc/modules-load.d/vfio-qnsc.conf
 CMDLINE_FILE=/etc/kernel/cmdline
+
+# ── the mapping entries as the host reports them ────────────────────────────
+# Proxmox validates a mapping against the hardware at VM start: every entry needs
+# iommugroup and subsystem-id, or qmstart fails "PCI device mapping invalid".
+map_fields() { # $1 = function (0|1) -> "path group subsystem-id"
+	local dev="$GPU_SLOT.$1" grp sub
+	grp=$(basename "$(readlink -f "/sys/bus/pci/devices/$dev/iommu_group")")
+	sub="$(sed 's/^0x//' "/sys/bus/pci/devices/$dev/subsystem_vendor"):$(sed 's/^0x//' "/sys/bus/pci/devices/$dev/subsystem_device")"
+	echo "$dev $grp $sub"
+}
+
+print_mapping_tfvars() {
+	local node f0 f1
+	node=$(hostname -s)
+	read -r p0 g0 s0 <<<"$(map_fields 0)"
+	read -r p1 g1 s1 <<<"$(map_fields 1)"
+	f0="$p0 $g0 $s0"
+	f1="$p1 $g1 $s1"
+	[ -n "$f0" ] && [ -n "$f1" ] || return 0
+	say "── site.tfvars snippet for live/onprem-vm (git-ignored file, NOT the public repo) ──"
+	cat <<TFVARS
+gpu_pci_mapping = {
+  name    = "$MAPPING_ID"
+  comment = "RTX 5060 Ti (ai-01, §9.1)"
+  map = [
+    { id = "$GPU_ID", node = "$node", path = "$p0", iommu_group = $g0, subsystem_id = "$s0" },
+    { id = "$AUDIO_ID", node = "$node", path = "$p1", iommu_group = $g1, subsystem_id = "$s1" },
+  ]
+}
+TFVARS
+}
 
 # ── verify (used by --check and at the end of --apply) ──────────────────────
 check_state() {
@@ -99,8 +133,10 @@ check_state() {
 }
 
 if [ "$MODE" = "--check" ]; then
-	check_state
-	exit $?
+	rc=0
+	check_state || rc=$?
+	print_mapping_tfvars
+	exit "$rc"
 fi
 
 say "── applying ──"
@@ -171,23 +207,21 @@ else
 	say "enabled snippets on local (was: $cur)"
 fi
 
-# 5. the mapping Terraform passes (an API token cannot pass a raw hostpci id)
+# 5. the PCI mapping: IaC owns it (live/onprem-vm). --create-mapping is the by-hand fallback.
 if pvesh get "/cluster/mapping/pci/$MAPPING_ID" >/dev/null 2>&1; then
-	say "mapping $MAPPING_ID already exists"
-else
-	# Proxmox validates a mapping against the hardware at VM start: every entry needs
-	# iommugroup and subsystem-id, or qmstart fails "PCI device mapping invalid".
-	map_entry() { # $1 = function (0|1), $2 = vendor:device
-		local dev="$GPU_SLOT.$1" grp sub
-		grp=$(basename "$(readlink -f "/sys/bus/pci/devices/$dev/iommu_group")")
-		sub="$(sed 's/^0x//' "/sys/bus/pci/devices/$dev/subsystem_vendor"):$(sed 's/^0x//' "/sys/bus/pci/devices/$dev/subsystem_device")"
-		echo "node=$(hostname -s),path=$dev,id=$2,iommugroup=$grp,subsystem-id=$sub"
-	}
+	say "mapping $MAPPING_ID exists (managed by live/onprem-vm, proxmox_hardware_mapping_pci.gpu)"
+elif [ "$MODE" = "--create-mapping" ]; then
+	read -r p0 g0 s0 <<<"$(map_fields 0)"
+	read -r p1 g1 s1 <<<"$(map_fields 1)"
 	pvesh create /cluster/mapping/pci --id "$MAPPING_ID" --description "RTX 5060 Ti (ai-01, §9.1)" \
-		--map "$(map_entry 0 "$GPU_ID")" \
-		--map "$(map_entry 1 "$AUDIO_ID")"
-	say "created mapping $MAPPING_ID"
+		--map "node=$(hostname -s),path=$p0,id=$GPU_ID,iommugroup=$g0,subsystem-id=$s0" \
+		--map "node=$(hostname -s),path=$p1,id=$AUDIO_ID,iommugroup=$g1,subsystem-id=$s1"
+	say "created mapping $MAPPING_ID BY HAND: import it into live/onprem-vm before the first apply"
+else
+	say "NOTE: mapping $MAPPING_ID does not exist yet. live/onprem-vm creates it from the snippet below;"
+	say "      or run this script with --create-mapping and import it afterwards."
 fi
+print_mapping_tfvars
 
 say ""
 say "── changes written. Reboot the host, then --check again. ──"
