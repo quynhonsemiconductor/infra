@@ -40,12 +40,14 @@ terraform {
 
   # Distinct state key from `observability` (platform/observability/…) — the two
   # stacks own disjoint resources and must never share a state file.
-  backend "s3" {
-    bucket         = "qnsc-tofu-state"
-    key            = "platform/observability-alerting/terraform.tfstate"
-    region         = "ap-southeast-1"
-    encrypt        = true
-    dynamodb_table = "qnsc-tofu-locks"
+  # State lives on Azure (AWS exit, 2026-11-02): same account and auth as
+  # live/identity and live/onprem (shared keys are disabled; data-plane auth).
+  backend "azurerm" {
+    use_azuread_auth     = true
+    resource_group_name  = "rg-qnsc-platform"
+    storage_account_name = "stqnsctfstate"
+    container_name       = "tfstate"
+    key                  = "infra/observability-alerting/terraform.tfstate"
   }
 }
 
@@ -54,11 +56,13 @@ terraform {
 # url and token are resolved at plan time from an ALREADY-APPLIED state, so the
 # provider below configures from known values, unlike the old in-stack alias.
 data "terraform_remote_state" "observability" {
-  backend = "s3"
+  backend = "azurerm"
   config = {
-    bucket = "qnsc-tofu-state"
-    key    = "platform/observability/terraform.tfstate"
-    region = "ap-southeast-1"
+    use_azuread_auth     = true
+    resource_group_name  = "rg-qnsc-platform"
+    storage_account_name = "stqnsctfstate"
+    container_name       = "tfstate"
+    key                  = "infra/observability/terraform.tfstate"
   }
 }
 
