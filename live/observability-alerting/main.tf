@@ -56,11 +56,13 @@ terraform {
 # url and token are resolved at plan time from an ALREADY-APPLIED state, so the
 # provider below configures from known values, unlike the old in-stack alias.
 data "terraform_remote_state" "observability" {
-  backend = "s3"
+  backend = "azurerm"
   config = {
-    bucket = "qnsc-tofu-state"
-    key    = "platform/observability/terraform.tfstate"
-    region = "ap-southeast-1"
+    use_azuread_auth     = true
+    resource_group_name  = "rg-qnsc-platform"
+    storage_account_name = "stqnsctfstate"
+    container_name       = "tfstate"
+    key                  = "infra/observability/terraform.tfstate"
   }
 }
 
