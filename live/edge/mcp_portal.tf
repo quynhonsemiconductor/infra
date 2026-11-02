@@ -80,6 +80,11 @@ resource "cloudflare_zero_trust_access_ai_controls_mcp_portal" "qnsc" {
       server_id = s.id
       on_behalf = true
     }],
+    # rova-prod (mcp_rova_prod.tf): joins when rova.qnsc.vn is live. Same "Require user auth" ON.
+    [for s in cloudflare_zero_trust_access_ai_controls_mcp_server.rova_prod : {
+      server_id = s.id
+      on_behalf = true
+    }],
   )
 }
 
