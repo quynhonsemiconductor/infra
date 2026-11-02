@@ -26,9 +26,12 @@ locals {
     pg_rova_backup_age = {
       name = "k3s-pg-rova-backup-too-old"
       # The nightly base backup is 19:00 UTC. 26 h = one missed night plus slack.
-      # `or`: pg-rova backs up through the barman-cloud plugin; the instance
-      # exporter may publish the in-tree or the plugin prefix.
-      expr      = "time() - max by (cnpg_cluster) (cnpg_collector_last_available_backup_timestamp{cnpg_cluster=\"pg-rova\"} or barman_cloud_cloudnative_pg_io_last_available_backup_timestamp{cnpg_cluster=\"pg-rova\"})"
+      # Two metric families can carry the same labels: the in-tree
+      # cnpg_collector_* one (exists with value 0 when the in-tree barman path is
+      # unused) and the barman-cloud plugin one. `or` would keep the first series
+      # and silently drop the plugin's, so zero samples are filtered out BEFORE
+      # max (a 0 is "never", not "1970").
+      expr      = "time() - max by (cnpg_cluster) ({__name__=~\"cnpg_collector_last_available_backup_timestamp|barman_cloud_cloudnative_pg_io_last_available_backup_timestamp\", cnpg_cluster=\"pg-rova\"} > 0)"
       op        = "gt"
       threshold = 26 * 3600
       for       = "15m"
