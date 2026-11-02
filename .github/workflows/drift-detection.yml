@@ -77,12 +77,11 @@ jobs:
         # (bootstrap, security-baseline, runtime-dev, runtime-prod, organization) were retired on
         # 2026-11-02 (AWS exit; state archived): they are not planned any more.
         #
-        # `observability` is EXCLUDED, with a reason: it cannot be planned. Its state holds grafana_* objects created
-        # under a provider alias that the 2026-09-20 split removed, so every plan fails with 'Provider configuration not
-        # present ... (orphan)' (re-tested 2026-10-12 on infra#161; the same exclusion is in infra-plan.yml). Before that
-        # it also errored for want of its variables. Left in, it would be a permanent red and the alert would fire every
-        # night, which is how a real failure goes unread. Put it back, with TF_VAR_grafana_cloud_api_key and
-        # TF_VAR_teams_webhook_url, in the same change that migrates its state.
+        # `observability` is EXCLUDED, with a reason: drift detection means a full refresh, and the read-only
+        # token cannot do one. Grafana Cloud has no stack-service-accounts:read scope (only :write), so refreshing
+        # grafana_cloud_stack_service_account.alerting returns 403 for any read-only key, and the write key must
+        # not reach a scheduled read job. Its PR plan therefore runs with -refresh=false (infra-plan.yml) and the
+        # real refresh happens in the production apply job. Left in, this entry would be a permanent red every night.
         stack:
           - edge
           - storage-dev

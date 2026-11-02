@@ -260,6 +260,14 @@ jobs:
           ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
           ARM_USE_OIDC:        'true'
 
+      # An empty secret reaches the provider as "no token" and fails 20 seconds later with "the Cloud API client is
+      # required for this resource" (apply run 41443669230). Say what is wrong instead.
+      - name: Require the Grafana Cloud token
+        env:
+          TOKEN: ${{ secrets.GRAFANA_CLOUD_API_KEY }}
+        run: |
+          [ -n "$TOKEN" ] || { echo "::error::environment secret GRAFANA_CLOUD_API_KEY (environment: production) is empty or unset. It must hold a Cloud Access Policy token with stacks:read, stacks:write and stack-service-accounts:write."; exit 1; }
+
       - name: tofu plan
         id: plan
         working-directory: live/observability
