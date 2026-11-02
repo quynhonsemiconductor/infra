@@ -38,12 +38,27 @@ reviewer, so you can also simply leave the run unapproved.
 
 ## Step 2: edge off AWS
 
-The ACM change is its own PR (`removed { destroy = false }` for the certificate,
-its validation and the validation record). Its plan must read: three resources
-"will no longer be managed", zero destroys. The certificate and the validation
-CNAME stay in AWS and Cloudflare until the account is closed (the AWS ALB, our
-rollback path, still serves the certificate). Delete the validation CNAME in the
-dashboard afterwards.
+The ACM change is its own PR. It uses bare `removed {}` blocks: in OpenTofu 1.9.1
+(CI) these only forget the object in state and never destroy it (there is no
+`destroy` argument or `lifecycle` block there). Its plan must read: three
+resources "removed from the OpenTofu state but will not be destroyed", zero
+destroys. The certificate and the validation CNAME stay in AWS and Cloudflare
+until the account is closed (the AWS ALB, our rollback path, still serves the
+certificate). `acm_cert_arn` is still output (looked up with a data source) so
+that `runtime-*` keep their listener certificate. Delete the validation CNAME in
+the dashboard afterwards.
+
+**Contingency, SES (#188) not landed by 2026-11-09.** `live/edge` cannot be
+planned after the account closes while it holds `aws_sesv2_*` resources. In that
+case the edge state-move PR (step 5) also: (1) adds a bare `removed {}` block for
+each SES resource (`aws_sesv2_email_identity.mail_domain`,
+`aws_sesv2_email_identity_mail_from_attributes.mail_domain`) and for the three
+DKIM records, the MAIL FROM MX and SPF records of `cloudflare_dns_record` (state
+only; the DNS records stay), (2) deletes the `aws` provider from
+`required_providers`, the `provider "aws"` block and the `data "aws_acm_certificate"`
+lookup (after `runtime-*` are destroyed), and (3) leaves the leftover SES DNS
+records for the manual cleanup in step 9. Check that PR's plan shows only state
+removals and no destroys.
 
 ## Step 3: unblock `observability` (audit A-5)
 
