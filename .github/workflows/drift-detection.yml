@@ -95,8 +95,8 @@ jobs:
           # token check applies (contains lists updated with it).
           - onprem
           # GitHub org config (rulesets, platform repo settings, infra environments):
-          # azurerm backend (read identity) plus the READ-ONLY fine-grained token
-          # (GH_IAC_TOKEN_READONLY). Never falls back to the write token.
+          # azurerm backend (read identity) plus a short-lived token from the READ-ONLY
+          # GitHub App (IAC_READ_APP_ID / IAC_READ_APP_KEY). Never uses the apply app.
           - github
 
     steps:
@@ -131,15 +131,26 @@ jobs:
             exit 1
           fi
 
-      - name: Require the read-only GitHub token
+      - name: Require the read-only GitHub App
         if: ${{ matrix.stack == 'github' }}
         env:
-          HAVE_TOKEN: ${{ secrets.GH_IAC_TOKEN_READONLY != '' }}
+          HAVE_APP: ${{ vars.IAC_READ_APP_ID != '' && secrets.IAC_READ_APP_KEY != '' }}
         run: |
-          if [ "$HAVE_TOKEN" != "true" ]; then
-            echo "::error title=Drift cannot see GitHub::secrets.GH_IAC_TOKEN_READONLY is not set. Create the READ-ONLY fine-grained token (permissions in live/github/README.md) and add it as a repository secret. This job never falls back to the write token."
+          if [ "$HAVE_APP" != "true" ]; then
+            echo "::error title=Drift cannot see GitHub::variable IAC_READ_APP_ID and secret IAC_READ_APP_KEY are not both set. Create the read GitHub App and store its id and key (steps in live/github/README.md). This job never uses the apply app."
             exit 1
           fi
+
+      - name: Mint the read-only GitHub App token
+        id: gh-read
+        if: ${{ matrix.stack == 'github' }}
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510  # v3.3.0
+        with:
+          app-id: ${{ vars.IAC_READ_APP_ID }}
+          private-key: ${{ secrets.IAC_READ_APP_KEY }}
+          owner: quynhonsemiconductor
+          permission-administration: read
+          permission-environments: read
 
       # `-lock=false` because the read identity cannot take the blob lease on the state
       # file. Neither pass mutates state, so running lock-free is safe; apply still
@@ -176,7 +187,7 @@ jobs:
           ARM_USE_OIDC:        'true'
           TF_VAR_admin_private_cidr: ${{ contains(fromJSON('["onprem","edge"]'), matrix.stack) && secrets.ADMIN_PRIVATE_CIDR || '' }}
           TF_VAR_warp_extra_excludes: ${{ matrix.stack == 'edge' && secrets.WARP_EXTRA_EXCLUDES || '[]' }}
-          TF_VAR_github_token: ${{ matrix.stack == 'github' && secrets.GH_IAC_TOKEN_READONLY || '' }}
+          TF_VAR_github_token: ${{ steps.gh-read.outputs.token }}
         run: |
           set +e
           tofu plan -refresh-only -input=false -lock=false -no-color -detailed-exitcode -out=refresh.tfplan 2>&1 | tee refresh.txt
@@ -212,7 +223,7 @@ jobs:
           ARM_USE_OIDC:        'true'
           TF_VAR_admin_private_cidr: ${{ contains(fromJSON('["onprem","edge"]'), matrix.stack) && secrets.ADMIN_PRIVATE_CIDR || '' }}
           TF_VAR_warp_extra_excludes: ${{ matrix.stack == 'edge' && secrets.WARP_EXTRA_EXCLUDES || '[]' }}
-          TF_VAR_github_token: ${{ matrix.stack == 'github' && secrets.GH_IAC_TOKEN_READONLY || '' }}
+          TF_VAR_github_token: ${{ steps.gh-read.outputs.token }}
         run: |
           set +e
           tofu plan -input=false -lock=false -no-color -detailed-exitcode 2>&1 | tee plan.txt

@@ -466,12 +466,13 @@ jobs:
           TF_VAR_adaptive_metrics_api_key: ${{ secrets.GRAFANA_ADAPTIVE_METRICS_API_TOKEN }}
 
   # live/github — GitHub organisation config (rulesets, platform repo settings, infra
-  # environments). State on Azure like the other stacks; the only credential besides
-  # Azure OIDC is the WRITE fine-grained token, an environment secret of `production`
-  # (GH_IAC_TOKEN), which is why this job pins that environment: the required reviewer
-  # is the human gate, and the plan below is what the reviewer approves. The stack has
-  # prevent_destroy on every ruleset and repository, so a bad edit fails the plan
-  # instead of deleting branch protection.
+  # environments). State on Azure like the other stacks. The only credential besides
+  # Azure OIDC is a ~1 hour token minted from the WRITE GitHub App (`qnsc-iac-apply`),
+  # whose id and private key are environment variable/secret of `production`
+  # (IAC_APPLY_APP_ID, IAC_APPLY_APP_KEY). That is why this job pins that environment:
+  # the required reviewer is the human gate, and the plan below is what the reviewer
+  # approves. The stack has prevent_destroy on every ruleset and repository, so a bad
+  # edit fails the plan instead of deleting branch protection.
   apply-github:
     name: Apply github
     needs: [detect]
@@ -493,6 +494,16 @@ jobs:
         with:
           tofu-version: ${{ env.TOFU_VERSION }}
           fmt: 'false'   # install only
+
+      - name: Mint the apply GitHub App token
+        id: gh-apply
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510  # v3.3.0
+        with:
+          app-id: ${{ vars.IAC_APPLY_APP_ID }}
+          private-key: ${{ secrets.IAC_APPLY_APP_KEY }}
+          owner: quynhonsemiconductor
+          permission-administration: write
+          permission-environments: write
 
       - name: tofu init
         working-directory: live/github
@@ -516,7 +527,7 @@ jobs:
           ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID }}
           ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
           ARM_USE_OIDC:        'true'
-          TF_VAR_github_token: ${{ secrets.GH_IAC_TOKEN }}
+          TF_VAR_github_token: ${{ steps.gh-apply.outputs.token }}
 
       - name: Refuse destructive DNS / identity changes
         if: steps.plan.outputs.exitcode == '2'
@@ -538,7 +549,7 @@ jobs:
           ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID }}
           ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
           ARM_USE_OIDC:        'true'
-          TF_VAR_github_token: ${{ secrets.GH_IAC_TOKEN }}
+          TF_VAR_github_token: ${{ steps.gh-apply.outputs.token }}
 
   # live/onprem — the on-prem doors (Cloudflare Tunnels). Azure OIDC ONLY: the
   # azurerm backend (stqnsctfstate, Entra auth) and the cloudflare provider; the

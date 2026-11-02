@@ -166,13 +166,13 @@ jobs:
           # `observability` LEFT this list 2026-11-02: its orphaned grafana_* objects are now forgotten by
           # `removed` blocks behind a read-only `grafana.stack` bridge (live/observability/main.tf).
           #
-          # github (added 2026-11-02, live/github): plannable the moment the owner creates
-          # the READ-ONLY fine-grained token and stores it as repository secret
-          # GH_IAC_TOKEN_READONLY (permissions in live/github/README.md). Until then a plan
-          # cannot authenticate, so the stack is named here instead of failing every PR.
-          # REMOVE `github` FROM THIS LIST in the one-line PR that follows the secret: the
-          # apply and drift jobs already use it, and a stack that is both planned and
-          # applied is the whole point.
+          # github (added 2026-11-02, live/github): plannable the moment the owner has created
+          # the read GitHub App (`qnsc-iac-read`) and set repo variable IAC_READ_APP_ID +
+          # repo secret IAC_READ_APP_KEY (live/github/README.md). Until then a plan cannot
+          # authenticate, so the stack is named here instead of failing every PR.
+          # REMOVE `github` FROM THIS LIST in the one-line PR that follows: the apply and
+          # drift jobs already use it, and a stack that is both planned and applied is the
+          # whole point.
           NOT_PLANNABLE="identity onprem-vm github"
 
           SKIPPED=""
@@ -320,6 +320,20 @@ jobs:
           ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
           ARM_USE_OIDC:        'true'
 
+      # live/github only: a ~1 hour installation token from the READ-ONLY app (Administration
+      # read, Environments read; Metadata is implicit). Nothing is stored; the token is revoked
+      # when the job ends. Skipped for every other stack, so their runs are unchanged.
+      - name: Mint the read-only GitHub App token (live/github)
+        id: gh-read
+        if: ${{ matrix.stack == 'github' }}
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510  # v3.3.0
+        with:
+          app-id: ${{ vars.IAC_READ_APP_ID }}
+          private-key: ${{ secrets.IAC_READ_APP_KEY }}
+          owner: quynhonsemiconductor
+          permission-administration: read
+          permission-environments: read
+
       - name: tofu plan
         id: plan
         working-directory: live/${{ matrix.stack }}
@@ -393,10 +407,10 @@ jobs:
           # variable anymore.
           TF_VAR_admin_private_cidr:     ${{ contains(fromJSON('["onprem","edge"]'), matrix.stack) && secrets.ADMIN_PRIVATE_CIDR || '' }}
           TF_VAR_warp_extra_excludes:    ${{ matrix.stack == 'edge' && secrets.WARP_EXTRA_EXCLUDES || '[]' }}
-          # live/github: READ-ONLY fine-grained token (rulesets, repository settings and
-          # environments, no write). The write token is an environment secret of
-          # `production` and reaches the apply job only.
-          TF_VAR_github_token:           ${{ matrix.stack == 'github' && secrets.GH_IAC_TOKEN_READONLY || '' }}
+          # live/github: a short-lived token minted from the READ-ONLY GitHub App by the
+          # step above (rulesets, repository settings and environments, no write). The
+          # write app exists for the apply job only, behind the `production` reviewer.
+          TF_VAR_github_token:           ${{ steps.gh-read.outputs.token }}
 
       # TASK 0.3 / §17b — refuse a plan that would lose data, before anyone reads
       # it. Runs BEFORE the plan comment on purpose: if the answer is "this deletes

@@ -54,39 +54,94 @@ rulesets already restrict PR merges to `squash`, so these flags are latent, not 
   provider support. Edits to `status_checks` or `bypass` carry the same caveat on
   those rulesets that have a pull-request rule.
 
-## Credentials: what the owner creates (nothing is created by code)
+## Credentials: two org-owned GitHub Apps (the owner creates them; code cannot)
 
-Fine-grained personal access tokens, **resource owner = the organisation**, expiry
-no more than 12 months (calendar reminder 30 days before). The organisation must
-allow fine-grained tokens and an owner must approve the request. A GitHub App with the
-same permissions is the better long-term shape (no personal owner); it needs a
-token-minting step in the three workflows, so the PAT is the smaller change today.
+Terraform cannot create GitHub Apps, so each app is created from a committed **manifest**
+(`apps/*.json`) by one script, and nothing is long-lived in the workflows: every job mints a
+~1 hour installation token with `actions/create-github-app-token` (pinned by SHA, v3.3.0, the
+same pin as our other repos) and GitHub revokes it when the job ends.
 
-| token | secret name | stored in | repository access | permissions |
-|---|---|---|---|---|
-| plans and drift | `GH_IAC_TOKEN_READONLY` | repository secret (`infra`) | all repositories (the 17 with a ruleset) | Repository: **Administration: Read-only**, **Environments: Read-only**, Metadata: Read-only (automatic). No write permission. |
-| apply | `GH_IAC_TOKEN` | **environment secret of `production`** (`infra`), never a repository secret | same | Repository: **Administration: Read and write**, **Environments: Read and write**, Metadata: Read-only. |
+| app | manifest | permissions | used by |
+|---|---|---|---|
+| `qnsc-iac-read` | `apps/qnsc-iac-read.json` | Administration **read**, Environments **read**, Metadata read | PR plans (once `github` leaves `NOT_PLANNABLE`) and the nightly drift job |
+| `qnsc-iac-apply` | `apps/qnsc-iac-apply.json` | Administration **read/write**, Environments **read/write**, Metadata read | the `apply-github` job only (environment `production`) |
 
-Secret names cannot start with `GITHUB_`, hence the `GH_` prefix. The pattern is the one
-of infra#274: PR plans and the nightly drift job see only the read token; the write token
-exists for the apply job, which pins `environment: production` and so waits for its
-required reviewer.
+Both: no webhook, no subscribed events, **not public** (installable only on this
+account), installed on **All repositories** (the stack manages 17 of them, and a new repo
+would otherwise need an app change).
 
-## Order of operations (do these BEFORE merging this PR)
+Where the credentials live (names the workflows read):
 
-1. Create both tokens above and store them under the names above.
-2. Merge. The apply job (`apply-github`) runs, shows `53 to import, 0 to change`, waits
-   for the `production` reviewer, then imports into the empty state.
-3. One-line follow-up PR: remove `github` from `NOT_PLANNABLE` in `infra-plan.yml`, so
-   PRs get a plan of this stack from then on.
+| value | name | kind | where |
+|---|---|---|---|
+| read app id | `IAC_READ_APP_ID` | variable | repository `infra` |
+| read app key | `IAC_READ_APP_KEY` | secret | repository `infra` |
+| apply app id | `IAC_APPLY_APP_ID` | variable | environment `production` of `infra` |
+| apply app key | `IAC_APPLY_APP_KEY` | secret | environment `production` of `infra` (never a repository secret) |
 
-Merging before step 1 makes `apply-github` and the nightly drift job fail loudly (no token);
+PR plans and drift see only the read app; the apply app exists for the one job that pins
+`environment: production` and so waits for its required reviewer.
+
+### Owner steps (about 10 minutes, once per app; do both before merging this PR)
+
+You need: org-owner rights on GitHub, `python3`, the 1Password CLI signed in (`op`, Touch ID),
+and `gh` signed in as an owner. Run from a checkout of this repo (your own, on the PR branch or main
+after merge):
+
+```sh
+# 1. Create the READ app. A browser tab opens on GitHub's confirmation page: click
+#    "Create GitHub App" once. The script receives the one-time code on 127.0.0.1, exchanges it, and
+#    stores the private key in 1Password (vault QNSC, Document "GitHub App - qnsc-iac-read - private key")
+#    through stdin. No .pem file is ever written, so there is nothing to delete afterwards.
+python3 scripts/owner/create_github_app.py read
+
+# 2. On the page the script prints (…/settings/apps/qnsc-iac-read/installations):
+#    Install -> "All repositories".
+
+# 3. Wire the repository. The script prints these exact lines with the app id filled in:
+gh variable set IAC_READ_APP_ID --repo quynhonsemiconductor/infra --body <app id>
+op document get "GitHub App - qnsc-iac-read - private key" --vault QNSC \
+  | gh secret set IAC_READ_APP_KEY --repo quynhonsemiconductor/infra
+
+# 4. Same for the APPLY app (its values go to the environment, not the repository):
+python3 scripts/owner/create_github_app.py apply
+#    Install -> "All repositories" on …/settings/apps/qnsc-iac-apply/installations, then:
+gh variable set IAC_APPLY_APP_ID --env production --repo quynhonsemiconductor/infra --body <app id>
+op document get "GitHub App - qnsc-iac-apply - private key" --vault QNSC \
+  | gh secret set IAC_APPLY_APP_KEY --env production --repo quynhonsemiconductor/infra
+```
+
+Notes:
+- The key travels 1Password to `gh` through a pipe; it never reaches a file, argv or the terminal.
+  `op document get` is the documented command for a Document item (`op read` is for fields).
+- If the manifest page cannot be used (browser blocked, corporate proxy), the manual path gives
+  the same result: *Settings > Developer settings > GitHub Apps > New GitHub App* with the values in
+  the manifest, then *Generate a private key*, then
+  `op document create ~/Downloads/<app>.<date>.private-key.pem --title "GitHub App - <app> - private key" --vault QNSC`
+  and **delete the downloaded `.pem`** (`rm -P` on macOS) immediately after 1Password has it.
+- The script refuses to run when the 1Password item already exists (that means the app exists), so a
+  second app is never created by accident. To rotate a key: generate a new one in the app's settings,
+  archive the old item, store the new one with the same commands.
+- A lost key is not an emergency: the apps only have repository-administration scope on this org, so
+  delete the app (Settings > Developer settings), remove the 1Password item, and run the script again.
+- The create script has offline tests (`python3 scripts/owner/test_create_github_app.py`: stub `op`,
+  fake conversion endpoint, no GitHub, no 1Password).
+
+## Order of operations (before merging this PR)
+
+1. Do the owner steps above for both apps.
+2. Merge. The apply job (`apply-github`) mints the apply token, shows `53 to import, 0 to change`,
+   waits for the `production` reviewer, then imports into the empty state.
+3. One-line follow-up PR: remove `github` from `NOT_PLANNABLE` in `infra-plan.yml`, so PRs get a plan
+   of this stack from then on.
+
+Merging before step 1 makes `apply-github` and the nightly drift job fail loudly (no app credentials);
 nothing else is affected.
 
 ## Local run (read-only)
 
 ```sh
-export GITHUB_TOKEN=...           # the READ-ONLY token, from your own shell, never argv or Git
+export GITHUB_TOKEN=...           # any token with Administration + Environments read; from your own shell, never argv or Git
 cd live/github
 tofu init -backend=false          # local state; the real state is on Azure
 tofu plan                         # 53 to import on an empty state
