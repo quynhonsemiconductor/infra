@@ -36,8 +36,8 @@ variable "admin_hostnames" {
   EOT
 
   validation {
-    condition     = toset(keys(var.admin_hostnames)) == toset(["pve", "pbs"])
-    error_message = "admin_hostnames must have exactly the keys pve and pbs."
+    condition     = contains(keys(var.admin_hostnames), "pve") && contains(keys(var.admin_hostnames), "pbs") && length(setsubtract(keys(var.admin_hostnames), ["pve", "pbs", "argocd"])) == 0
+    error_message = "admin_hostnames must have the keys pve and pbs, and may have argocd (nothing else)."
   }
   validation {
     condition     = alltrue([for h in values(var.admin_hostnames) : can(regex("^[a-z0-9-]+\\.qnsc\\.vn$", h))])
