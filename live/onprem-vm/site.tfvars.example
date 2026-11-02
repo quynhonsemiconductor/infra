@@ -18,7 +18,7 @@ vm_name = "k3s-01"
 datastore_id = "local-zfs"
 
 vm_cores     = 28
-vm_memory_mb = 57344
+vm_memory_mb = 36864
 
 os_disk_gb   = 120
 data_disk_gb = 1200
@@ -27,7 +27,7 @@ bridge = "vmbr0"
 
 # The tag `qm config 100` shows as tag=<n> on net0. Replace before applying:
 # 0 means "untagged", which would move a tagged node.
-vlan_id = 0
+# vlan_id = 10   # only when net0 carries a tag; the live k3s-01 has none
 
 # ── ai-01 (GPU agent node) ────────────────────────────────────────────────
 ai01_vm_id     = 101
