@@ -3,9 +3,8 @@
 # argument is configuration, never state, so the token does not land in the
 # state file either.
 #
-# No `ssh` block: nothing here uploads a file (snippets are the one operation
-# the API cannot do, and this stack manages no cloud-init). Adding one later is
-# a reviewed change, not a default.
+# The `ssh` block below exists for one operation only: uploading ai-01's
+# cloud-init snippet, which the API cannot do.
 provider "proxmox" {
   endpoint  = var.proxmox_endpoint
   api_token = var.proxmox_api_token
