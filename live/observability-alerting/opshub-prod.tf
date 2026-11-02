@@ -103,6 +103,9 @@ resource "grafana_synthetic_monitoring_check" "opshub_prod_readyz" {
   settings {
     http {
       method = "GET"
+      # The endpoint answers 200 JSON {"status":"ok",...}. A 200 alone also comes
+      # from the SPA index.html when routing is wrong, so assert the body too.
+      fail_if_body_not_matches_regexp = ["\"status\":\"ok\""]
     }
   }
 
