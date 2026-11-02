@@ -2,8 +2,8 @@
 #
 # One certificate-only Service app per product per env, named
 # "<Product> <Env> Service". The registrations are ADOPTED via import (no new
-# ids): rova prod (the owner hand-creates the registration FIRST — README
-# "Mail service apps") and the three EXISTING dev service apps (live since
+# ids): rova prod (hand-made by the owner on 2026-11-01, already with its
+# certificate — README "Mail service apps") and the three EXISTING dev service apps (live since
 # 2026-10-18, reconciled to the 2026-10-28 exports). NO opshub/kb PROD apps —
 # those products are not live in prod; their service apps come with their own
 # prod PRs and stay draft until then.
@@ -77,7 +77,7 @@ variable "mail_service_object_ids" {
     opshub_dev = string
     kb_dev     = string
   })
-  description = "Object ids of the EXISTING mail service-app registrations (adopted, not replaced). rova_prod's registration is hand-created by the owner FIRST (README). TF_VAR_mail_service_object_ids exported by the owner, never committed."
+  description = "Object ids of the EXISTING mail service-app registrations (adopted, not replaced). rova_prod's registration was hand-made by the owner on 2026-11-01 (README). TF_VAR_mail_service_object_ids exported by the owner, never committed."
 }
 
 variable "mail_service_sp_object_ids" {

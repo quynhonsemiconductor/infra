@@ -331,7 +331,7 @@ and the Proxmox ACL key on it).** Keep the two in step.
 ## Mail service apps (`mail.tf`): owner export, plan, go/no-go
 
 One certificate-only Service app per product per env, `<Product> <Env> Service`
-(§7.3): **rova prod** (hand-create the registration FIRST — step 1) plus the
+(§7.3): **rova prod** (the registration was hand-made on 2026-11-01 — step 1) plus the
 three **existing dev service apps** (live since 2026-10-18) — all ADOPTED via
 import. The **dev certificates are adopted too** (SA decision — no rotation):
 imported by `<app object id>/certificate/<keyId>`, value = the exact public
@@ -426,8 +426,22 @@ the invite to the Service cert — a rova-track change, not this stack's).
      grep -c "PRIVATE KEY" "$HOME/keys/rova-prod.crt"   # must print 0
      ```
 
-     Its fingerprint must equal the app's key credential (a different
-     certificate would plan a replacement, NO-GO).
+     **This check is MANUAL and mandatory.** The certificate resource has
+     `ignore_changes = [value, encoding]`, so a wrong `rova_prod` certificate
+     here plans CLEAN and the mismatch is never shown. Compare the SHA-1
+     thumbprint of the vault certificate with the app's key credential
+     (`rova-prod-service-app.json` from the export in step 2):
+
+     ```sh
+     want=$(openssl x509 -in "$HOME/keys/rova-prod.crt" -noout -fingerprint -sha1 | sed 's/.*=//; s/://g' | tr 'A-F' 'a-f')
+     ck=$(jq -r '.keyCredentials[0].customKeyIdentifier' rova-prod-service-app.json)
+     if printf '%s' "$ck" | grep -qE '^[0-9A-Fa-f]{40}$'; then have=$(printf '%s' "$ck" | tr 'A-F' 'a-f'); else have=$(printf '%s' "$ck" | base64 -d | xxd -p -c 64); fi
+     [ "$want" = "$have" ] && echo MATCH || echo "MISMATCH: do not apply"
+     ```
+
+     MISMATCH means the vault holds a different certificate than the one on the
+     app: stop and tell the SA. Do the same for a dev certificate if its
+     1Password file is in doubt.
 
      Build the JSON with `jq --rawfile` so multi-line PEMs stay intact
      (adjust the dev paths to wherever 1Password wrote them):
