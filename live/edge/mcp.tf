@@ -1,10 +1,9 @@
 # ── rova DEV /mcp — Access app for the MCP server (MCP-PLAN v0.4 §5, §10; AI-4)
 #
 # Provider v5 now exposes `oauth_configuration` on access_application, but the
-# Managed OAuth + MCP-portal rollout stays QUEUED (SA 2026-10-27 — do not
-# start it here). So this file only creates the Access app + policy that gate
-# the path, and the Managed OAuth specifics remain DOCUMENTED OWNER CLICK-STEPS
-# (below). Until those clicks happen, the app behaves as a plain self-hosted
+# Managed OAuth specifics remain DOCUMENTED OWNER CLICK-STEPS (below). This
+# file creates the per-server Access app + policy that gate the path; the MCP
+# portal and the portal-side server registration are in mcp_portal.tf. Until those clicks happen, the app behaves as a plain self-hosted
 # Access app: the /mcp path demands an Access session — Claude Code cannot
 # complete OAuth yet, and MCP_ENABLED stays false (agent C owns that flag).
 #
@@ -64,15 +63,8 @@ resource "cloudflare_zero_trust_access_policy" "rova_dev_mcp_allow" {
 #      (The 24 h grant = `session_duration` above, already in IaC.)
 #   4. Confirm IdP = Entra only; policy = the group + MFA policy from this file.
 #
-# ── MCP Server Portal "QNSC" ─────────────────────────────────────────────────
-#
-# NOT expressible in this provider version (no portal resource). Owner
-# console steps (Zero Trust → Access → MCP Server Portal):
-#   1. Create portal, name "QNSC".
-#   2. Add server: rova-dev /mcp (pick the Access app created above).
-#   3. Portal login = Entra via Access; per-server policies gate visibility.
-# Until the portal exists, members connect to the per-server Access app
-# directly — the fallback path, identical rights.
+# ── MCP Server Portal `qnsc` — now IaC: see mcp_portal.tf. The claude.ai
+# connector (portal URL) is added once by the Claude Team Owner (CEO).
 
 # Post-apply verification (gate b on the real host, MCP-PLAN §9):
 #   curl -s https://rova-dev.qnsc.vn/mcp/.well-known/oauth-authorization-server | jq .
