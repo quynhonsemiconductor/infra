@@ -452,6 +452,74 @@ resource "grafana_rule_group" "series_near_cap" {
       summary = "Active Mimir series across the whole stack (all products) is above 8000 — 80% of the 10k free-tier ceiling. New series will start being silently dropped past 10k."
     }
   }
+
+  # EARLY tier: 70% of the ceiling, added with OBI phase 1 (see billable-alert.tf for the
+  # same line on the billable meter). Same query as the 80% rule above: the count the stack
+  # itself holds, which is the measurement already proven live here.
+  rule {
+    name           = "mimir-series-70pct-of-free-tier-cap"
+    condition      = "B"
+    for            = "30m"
+    no_data_state  = "OK"
+    exec_err_state = "KeepLast"
+
+    data {
+      ref_id         = "A"
+      query_type     = "instant"
+      datasource_uid = data.grafana_data_source.prometheus.uid
+
+      relative_time_range {
+        from = 900
+        to   = 0
+      }
+
+      model = jsonencode({
+        refId         = "A"
+        datasource    = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
+        expr          = "count({__name__=~\".+\"})"
+        instant       = true
+        range         = false
+        intervalMs    = 1000
+        maxDataPoints = 43200
+      })
+    }
+
+    data {
+      ref_id         = "B"
+      datasource_uid = "__expr__"
+
+      relative_time_range {
+        from = 0
+        to   = 0
+      }
+
+      model = jsonencode({
+        refId      = "B"
+        type       = "threshold"
+        datasource = { type = "__expr__", uid = "__expr__" }
+        expression = "A"
+        conditions = [
+          {
+            evaluator = {
+              type   = "gt"
+              params = [7000]
+            }
+          }
+        ]
+        intervalMs    = 1000
+        maxDataPoints = 43200
+      })
+    }
+
+    labels = {
+      product  = "platform"
+      severity = "warning"
+    }
+
+    annotations = {
+      summary = "Active Mimir series across the whole stack is above 7000, 70% of the 10k free-tier ceiling. Likely cause after 2026-11-02: the OBI/Beyla RED series (gitops platform/alloy). Check `count by (job) ({__name__=~\".+\"})` for the biggest job."
+    }
+  }
 }
 
 # ── Alerting: a security control failed OPEN ─────────────────────────────────
