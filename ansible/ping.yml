@@ -1,0 +1,22 @@
+---
+# Connectivity and privilege check: does Ansible reach every host and become root?
+#   ansible-playbook ping.yml
+- name: Reach every host and become root
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Ping
+      ansible.builtin.ping:
+
+    - name: Become root
+      ansible.builtin.command: id -u
+      become: true
+      register: ping_uid
+      changed_when: false
+      check_mode: false
+
+    - name: Fail unless root
+      ansible.builtin.assert:
+        that: ping_uid.stdout == "0"
+        fail_msg: "privilege escalation did not give root"
+        quiet: true

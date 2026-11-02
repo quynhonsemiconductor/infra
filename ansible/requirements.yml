@@ -1,0 +1,8 @@
+---
+# Pinned collections (ansible-galaxy collection install -r requirements.yml -p .collections).
+# ansible-core and ansible-lint are pinned in requirements-dev.txt, the same pins CI uses.
+collections:
+  - name: ansible.posix
+    version: 2.2.2
+  - name: community.general
+    version: 13.5.0
