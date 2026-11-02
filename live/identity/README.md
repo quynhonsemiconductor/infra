@@ -234,11 +234,18 @@ is never edited by that side):
 3. **This stack, first apply (owner, local).** Adds 3 federated identity
    credentials. The certificates stay. Expected plan: 3 to add, 0 to change,
    0 to destroy.
-4. **k3s issuer (owner, on the node).** Add the two `service-account-issuer`
-   lines to `/etc/rancher/k3s/config.yaml` — the new URL FIRST (that is the
-   one k3s signs with) and the old default SECOND (accepted, never issued) —
-   then `systemctl restart k3s`. Verify with a token from an EXISTING service
-   account (the ESO SAs do not exist until step 5):
+4. **k3s issuer (owner, on the node).** The two `service-account-issuer`
+   lines are in `live/onprem-vm/files/k3s/config.yaml` (the new URL FIRST,
+   which is the one k3s signs with, and the old default SECOND, accepted,
+   never issued). First check the node's file differs from the repo's by
+   exactly those lines (`scp` + `sudo diff -u`, see `live/onprem-vm/README.md`),
+   and read the live audiences BEFORE the restart:
+   `ps -o args= -C k3s | tr ' ' '\n' | grep -E 'api-audiences|service-account-issuer'`
+   (k3s sets `--api-audiences` itself, so existing tokens keep a valid
+   audience; if it prints no `api-audiences`, STOP: the default audience
+   would follow the new first issuer and break every pre-restart token).
+   Install the file, then `systemctl restart k3s`. Verify with a token from an
+   EXISTING service account (the ESO SAs do not exist until step 5):
 
    ```sh
    kubectl -n external-secrets create token default --audience api://AzureADTokenExchange \
@@ -258,8 +265,8 @@ is never edited by that side):
    the removal PR: `azuread_application_certificate.eso`,
    `var.eso_certificates` and the openssl steps go. Expected plan: 3 to
    destroy, 0 to add. Only now is the secret gone.
-7. **`live/onprem-vm`** only after its rework, with VM 100 planning **no
-   changes**.
+7. **`live/onprem-vm`** is already merged (#281): `tofu plan` there must still
+   say **No changes** after step 4 (the k3s config file is not a VM resource).
 
 Until step 6 runs, both credentials exist and either authenticates — which is
 what makes each step separately revertible.

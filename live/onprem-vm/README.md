@@ -93,8 +93,9 @@ tofu plan        # must be: No changes.
 
 ## The k3s config on the node
 `files/k3s/config.yaml` is the live node's `/etc/rancher/k3s/config.yaml`, byte for byte
-(verified 2026-11-02). The OIDC issuer args for ESO workload identity (infra#252) are
-added in that PR, not here. Diff before any change:
+(verified 2026-11-02) PLUS the two `service-account-issuer` lines for ESO workload identity (infra#252):
+that file is what the node must be given at step 4 of the rollout in `live/identity/README.md`
+("ESO workload identity"); it is not a VM resource, so editing it never changes the VM plan. Diff before any change:
 ```sh
 scp files/k3s/config.yaml qnsc@<node>:/tmp/config.yaml
 ssh qnsc@<node> 'sudo diff -u /etc/rancher/k3s/config.yaml /tmp/config.yaml'
