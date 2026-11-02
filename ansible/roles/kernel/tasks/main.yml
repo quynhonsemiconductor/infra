@@ -31,12 +31,19 @@
   tags: [kernel_updates]
 
 # ── the kernel pin ──────────────────────────────────────────────────────────
-- name: The pinned kernel is installed
+- name: Look for the pinned kernel image
   ansible.builtin.stat:
     path: "/boot/vmlinuz-{{ kernel_pin_version }}-generic"
   register: kernel_pin_image
   when: kernel_pin_version | length > 0
-  failed_when: not kernel_pin_image.stat.exists
+  tags: [kernel_pin]
+
+- name: The pinned kernel is installed
+  ansible.builtin.assert:
+    that: kernel_pin_image.stat.exists
+    fail_msg: "/boot/vmlinuz-{{ kernel_pin_version }}-generic is not installed: GRUB would have nothing to boot. Pin an installed kernel."
+    quiet: true
+  when: kernel_pin_version | length > 0
   tags: [kernel_pin]
 
 - name: GRUB boots the saved entry (pinned) or the first entry (not pinned)
