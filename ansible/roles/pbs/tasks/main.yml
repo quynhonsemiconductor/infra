@@ -12,6 +12,7 @@
       Suites: {{ pbs_apt_suite }}
       Components: pbs-no-subscription
       Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+  register: pbs_repo
   notify: Update apt cache for PBS
   tags: [pbs_install]
 
@@ -19,10 +20,13 @@
   ansible.builtin.meta: flush_handlers
   tags: [pbs_install]
 
+# In --check on a host without the repository yet, apt cannot see the package: the install is skipped and the
+# tasks below report what they can without the PBS command line.
 - name: Install proxmox-backup-server
   ansible.builtin.apt:
     name: proxmox-backup-server
     state: present
+  when: not (ansible_check_mode and pbs_repo is changed)
   tags: [pbs_install]
 
 - name: Is the PBS command line available (not in --check on a host without PBS)
