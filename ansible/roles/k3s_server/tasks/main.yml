@@ -1,4 +1,11 @@
 ---
+- name: Issuer URL is set when the ESO OIDC issuer is enabled
+  ansible.builtin.assert:
+    that:
+      - not (k3s_server_oidc_issuer_enabled | bool) or (k3s_server_oidc_issuer | length > 0)
+    fail_msg: "k3s_server_oidc_issuer_enabled is true but k3s_server_oidc_issuer is empty: set it in the local inventory."
+    quiet: true
+
 - name: Kernel settings for k3s
   ansible.posix.sysctl:
     name: "{{ item.key }}"

@@ -8,7 +8,8 @@ k3s_server_sysctl:
 # ESO workload identity (infra#252): k3s signs service-account tokens with the FIRST issuer, the old default is
 # listed second so tokens minted before the change stay valid. OFF until the rollout of live/identity step 4.
 k3s_server_oidc_issuer_enabled: false
-k3s_server_oidc_issuer: "https://oidc.qnsc.vn/k3s-onprem"
+# Site value (public repo: no hostnames here): set it in the git-ignored local inventory/host_vars.
+k3s_server_oidc_issuer: ""
 k3s_server_oidc_issuer_old: "https://kubernetes.default.svc.cluster.local"
 
 # A config change needs a k3s restart, which interrupts every workload on the node. Default: report only.
