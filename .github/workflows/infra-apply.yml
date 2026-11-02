@@ -416,8 +416,9 @@ jobs:
           # MCP hub: the empty-secret guard lives HERE (the apply job holds the secrets), not in a precondition of the
           # stack, so that PR plans and drift, which have no environment secret, can still plan with the hub on.
           if [ "${TF_VAR_mcp_hub_enabled:-false}" = "true" ]; then
-            [ -n "${TF_VAR_mcp_github_oauth_client_id:-}" ] && [ -n "${TF_VAR_mcp_github_oauth_client_secret:-}" ] || {
-              echo "::error::edge apply: MCP_HUB_ENABLED is true but the GitHub OAuth client id (variable MCP_GITHUB_OAUTH_CLIENT_ID) or secret (environment secret MCP_GITHUB_OAUTH_CLIENT_SECRET) is empty"; exit 1; }
+            if [ -z "${TF_VAR_mcp_github_oauth_client_id:-}" ] || [ -z "${TF_VAR_mcp_github_oauth_client_secret:-}" ]; then
+              echo "::error::edge apply: MCP_HUB_ENABLED is true but the GitHub OAuth client id (variable MCP_GITHUB_OAUTH_CLIENT_ID) or secret (environment secret MCP_GITHUB_OAUTH_CLIENT_SECRET) is empty"; exit 1
+            fi
             if [ -n "${TF_VAR_mcp_grafana_oauth_client_id:-}" ] && [ -z "${TF_VAR_mcp_grafana_oauth_client_secret:-}" ]; then
               echo "::error::edge apply: a manual Grafana OAuth client id is set but the environment secret MCP_GRAFANA_OAUTH_CLIENT_SECRET is empty"; exit 1
             fi
