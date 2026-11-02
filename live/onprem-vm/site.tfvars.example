@@ -36,7 +36,8 @@ ai01_cores     = 8
 ai01_memory_mb = 20480
 ai01_data_disk_gb = 300
 # The GPU node's address on the same VLAN (replace: 192.0.2.x is documentation).
-ai01_ipv4_address = "192.0.2.21/24"
+k3s01_ipv4_address = "192.0.2.20/24"
+ai01_ipv4_address  = "192.0.2.21/24"
 ipv4_gateway      = "192.0.2.1"
 dns_servers       = ["192.0.2.1"]
 

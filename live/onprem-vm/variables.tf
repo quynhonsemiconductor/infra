@@ -115,3 +115,12 @@ variable "dns_servers" {
     error_message = "dns_servers must not be empty."
   }
 }
+
+variable "k3s01_ipv4_address" {
+  type        = string
+  description = "Static address of k3s-01 in CIDR form, as its cloud-init carries it. Site value, git-ignored tfvars only."
+  validation {
+    condition     = can(cidrhost(var.k3s01_ipv4_address, 0))
+    error_message = "k3s01_ipv4_address must be an address in CIDR notation."
+  }
+}

@@ -23,8 +23,9 @@ holds no Proxmox token, and the API endpoint is the admin door.
 
 - `clone {}` — every field is ForceNew, and an import never sets it. Creating a
   new site from template 9000 is its own piece of work.
-- `initialization` / cloud-init — `user_data_file_id` is ForceNew, so a later
-  edit of a snippet would **replace** the VM.
+- `initialization.user_data_file_id` — ForceNew, so a snippet would **replace** the
+  VM. The rest of k3s-01's cloud-init (ide2, IP, DNS, user, keys) IS described, as it
+  stands on the live VM.
 - Tags, description — the live VM has neither, and setting one is a diff.
 - Anything inside the guest (disks, filesystems, k3s install). Those are the
   node's own state; `files/k3s/*` is the source of truth for the config.

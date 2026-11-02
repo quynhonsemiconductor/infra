@@ -83,8 +83,28 @@ resource "proxmox_virtual_environment_vm" "k3s_01" {
 
   # `--serial0 socket --vga std`, from the template.
   serial_device {}
-  vga {
-    type = "std"
+  # vga: not set. The live VM has `vga: std` with no memory; declaring the block
+  # makes the provider add memory = 16, a diff on the node that holds every PVC.
+
+  # Cloud-init exactly as the live VM carries it (ide2 on local-zfs). Described, not
+  # changed: none of these fields replaces the VM; user_data_file_id (ForceNew) is not used.
+  initialization {
+    datastore_id = var.datastore_id
+    interface    = "ide2"
+    upgrade      = true
+    dns {
+      servers = var.dns_servers
+    }
+    ip_config {
+      ipv4 {
+        address = var.k3s01_ipv4_address
+        gateway = var.ipv4_gateway
+      }
+    }
+    user_account {
+      username = "qnsc"
+      keys     = var.ssh_public_keys
+    }
   }
 
   on_boot = true
