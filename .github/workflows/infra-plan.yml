@@ -390,6 +390,13 @@ jobs:
           # vars print in job logs / PR text, secrets are masked (edge v5 migration)
           TF_VAR_admin_hostnames:       ${{ secrets.ADMIN_HOSTNAMES }}
           TF_VAR_tunnels_exist:         ${{ vars.TUNNELS_EXIST }}
+          # MCP hub (live/edge/variables.mcp_hub.tf). Flag and ids are repo VARIABLES. `|| 'false'`: an empty value
+          # breaks the bool. The two OAuth client SECRETS are NOT passed here: this job holds no environment secret.
+          TF_VAR_mcp_hub_enabled:                    ${{ matrix.stack == 'edge' && (vars.MCP_HUB_ENABLED || 'false') || 'false' }}
+          TF_VAR_mcp_github_oauth_client_id:         ${{ matrix.stack == 'edge' && vars.MCP_GITHUB_OAUTH_CLIENT_ID || '' }}
+          TF_VAR_mcp_grafana_oauth_client_id:        ${{ matrix.stack == 'edge' && vars.MCP_GRAFANA_OAUTH_CLIENT_ID || '' }}
+          TF_VAR_mcp_grafana_authorization_endpoint: ${{ matrix.stack == 'edge' && vars.MCP_GRAFANA_AUTHORIZATION_ENDPOINT || '' }}
+          TF_VAR_mcp_grafana_token_endpoint:         ${{ matrix.stack == 'edge' && vars.MCP_GRAFANA_TOKEN_ENDPOINT || '' }}
           TF_VAR_grp_platform_admins_id: ${{ vars.ENTRA_GRP_PLATFORM_ADMINS_ID }}
           TF_VAR_grp_developers_id:     ${{ vars.ENTRA_GRP_DEVELOPERS_ID }}
           TF_VAR_entra_tenant_id:       ${{ vars.ENTRA_TENANT_ID }}

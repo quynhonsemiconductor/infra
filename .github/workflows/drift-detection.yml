@@ -146,6 +146,12 @@ jobs:
           # "required variable not set"). Secrets where the value is sensitive.
           TF_VAR_admin_hostnames:        ${{ contains(fromJSON('["edge","onprem"]'), matrix.stack) && secrets.ADMIN_HOSTNAMES || '' }}
           TF_VAR_tunnels_exist:          ${{ matrix.stack == 'edge' && vars.TUNNELS_EXIST || '' }}
+          # MCP hub (live/edge/variables.mcp_hub.tf): flag and ids only; no client secret in drift (read-only run). `|| 'false'`: empty breaks the bool.
+          TF_VAR_mcp_hub_enabled:                    ${{ matrix.stack == 'edge' && (vars.MCP_HUB_ENABLED || 'false') || 'false' }}
+          TF_VAR_mcp_github_oauth_client_id:         ${{ matrix.stack == 'edge' && vars.MCP_GITHUB_OAUTH_CLIENT_ID || '' }}
+          TF_VAR_mcp_grafana_oauth_client_id:        ${{ matrix.stack == 'edge' && vars.MCP_GRAFANA_OAUTH_CLIENT_ID || '' }}
+          TF_VAR_mcp_grafana_authorization_endpoint: ${{ matrix.stack == 'edge' && vars.MCP_GRAFANA_AUTHORIZATION_ENDPOINT || '' }}
+          TF_VAR_mcp_grafana_token_endpoint:         ${{ matrix.stack == 'edge' && vars.MCP_GRAFANA_TOKEN_ENDPOINT || '' }}
           TF_VAR_grp_platform_admins_id: ${{ matrix.stack == 'edge' && vars.ENTRA_GRP_PLATFORM_ADMINS_ID || '' }}
           TF_VAR_grp_developers_id:      ${{ matrix.stack == 'edge' && vars.ENTRA_GRP_DEVELOPERS_ID || '' }}
           TF_VAR_entra_tenant_id:        ${{ matrix.stack == 'edge' && vars.ENTRA_TENANT_ID || '' }}
@@ -183,6 +189,12 @@ jobs:
           # "required variable not set"). Secrets where the value is sensitive.
           TF_VAR_admin_hostnames:        ${{ contains(fromJSON('["edge","onprem"]'), matrix.stack) && secrets.ADMIN_HOSTNAMES || '' }}
           TF_VAR_tunnels_exist:          ${{ matrix.stack == 'edge' && vars.TUNNELS_EXIST || '' }}
+          # MCP hub (live/edge/variables.mcp_hub.tf): flag and ids only; no client secret in drift (read-only run). `|| 'false'`: empty breaks the bool.
+          TF_VAR_mcp_hub_enabled:                    ${{ matrix.stack == 'edge' && (vars.MCP_HUB_ENABLED || 'false') || 'false' }}
+          TF_VAR_mcp_github_oauth_client_id:         ${{ matrix.stack == 'edge' && vars.MCP_GITHUB_OAUTH_CLIENT_ID || '' }}
+          TF_VAR_mcp_grafana_oauth_client_id:        ${{ matrix.stack == 'edge' && vars.MCP_GRAFANA_OAUTH_CLIENT_ID || '' }}
+          TF_VAR_mcp_grafana_authorization_endpoint: ${{ matrix.stack == 'edge' && vars.MCP_GRAFANA_AUTHORIZATION_ENDPOINT || '' }}
+          TF_VAR_mcp_grafana_token_endpoint:         ${{ matrix.stack == 'edge' && vars.MCP_GRAFANA_TOKEN_ENDPOINT || '' }}
           TF_VAR_grp_platform_admins_id: ${{ matrix.stack == 'edge' && vars.ENTRA_GRP_PLATFORM_ADMINS_ID || '' }}
           TF_VAR_grp_developers_id:      ${{ matrix.stack == 'edge' && vars.ENTRA_GRP_DEVELOPERS_ID || '' }}
           TF_VAR_entra_tenant_id:        ${{ matrix.stack == 'edge' && vars.ENTRA_TENANT_ID || '' }}

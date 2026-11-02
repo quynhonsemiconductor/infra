@@ -250,6 +250,13 @@ jobs:
           TF_VAR_teams_webhook_url:     ${{ secrets.TEAMS_ALERTS_WEBHOOK_URL }}
           TF_VAR_admin_hostnames:       ${{ secrets.ADMIN_HOSTNAMES }}
           TF_VAR_tunnels_exist:         ${{ vars.TUNNELS_EXIST }}
+          # MCP hub (live/edge/variables.mcp_hub.tf). Flag and ids are repo VARIABLES. `|| 'false'`: an empty value
+          # breaks the bool. The two OAuth client SECRETS are NOT passed here: this job holds no environment secret.
+          TF_VAR_mcp_hub_enabled:                    ${{ matrix.stack == 'edge' && (vars.MCP_HUB_ENABLED || 'false') || 'false' }}
+          TF_VAR_mcp_github_oauth_client_id:         ${{ matrix.stack == 'edge' && vars.MCP_GITHUB_OAUTH_CLIENT_ID || '' }}
+          TF_VAR_mcp_grafana_oauth_client_id:        ${{ matrix.stack == 'edge' && vars.MCP_GRAFANA_OAUTH_CLIENT_ID || '' }}
+          TF_VAR_mcp_grafana_authorization_endpoint: ${{ matrix.stack == 'edge' && vars.MCP_GRAFANA_AUTHORIZATION_ENDPOINT || '' }}
+          TF_VAR_mcp_grafana_token_endpoint:         ${{ matrix.stack == 'edge' && vars.MCP_GRAFANA_TOKEN_ENDPOINT || '' }}
           TF_VAR_grp_platform_admins_id: ${{ vars.ENTRA_GRP_PLATFORM_ADMINS_ID }}
           TF_VAR_grp_developers_id:     ${{ vars.ENTRA_GRP_DEVELOPERS_ID }}
           TF_VAR_entra_tenant_id:       ${{ vars.ENTRA_TENANT_ID }}
@@ -406,6 +413,15 @@ jobs:
             fi
           done
           [ "$bad" = "0" ] || exit 1
+          # MCP hub: the empty-secret guard lives HERE (the apply job holds the secrets), not in a precondition of the
+          # stack, so that PR plans and drift, which have no environment secret, can still plan with the hub on.
+          if [ "${TF_VAR_mcp_hub_enabled:-false}" = "true" ]; then
+            [ -n "${TF_VAR_mcp_github_oauth_client_id:-}" ] && [ -n "${TF_VAR_mcp_github_oauth_client_secret:-}" ] || {
+              echo "::error::edge apply: MCP_HUB_ENABLED is true but the GitHub OAuth client id (variable MCP_GITHUB_OAUTH_CLIENT_ID) or secret (environment secret MCP_GITHUB_OAUTH_CLIENT_SECRET) is empty"; exit 1; }
+            if [ -n "${TF_VAR_mcp_grafana_oauth_client_id:-}" ] && [ -z "${TF_VAR_mcp_grafana_oauth_client_secret:-}" ]; then
+              echo "::error::edge apply: a manual Grafana OAuth client id is set but the environment secret MCP_GRAFANA_OAUTH_CLIENT_SECRET is empty"; exit 1
+            fi
+          fi
           set +e
           tofu plan -input=false -detailed-exitcode -out tfplan -no-color 2>&1 | tee plan.txt
           ec=${PIPESTATUS[0]}   # tofu's real exit, independent of the tee pipe
@@ -428,6 +444,15 @@ jobs:
           # A secret, not a var: partner addresses must not print in public logs.
           TF_VAR_warp_extra_excludes: ${{ secrets.WARP_EXTRA_EXCLUDES || '[]' }}
           TF_VAR_tunnels_exist: ${{ vars.TUNNELS_EXIST }}
+          # MCP hub (live/edge/variables.mcp_hub.tf): flag and ids are repo variables (`|| 'false'`: an empty value breaks the
+          # bool); the two OAuth client secrets are ENVIRONMENT secrets of `production`, so only this job has them.
+          TF_VAR_mcp_hub_enabled: ${{ vars.MCP_HUB_ENABLED || 'false' }}
+          TF_VAR_mcp_github_oauth_client_id: ${{ vars.MCP_GITHUB_OAUTH_CLIENT_ID }}
+          TF_VAR_mcp_github_oauth_client_secret: ${{ secrets.MCP_GITHUB_OAUTH_CLIENT_SECRET }}
+          TF_VAR_mcp_grafana_oauth_client_id: ${{ vars.MCP_GRAFANA_OAUTH_CLIENT_ID }}
+          TF_VAR_mcp_grafana_oauth_client_secret: ${{ secrets.MCP_GRAFANA_OAUTH_CLIENT_SECRET }}
+          TF_VAR_mcp_grafana_authorization_endpoint: ${{ vars.MCP_GRAFANA_AUTHORIZATION_ENDPOINT }}
+          TF_VAR_mcp_grafana_token_endpoint: ${{ vars.MCP_GRAFANA_TOKEN_ENDPOINT }}
           TF_VAR_grp_platform_admins_id: ${{ vars.ENTRA_GRP_PLATFORM_ADMINS_ID }}
           TF_VAR_grp_developers_id: ${{ vars.ENTRA_GRP_DEVELOPERS_ID }}
           TF_VAR_entra_tenant_id: ${{ vars.ENTRA_TENANT_ID }}
