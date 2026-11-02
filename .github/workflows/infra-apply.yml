@@ -2,18 +2,43 @@
 # Infrastructure · Apply — applies changed live/ stacks on push to main.
 # (OpenTofu under the hood — named by capability, not tool.)
 #
-# A `detect` job diffs the push and selects candidate stacks (a change to this
-# workflow selects everything; manual dispatch selects all). Each stack
-# then plans to a saved file with -detailed-exitcode and applies ONLY that exact
-# file, and ONLY when the plan shows changes (exit 2) — an unchanged stack is
-# skipped, so a workflow/module edit never silently re-applies live infra.
+# PLAN FIRST, APPROVE WHAT YOU SAW (README "How an apply works now"):
+#
+#   detect   which stacks (push: the ones this push touched; dispatch: the `stacks`
+#            input, validated; a change to this workflow selects all)
+#   plan     one job per stack, NO environment, the read-only identity and tokens
+#            infra-plan.yml uses: `tofu plan -detailed-exitcode`. Writes a summary
+#            to the job summary (+add ~change -destroy and the resource addresses,
+#            never a value) and a fingerprint = sha256 of the sorted
+#            "<address> <action>" lines of the plan. Plan files and plan JSON are
+#            NEVER uploaded: this repo is public and a plan holds secret values.
+#            Only a tiny {stack, has_changes, fingerprint} JSON crosses jobs.
+#   gate     collects the plan stage: which stacks have changes, their fingerprints.
+#            A plan that errors fails the gate and nothing is applied in this run.
+#   apply-*  only for stacks with changes (a stack with none never asks for approval),
+#            in environment `production` (the owner approves). It re-plans with the
+#            write credentials, recomputes the fingerprint and FAILS WITHOUT APPLYING
+#            if it differs from the one that was shown ("plan changed since approval,
+#            re-run"). The destructive-guard still runs on that plan.
+#
+# ORDER: apply-onprem after apply-edge (it reads the edge Access apps),
+# observability-alerting after observability.
+#
+# LEGACY_STACKS (below): stacks whose read-only plan is not comparable to the write
+# plan (`observability`: a read-only Grafana token cannot refresh its stack service
+# account, infra-plan.yml plans it with -refresh=false). They skip the plan stage and
+# the fingerprint check: selected means the apply job runs and asks for approval, as
+# it did before this flow. Nothing is weakened for them: empty-secret guards and the
+# destructive-guard are unchanged. A stack whose read-only inputs differ from its
+# write inputs would fail closed on the fingerprint; move it to LEGACY_STACKS.
+#
 # EVERY apply job runs in the GitHub Environment `production` (audit-infra
 # 2026-11-02 C-2/A-4): it is the reviewer gate (the owner), the OIDC trust
 # boundary (the Azure apply identity federates only environment:production; the
-# state backend is Azure for every stack), and the home of the WRITE tokens (environment
-# secrets CLOUDFLARE_API_TOKEN, GRAFANA_CLOUD_API_KEY, ... — PR plans only get
-# the *_READONLY ones). A merge that changes a stack therefore waits for the
-# owner's approval on the run page; while it waits it holds the apply
+# state backend is Azure for every stack), and the home of the WRITE tokens
+# (environment secrets CLOUDFLARE_API_TOKEN, GRAFANA_CLOUD_API_KEY, ... — PR plans
+# and the plan stage only get the *_READONLY ones). A run that has changes therefore
+# waits for the owner's approval on the run page; while it waits it holds the apply
 # concurrency lock (cancel-in-progress:false), so approve or reject promptly.
 #
 # storage-prod stays DELIBERATE-ONLY: it runs only via a manual workflow_dispatch
@@ -23,7 +48,7 @@
 # and organization are RETIRED and are no longer applied here (their state is
 # archived; account closure removes what is left). No job in this workflow holds
 # AWS credentials: every stack uses the Azure backend and the Entra OIDC
-# identity (environment: production).
+# identity.
 # =============================================================================
 name: Infrastructure · Apply
 
@@ -39,6 +64,10 @@ on:
         description: "Also apply the production-tier stack (storage-prod). Still gated by the production environment reviewer."
         type: boolean
         default: false
+      stacks:
+        description: "Comma-separated stacks to plan and apply (edge, storage-dev, storage-prod, observability, observability-alerting, adaptive-metrics, onprem), or `all` (default: every stack except observability, which must be named). Unknown names fail the run."
+        type: string
+        default: all
       allow_destructive:
         description: "Allow this run to DELETE or REPLACE DNS / identity resources (Cloudflare records, Access apps, tunnels, ...). Read the plan first: see docs/incidents/2026-10-09-edge-dns.md."
         type: boolean
@@ -55,11 +84,14 @@ permissions:
 
 env:
   TOFU_VERSION: "1.9.1"
+  # Stacks whose read-only plan is not comparable to the write plan: no plan stage, no fingerprint
+  # check, the apply job asks for approval whenever the stack is selected (see the header).
+  LEGACY_STACKS: "observability"
 
 jobs:
   # ───────────────────────────────────────────────────────────────────────
-  # Which live/ stacks changed in this push? (workflow change, or a
-  # manual dispatch → apply all.) Downstream jobs gate on this list.
+  # Which live/ stacks does this run cover? Push: the stacks the push touched (a change to this
+  # workflow selects all). Dispatch: the validated `stacks` input. Downstream jobs gate on these lists.
   # ───────────────────────────────────────────────────────────────────────
   detect:
     name: Detect changed stacks
@@ -67,53 +99,75 @@ jobs:
     timeout-minutes: 5
     outputs:
       stacks: ${{ steps.changes.outputs.stacks }}
+      plan_stacks: ${{ steps.changes.outputs.plan_stacks }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Compute changed stacks
+      - name: Compute the stacks
         id: changes
         env:
           BEFORE: ${{ github.event.before }}
           AFTER: ${{ github.sha }}
+          EVENT: ${{ github.event_name }}
+          STACKS_INPUT: ${{ inputs.stacks }}
         run: |
           set -euo pipefail
-          # `observability` is NOT in this list: it cannot be planned (its state holds grafana_* objects whose provider alias the
-          # 2026-09-20 split removed, so every plan fails with "Provider configuration not present ... (orphan)"), and an all-stacks run
-          # that includes it is red every time. A change under live/observability/ still selects it below, so that remains visible.
-          # Put it back in this list with the state migration: docs/runbooks/observability-state-migration.md.
-          ALL='"edge","storage-dev","storage-prod","observability-alerting","adaptive-metrics","onprem"'
-          # Manual dispatch or an unknown/zero base commit → apply everything.
-          if [ -z "${BEFORE:-}" ] || [[ "$BEFORE" =~ ^0+$ ]] || ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
-            echo "stacks=[$ALL]" >> "$GITHUB_OUTPUT"; exit 0
+          KNOWN="edge storage-dev storage-prod observability observability-alerting adaptive-metrics onprem"
+          # `observability` is not in the default set: it is selected by a change under live/observability/
+          # or by naming it in the dispatch input (it is a LEGACY stack, see the workflow header).
+          DEFAULT="edge storage-dev storage-prod observability-alerting adaptive-metrics onprem"
+          sel=""
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            req=$(printf '%s' "${STACKS_INPUT:-all}" | tr ',' ' ' | xargs)
+            if [ -z "$req" ] || [ "$req" = "all" ]; then
+              sel="$DEFAULT"
+            else
+              for t in $req; do
+                case " $KNOWN " in
+                  *" $t "*) sel="$sel $t" ;;
+                  *) echo "::error::unknown stack '$t' in the stacks input. Known: $KNOWN (or all)"; exit 1 ;;
+                esac
+              done
+            fi
+          elif [ -z "${BEFORE:-}" ] || [[ "$BEFORE" =~ ^0+$ ]] || ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            sel="$DEFAULT"
+          else
+            CHANGED="$(git diff --name-only "$BEFORE" "$AFTER")"
+            echo "Changed files:"; echo "$CHANGED"
+            if echo "$CHANGED" | grep -qE '^\.github/(workflows/infra-apply\.yml|scripts/plan-fingerprint\.sh)$'; then
+              sel="$DEFAULT"
+            else
+              for s in $KNOWN; do
+                if echo "$CHANGED" | grep -qE "^live/$s/"; then sel="$sel $s"; fi
+              done
+            fi
           fi
-          CHANGED="$(git diff --name-only "$BEFORE" "$AFTER")"
-          echo "Changed files:"; echo "$CHANGED"
-          if echo "$CHANGED" | grep -qE '^\.github/workflows/infra-apply\.yml$'; then
-            echo "stacks=[$ALL]" >> "$GITHUB_OUTPUT"; exit 0
-          fi
-          SEL=""
-          for s in edge storage-dev storage-prod observability observability-alerting adaptive-metrics onprem; do
-            if echo "$CHANGED" | grep -qE "^live/$s/"; then SEL="$SEL\"$s\","; fi
-          done
-          echo "stacks=[${SEL%,}]" >> "$GITHUB_OUTPUT"
+          # de-duplicate, keep KNOWN order
+          out=""
+          for s in $KNOWN; do case " $sel " in *" $s "*) out="$out $s" ;; esac; done
+          plan=""
+          for s in $out; do case " $LEGACY_STACKS " in *" $s "*) ;; *) plan="$plan $s" ;; esac; done
+          json() { printf '%s\n' "$@" | sed '/^$/d' | jq -R . | jq -sc .; }
+          # shellcheck disable=SC2086  # word splitting of the stack lists is the point
+          { echo "stacks=$(json $out)"; echo "plan_stacks=$(json $plan)"; } >> "$GITHUB_OUTPUT"
+          echo "selected:$out | planned in the plan stage:$plan | legacy (approval without a fingerprint):$LEGACY_STACKS"
 
           # ── STACKS THIS PIPELINE DOES NOT APPLY ───────────────────────────
           # Reported, NOT applied, and the distinction is deliberate.
           #
-          # The list above is hardcoded, and `organization` (applied out of band) is not in it.
-          # infra-plan.yml derives its list from the filesystem so a stack cannot be silently
-          # unplanned. This job does NOT do the same, on purpose: adding a stack
-          # here starts APPLYING it on merge to main, which should be a decision, not a side effect.
+          # The list above is hardcoded. infra-plan.yml derives its list from the filesystem so a
+          # stack cannot be silently unplanned. This job does NOT do the same, on purpose: adding a
+          # stack here starts APPLYING it on merge to main, which should be a decision, not a side effect.
           #
           # So the gap is printed on every run instead of closed quietly. Silence
           # would let "merged" read as "applied", which for such a stack it is not.
           UNMANAGED=""
           for d in $(find live -name '*.tf' -not -path '*/.terraform/*' -exec dirname {} \; \
                        | sed 's|^live/||' | sort -u); do
-            case " edge storage-dev storage-prod observability observability-alerting adaptive-metrics onprem " in
+            case " $KNOWN " in
               *" $d "*) ;;
               *) UNMANAGED="$UNMANAGED $d" ;;
             esac
@@ -122,10 +176,173 @@ jobs:
             echo "::warning::on disk but never applied by this pipeline:$UNMANAGED"
           fi
 
+  # ───────────────────────────────────────────────────────────────────────
+  # PLAN STAGE — read-only identity and tokens, NO environment (so no approval and no write
+  # secret). Same credentials as infra-plan.yml. Summary + fingerprint only; no plan file or
+  # plan JSON leaves this job (public repo).
+  # ───────────────────────────────────────────────────────────────────────
+  plan:
+    name: Plan ${{ matrix.stack }}
+    needs: [detect]
+    if: ${{ needs.detect.outputs.plan_stacks != '[]' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        stack: ${{ fromJson(needs.detect.outputs.plan_stacks) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: quynhonsemiconductor/ci/actions/iac-lint@ea2c56bd9b03fb4d52e8fb9fe98dca95fd278638 # v1.24.5
+        with:
+          tofu-version: ${{ env.TOFU_VERSION }}
+          fmt: 'false'   # install only
+
+      - name: tofu init
+        working-directory: live/${{ matrix.stack }}
+        run: tofu init -input=false
+        env:
+          ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID_READ }}
+          ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
+          ARM_USE_OIDC:        'true'
+
+      # Mask the AM host: a runner-injected value, masked via env (same as infra-plan.yml).
+      - name: Mask the AM host
+        if: matrix.stack == 'adaptive-metrics'
+        run: echo "::add-mask::$AM_URL"
+        env:
+          AM_URL: ${{ vars.AM_METRICS_URL }}
+
+      - name: tofu plan
+        id: plan
+        working-directory: live/${{ matrix.stack }}
+        run: |
+          # Lock-free: the read identity cannot take the state lease, and a plan never mutates state.
+          # The plan text is NOT printed on success (the summary lists addresses only); on an error it
+          # is printed with UUIDs redacted so the failure can be read.
+          set +e
+          tofu plan -input=false -lock=false -no-color -detailed-exitcode -out=tfplan > plan.txt 2>&1
+          ec=$?
+          set -e
+          if [ "$ec" = "1" ]; then
+            sed -E 's/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/<redacted>/g' plan.txt
+            exit 1
+          fi
+          echo "exitcode=$ec" >> "$GITHUB_OUTPUT"
+        env:
+          ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID_READ }}
+          ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
+          ARM_USE_OIDC:        'true'
+          # READ-ONLY tokens, exactly the set infra-plan.yml gives a PR plan. The write tokens live in the
+          # `production` environment and reach the apply jobs only.
+          TF_VAR_cloudflare_zone_id:    ${{ vars.CLOUDFLARE_ZONE_ID }}
+          TF_VAR_office_ip:             ${{ vars.OFFICE_IP }}
+          TF_VAR_cloudflare_api_token:  ${{ secrets.CLOUDFLARE_API_TOKEN_READONLY }}
+          TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          TF_VAR_grafana_cloud_api_key: ${{ secrets.GRAFANA_CLOUD_API_KEY_READONLY }}
+          TF_VAR_teams_webhook_url:     ${{ secrets.TEAMS_ALERTS_WEBHOOK_URL }}
+          TF_VAR_admin_hostnames:       ${{ secrets.ADMIN_HOSTNAMES }}
+          TF_VAR_tunnels_exist:         ${{ vars.TUNNELS_EXIST }}
+          TF_VAR_grp_platform_admins_id: ${{ vars.ENTRA_GRP_PLATFORM_ADMINS_ID }}
+          TF_VAR_grp_developers_id:     ${{ vars.ENTRA_GRP_DEVELOPERS_ID }}
+          TF_VAR_entra_tenant_id:       ${{ vars.ENTRA_TENANT_ID }}
+          TF_VAR_entra_idp_client_id:   ${{ vars.ENTRA_IDP_CLIENT_ID }}
+          TF_VAR_entra_idp_client_secret: ${{ secrets.ENTRA_IDP_CLIENT_SECRET }}
+          TF_VAR_grafana_sm_token:       ${{ matrix.stack == 'observability-alerting' && secrets.GRAFANA_SM_TOKEN || '' }}
+          TF_VAR_adaptive_metrics_api_key: ${{ matrix.stack == 'adaptive-metrics' && secrets.GRAFANA_ADAPTIVE_METRICS_API_TOKEN_READONLY || '' }}
+          TF_VAR_adaptive_metrics_url:   ${{ matrix.stack == 'adaptive-metrics' && vars.AM_METRICS_URL || '' }}
+          TF_VAR_healthchecks_api_token: ${{ matrix.stack == 'observability-alerting' && secrets.HEALTHCHECKS_API_TOKEN_READONLY || '' }}
+          TF_VAR_admin_private_cidr:     ${{ contains(fromJSON('["onprem","edge"]'), matrix.stack) && secrets.ADMIN_PRIVATE_CIDR || '' }}
+          TF_VAR_warp_extra_excludes:    ${{ matrix.stack == 'edge' && secrets.WARP_EXTRA_EXCLUDES || '[]' }}
+
+      - name: Summary and fingerprint
+        id: fp
+        working-directory: live/${{ matrix.stack }}
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/plan-fingerprint.sh" plan "$STACK" "$EXIT_CODE"
+        env:
+          STACK: ${{ matrix.stack }}
+          EXIT_CODE: ${{ steps.plan.outputs.exitcode }}
+          FP_JSON: ${{ runner.temp }}/fp-${{ matrix.stack }}.json
+          ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID_READ }}
+          ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
+          ARM_USE_OIDC:        'true'
+
+      # Only {stack, has_changes, fingerprint}: three short fields, no plan, no values.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fp-${{ matrix.stack }}
+          path: ${{ runner.temp }}/fp-${{ matrix.stack }}.json
+          retention-days: 3
+          if-no-files-found: error
+
+  # ───────────────────────────────────────────────────────────────────────
+  # GATE — which stacks ask for approval, and the fingerprint each approval is for.
+  # ───────────────────────────────────────────────────────────────────────
+  gate:
+    name: Plan summary
+    needs: [detect, plan]
+    if: ${{ !cancelled() && needs.detect.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      changed: ${{ steps.collect.outputs.changed }}
+      fingerprints: ${{ steps.collect.outputs.fingerprints }}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: ${{ needs.plan.result == 'success' }}
+        with:
+          pattern: fp-*
+          merge-multiple: true
+          path: fp
+
+      - name: Collect
+        id: collect
+        env:
+          STACKS: ${{ needs.detect.outputs.stacks }}
+          PLAN_RESULT: ${{ needs.plan.result }}
+        run: |
+          set -euo pipefail
+          case "$PLAN_RESULT" in
+            success|skipped) ;;
+            *) echo "::error::a plan failed or was cancelled ($PLAN_RESULT). Nothing is applied in this run: fix the plan and re-run."; exit 1 ;;
+          esac
+          changed='[]'; fps='{}'
+          {
+            echo "### Plan stage"
+            echo
+            echo "| stack | changes | fingerprint | asks for approval |"
+            echo "|---|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for stack in $(jq -r '.[]' <<<"$STACKS"); do
+            case " $LEGACY_STACKS " in
+              *" $stack "*)
+                changed=$(jq -c --arg s "$stack" '. + [$s]' <<<"$changed")
+                echo "| $stack | not planned (legacy) | none | yes, when selected |" >> "$GITHUB_STEP_SUMMARY"
+                continue ;;
+            esac
+            f="fp/fp-${stack}.json"
+            [ -s "$f" ] || { echo "::error::no plan result for $stack"; exit 1; }
+            has=$(jq -r .has_changes "$f"); fp=$(jq -r .fingerprint "$f")
+            if [ "$has" = "true" ]; then
+              changed=$(jq -c --arg s "$stack" '. + [$s]' <<<"$changed")
+              fps=$(jq -c --arg s "$stack" --arg f "$fp" '. + {($s): $f}' <<<"$fps")
+              echo "| $stack | yes | \`${fp:0:12}\` | yes |" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "| $stack | none | | no |" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+          { echo "changed=$changed"; echo "fingerprints=$fps"; } >> "$GITHUB_OUTPUT"
+
   apply-edge:
     name: Apply edge
-    needs: [detect]
-    if: ${{ contains(fromJson(needs.detect.outputs.stacks), 'edge') }}
+    needs: [detect, gate]
+    if: ${{ !cancelled() && needs.gate.result == 'success' && contains(fromJson(needs.gate.outputs.changed), 'edge') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: production   # Cloudflare edge — account/zone-wide
@@ -201,6 +418,19 @@ jobs:
           TF_VAR_entra_idp_client_id: ${{ vars.ENTRA_IDP_CLIENT_ID }}
           TF_VAR_entra_idp_client_secret: ${{ secrets.ENTRA_IDP_CLIENT_SECRET }}
 
+      # APPROVE WHAT YOU SAW: the plan above ran with the write credentials; its fingerprint (sha256 of the sorted
+      # "<address> <action>" lines) must equal the one the plan stage showed for approval, else nothing is applied.
+      # No approved fingerprint (a legacy stack) means the plan made just now is applied, as before this flow.
+      - name: Verify the plan is the one that was approved
+        if: steps.plan.outputs.exitcode != '1'
+        working-directory: live/edge
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/plan-fingerprint.sh" check edge
+        env:
+          EXPECTED_FP: ${{ fromJson(needs.gate.outputs.fingerprints)['edge'] }}
+          ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
+          ARM_USE_OIDC:        'true'
+
       # A provider bump, a lock-file change or an empty variable can turn a plan into "replace every DNS record" (2026-10-09).
       # The plan is applied unreviewed here, so it is read first: deleting or replacing a DNS/identity resource needs the
       # `allow-dns-destroy` label on the merged PR (or the allow_destructive dispatch input).
@@ -230,8 +460,8 @@ jobs:
   # ───────────────────────────────────────────────────────────────────────
   apply-observability:
     name: Apply observability
-    needs: [detect]
-    if: ${{ contains(fromJson(needs.detect.outputs.stacks), 'observability') }}
+    needs: [detect, gate]
+    if: ${{ !cancelled() && needs.gate.result == 'success' && contains(fromJson(needs.gate.outputs.changed), 'observability') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: production   # platform blast radius — auto-apply on merge (parity with observability-alerting); the PR review is the gate
@@ -286,6 +516,19 @@ jobs:
           TF_VAR_teams_webhook_url: ${{ secrets.TEAMS_ALERTS_WEBHOOK_URL }}
           TF_VAR_office_ip: ${{ vars.OFFICE_IP }}
 
+      # APPROVE WHAT YOU SAW: the plan above ran with the write credentials; its fingerprint (sha256 of the sorted
+      # "<address> <action>" lines) must equal the one the plan stage showed for approval, else nothing is applied.
+      # No approved fingerprint (a legacy stack) means the plan made just now is applied, as before this flow.
+      - name: Verify the plan is the one that was approved
+        if: steps.plan.outputs.exitcode != '1'
+        working-directory: live/observability
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/plan-fingerprint.sh" check observability
+        env:
+          EXPECTED_FP: ${{ fromJson(needs.gate.outputs.fingerprints)['observability'] }}
+          ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
+          ARM_USE_OIDC:        'true'
+
       # A provider bump, a lock-file change or an empty variable can turn a plan into "replace every DNS record" (2026-10-09).
       # The plan is applied unreviewed here, so it is read first: deleting or replacing a DNS/identity resource needs the
       # `allow-dns-destroy` label on the merged PR (or the allow_destructive dispatch input).
@@ -308,8 +551,8 @@ jobs:
   apply-observability-alerting:
     name: Apply observability-alerting
     # After the observability job: this stack reads its state (Grafana url and token).
-    needs: [detect, apply-observability]
-    if: ${{ always() && contains(fromJson(needs.detect.outputs.stacks), 'observability-alerting') && needs.apply-observability.result != 'failure' && needs.apply-observability.result != 'cancelled' }}
+    needs: [detect, gate, apply-observability]
+    if: ${{ !cancelled() && needs.gate.result == 'success' && contains(fromJson(needs.gate.outputs.changed), 'observability-alerting') && needs.apply-observability.result != 'failure' && needs.apply-observability.result != 'cancelled' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: production   # platform blast radius — auto-apply on merge (parity with observability-alerting); the PR review is the gate
@@ -360,6 +603,19 @@ jobs:
           TF_VAR_grafana_sm_token:       ${{ secrets.GRAFANA_SM_TOKEN }}
           TF_VAR_healthchecks_api_token: ${{ secrets.HEALTHCHECKS_API_TOKEN }}
 
+      # APPROVE WHAT YOU SAW: the plan above ran with the write credentials; its fingerprint (sha256 of the sorted
+      # "<address> <action>" lines) must equal the one the plan stage showed for approval, else nothing is applied.
+      # No approved fingerprint (a legacy stack) means the plan made just now is applied, as before this flow.
+      - name: Verify the plan is the one that was approved
+        if: steps.plan.outputs.exitcode != '1'
+        working-directory: live/observability-alerting
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/plan-fingerprint.sh" check observability-alerting
+        env:
+          EXPECTED_FP: ${{ fromJson(needs.gate.outputs.fingerprints)['observability-alerting'] }}
+          ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
+          ARM_USE_OIDC:        'true'
+
       # A provider bump, a lock-file change or an empty variable can turn a plan into "replace every DNS record" (2026-10-09).
       # The plan is applied unreviewed here, so it is read first: deleting or replacing a DNS/identity resource needs the
       # `allow-dns-destroy` label on the merged PR (or the allow_destructive dispatch input).
@@ -391,8 +647,8 @@ jobs:
 
   apply-adaptive-metrics:
     name: Apply adaptive-metrics
-    needs: [detect]
-    if: ${{ contains(fromJson(needs.detect.outputs.stacks), 'adaptive-metrics') }}
+    needs: [detect, gate]
+    if: ${{ !cancelled() && needs.gate.result == 'success' && contains(fromJson(needs.gate.outputs.changed), 'adaptive-metrics') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: production   # platform blast radius — auto-apply on merge (parity with observability-alerting); the PR review is the gate
@@ -442,6 +698,19 @@ jobs:
           TF_VAR_adaptive_metrics_url:   ${{ vars.AM_METRICS_URL }}
           TF_VAR_adaptive_metrics_api_key: ${{ secrets.GRAFANA_ADAPTIVE_METRICS_API_TOKEN }}
 
+      # APPROVE WHAT YOU SAW: the plan above ran with the write credentials; its fingerprint (sha256 of the sorted
+      # "<address> <action>" lines) must equal the one the plan stage showed for approval, else nothing is applied.
+      # No approved fingerprint (a legacy stack) means the plan made just now is applied, as before this flow.
+      - name: Verify the plan is the one that was approved
+        if: steps.plan.outputs.exitcode != '1'
+        working-directory: live/adaptive-metrics
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/plan-fingerprint.sh" check adaptive-metrics
+        env:
+          EXPECTED_FP: ${{ fromJson(needs.gate.outputs.fingerprints)['adaptive-metrics'] }}
+          ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
+          ARM_USE_OIDC:        'true'
+
       - name: Refuse destructive DNS / identity changes
         if: steps.plan.outputs.exitcode == '2'
         uses: quynhonsemiconductor/ci/actions/destructive-guard@ea2c56bd9b03fb4d52e8fb9fe98dca95fd278638 # v1.24.5
@@ -473,8 +742,8 @@ jobs:
   # are the human gate (the plan output is the PR review).
   apply-onprem:
     name: Apply onprem
-    needs: [detect]
-    if: ${{ contains(fromJson(needs.detect.outputs.stacks), 'onprem') }}
+    needs: [detect, gate, apply-edge]
+    if: ${{ !cancelled() && needs.gate.result == 'success' && contains(fromJson(needs.gate.outputs.changed), 'onprem') && needs.apply-edge.result != 'failure' && needs.apply-edge.result != 'cancelled' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: production   # PROTECT with required reviewers — the apply identity's OIDC subject
@@ -525,6 +794,19 @@ jobs:
           TF_VAR_admin_private_cidr:    ${{ secrets.ADMIN_PRIVATE_CIDR }}
           TF_VAR_admin_hostnames:       ${{ secrets.ADMIN_HOSTNAMES }}
 
+      # APPROVE WHAT YOU SAW: the plan above ran with the write credentials; its fingerprint (sha256 of the sorted
+      # "<address> <action>" lines) must equal the one the plan stage showed for approval, else nothing is applied.
+      # No approved fingerprint (a legacy stack) means the plan made just now is applied, as before this flow.
+      - name: Verify the plan is the one that was approved
+        if: steps.plan.outputs.exitcode != '1'
+        working-directory: live/onprem
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/plan-fingerprint.sh" check onprem
+        env:
+          EXPECTED_FP: ${{ fromJson(needs.gate.outputs.fingerprints)['onprem'] }}
+          ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
+          ARM_USE_OIDC:        'true'
+
       - name: Refuse destructive DNS / identity changes
         if: steps.plan.outputs.exitcode == '2'
         uses: quynhonsemiconductor/ci/actions/destructive-guard@ea2c56bd9b03fb4d52e8fb9fe98dca95fd278638 # v1.24.5
@@ -557,8 +839,8 @@ jobs:
   # ───────────────────────────────────────────────────────────────────────
   apply-storage-dev:
     name: Apply storage-dev
-    needs: [detect]
-    if: ${{ contains(fromJson(needs.detect.outputs.stacks), 'storage-dev') }}
+    needs: [detect, gate]
+    if: ${{ !cancelled() && needs.gate.result == 'success' && contains(fromJson(needs.gate.outputs.changed), 'storage-dev') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: production
@@ -605,6 +887,19 @@ jobs:
           TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           TF_VAR_cloudflare_zone_id:    ${{ vars.CLOUDFLARE_ZONE_ID }}
 
+      # APPROVE WHAT YOU SAW: the plan above ran with the write credentials; its fingerprint (sha256 of the sorted
+      # "<address> <action>" lines) must equal the one the plan stage showed for approval, else nothing is applied.
+      # No approved fingerprint (a legacy stack) means the plan made just now is applied, as before this flow.
+      - name: Verify the plan is the one that was approved
+        if: steps.plan.outputs.exitcode != '1'
+        working-directory: live/storage-dev
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/plan-fingerprint.sh" check storage-dev
+        env:
+          EXPECTED_FP: ${{ fromJson(needs.gate.outputs.fingerprints)['storage-dev'] }}
+          ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
+          ARM_USE_OIDC:        'true'
+
       # A provider bump, a lock-file change or an empty variable can turn a plan into "replace every DNS record" (2026-10-09).
       # The plan is applied unreviewed here, so it is read first: deleting or replacing a DNS/identity resource needs the
       # `allow-dns-destroy` label on the merged PR (or the allow_destructive dispatch input).
@@ -626,11 +921,11 @@ jobs:
 
   apply-storage-prod:
     name: Apply storage-prod
-    needs: [detect]
+    needs: [detect, gate]
     # Prod is deliberate-only: runs solely on a manual workflow_dispatch with
     # apply_prod=true (then still reviewer-gated). Never queued on a push, so a
     # normal merge can't leave a pending prod job holding the concurrency lock.
-    if: ${{ always() && contains(fromJson(needs.detect.outputs.stacks), 'storage-prod') && github.event_name == 'workflow_dispatch' && inputs.apply_prod }}
+    if: ${{ !cancelled() && needs.gate.result == 'success' && contains(fromJson(needs.gate.outputs.changed), 'storage-prod') && github.event_name == 'workflow_dispatch' && inputs.apply_prod }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: production   # PROTECT with required reviewers
@@ -676,6 +971,19 @@ jobs:
           TF_VAR_cloudflare_api_token:  ${{ secrets.CLOUDFLARE_API_TOKEN }}
           TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           TF_VAR_cloudflare_zone_id:    ${{ vars.CLOUDFLARE_ZONE_ID }}
+
+      # APPROVE WHAT YOU SAW: the plan above ran with the write credentials; its fingerprint (sha256 of the sorted
+      # "<address> <action>" lines) must equal the one the plan stage showed for approval, else nothing is applied.
+      # No approved fingerprint (a legacy stack) means the plan made just now is applied, as before this flow.
+      - name: Verify the plan is the one that was approved
+        if: steps.plan.outputs.exitcode != '1'
+        working-directory: live/storage-prod
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/plan-fingerprint.sh" check storage-prod
+        env:
+          EXPECTED_FP: ${{ fromJson(needs.gate.outputs.fingerprints)['storage-prod'] }}
+          ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
+          ARM_USE_OIDC:        'true'
 
       # A provider bump, a lock-file change or an empty variable can turn a plan into "replace every DNS record" (2026-10-09).
       # The plan is applied unreviewed here, so it is read first: deleting or replacing a DNS/identity resource needs the
