@@ -104,69 +104,35 @@ resource "cloudflare_ruleset" "assets_nosniff" {
 }
 
 # =============================================================================
-# Shared wildcard TLS certificate — *.qnsc.vn in ap-southeast-1.
+# AWS exit (audit-infra 2026-11-02 A-3): the shared *.qnsc.vn ACM certificate
+# and its DNS validation record are no longer managed here.
 #
-# One regional ACM cert fronts every product API on the shared ALB
-# (rally-api-dev.qnsc.vn, opshub-api-dev.qnsc.vn, …), so it lives here in the
-# platform edge layer, not in any product or runtime stack. Its ARN is exported
-# and consumed by runtime-dev/runtime-prod via terraform_remote_state — no human
-# ever copies a cert ARN into a GitHub variable.
-#
-# Scope is deliberately *.qnsc.vn only (no apex SAN): the ALB serves API
-# subdomains, while the apex + web hosts live on Cloudflare Pages with their own
-# edge TLS. A single-label wildcard covers every *-api-<env>.qnsc.vn host.
-#
-# Validation is DNS-01 through the same Cloudflare zone this stack already owns
-# (token: Zone:DNS:Edit). for_each is keyed on domain_name (known at plan time —
-# resource_record_name is computed and would break for_each).
+# `destroy = false` on purpose: the AWS ALB (the rova rollback path during the
+# 72 h soak) still serves this certificate, and the validation CNAME keeps ACM
+# renewal working until the account is closed. Both go away with the account;
+# the CNAME is removed by hand in the dashboard afterwards (audit E-5). The plan
+# for this change must show these three as "will no longer be managed", never as
+# a destroy.
 # =============================================================================
-resource "aws_acm_certificate" "wildcard" {
-  domain_name       = "*.${var.certificate_domain}"
-  validation_method = "DNS"
-
+removed {
+  from = aws_acm_certificate.wildcard
   lifecycle {
-    create_before_destroy = true
-  }
-
-  tags = { Name = "qnsc-wildcard-${var.certificate_domain}" }
-}
-
-resource "cloudflare_dns_record" "acm_validation" {
-  for_each = {
-    for dvo in aws_acm_certificate.wildcard.domain_validation_options :
-    dvo.domain_name => {
-      name    = trimsuffix(dvo.resource_record_name, ".")
-      type    = dvo.resource_record_type
-      content = trimsuffix(dvo.resource_record_value, ".")
-    }
-  }
-
-  zone_id = var.cloudflare_zone_id
-  name    = each.value.name
-  type    = each.value.type
-  content = each.value.content
-  ttl     = 60
-  proxied = false # validation CNAME — DNS-only, never orange-clouded
-  comment = "ACM DNS validation for *.${var.certificate_domain} (qnsc-infra/edge)"
-  # v5 note: v4's `allow_overwrite` is gone; the create fails loudly on a
-  # conflicting record instead. This record is imported (never re-created), so
-  # that path only matters on a deliberate rebuild.
-
-  lifecycle {
-    # A DNS record whose zone_id changes is destroyed and re-created, and a failed re-create is an outage (2026-10-09).
-    # This stops the plan instead. To really replace it, delete this line in the same reviewed change.
-    prevent_destroy = true
-
-    precondition {
-      condition     = can(regex("^[0-9a-f]{32}$", var.cloudflare_zone_id))
-      error_message = "cloudflare_zone_id must be the 32-hex-character zone id of qnsc.vn: this resource's zone_id forces REPLACEMENT, so a null or empty value would destroy it."
-    }
+    destroy = false
   }
 }
 
-resource "aws_acm_certificate_validation" "wildcard" {
-  certificate_arn         = aws_acm_certificate.wildcard.arn
-  validation_record_fqdns = [for r in cloudflare_dns_record.acm_validation : r.name]
+removed {
+  from = cloudflare_dns_record.acm_validation
+  lifecycle {
+    destroy = false
+  }
+}
+
+removed {
+  from = aws_acm_certificate_validation.wildcard
+  lifecycle {
+    destroy = false
+  }
 }
 
 # =============================================================================

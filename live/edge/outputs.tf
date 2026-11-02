@@ -14,8 +14,11 @@ output "custom_ruleset_id" {
 }
 
 output "acm_cert_arn" {
-  value       = aws_acm_certificate_validation.wildcard.certificate_arn
-  description = "Validated wildcard *.qnsc.vn ACM cert ARN (ap-southeast-1) for the shared ALB. Consumed by runtime-dev/runtime-prod via terraform_remote_state."
+  # AWS exit: the certificate is no longer managed here. Kept (null) only so
+  # runtime-dev/runtime-prod, which read it through terraform_remote_state, can
+  # still be refreshed and destroyed. Delete this output with those stacks.
+  value       = null
+  description = "Deprecated, always null. The ACM certificate left this stack with the AWS exit."
 }
 
 output "landing_pages_subdomain" {
