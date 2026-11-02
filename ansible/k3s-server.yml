@@ -9,6 +9,8 @@
   gather_facts: true
   serial: 1
   roles:
+    - role: vm_guest
+      tags: [vm_guest]
     - role: apparmor_containerd
       vars:
         apparmor_containerd_k3s_unit: k3s

@@ -1,0 +1,30 @@
+---
+# What every Proxmox VM needs from the inside: the QEMU guest agent (qm guest cmd, clean shutdown, fs freeze for
+# backups). The stock Ubuntu cloud image (template 9000) does not ship it.
+# The unit is static: udev starts it when the agent's virtio port appears (60-qemu-guest-agent.rules, BindsTo= the
+# port device). There is nothing to enable; it only has to be installed and running.
+- name: The guest agent's virtio port exists (agent enabled in the VM config)
+  ansible.builtin.stat:
+    path: /dev/virtio-ports/org.qemu.guest_agent.0
+  register: vm_guest_port
+
+- name: Refuse when the VM has no guest agent port
+  ansible.builtin.assert:
+    that: vm_guest_port.stat.exists
+    fail_msg: >-
+      /dev/virtio-ports/org.qemu.guest_agent.0 is missing: the VM is not configured with the agent
+      (OpenTofu `agent { enabled = true }` / qm set <id> --agent enabled=1, then a full stop and start of the VM).
+    quiet: true
+
+- name: Install the QEMU guest agent
+  ansible.builtin.apt:
+    name: qemu-guest-agent
+    state: present
+  register: vm_guest_package
+
+- name: The QEMU guest agent is running
+  ansible.builtin.systemd_service:
+    name: qemu-guest-agent.service
+    state: started
+  # in check mode a package that is not installed yet has no unit to start
+  when: not (ansible_check_mode and vm_guest_package is changed)

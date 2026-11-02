@@ -11,7 +11,7 @@ inventory/example/     the shape of the local inventory (documentation addresses
 group_vars/            values that are NOT site values (pins, hardware model ids)
 ping.yml               reach every host and become root
 roles/, *.yml          wave 1: pve-host.yml (pve_base, pve_gpu, pbs), k3s-server.yml, k3s-agent-gpu.yml,
-                       k3s-agent.yml (vlsi); every k3s playbook first runs apparmor_containerd and kernel
+                       k3s-agent.yml (vlsi); every k3s playbook first runs vm_guest, apparmor_containerd and kernel
 ```
 
 ## Set up (once, on the operator's machine)
