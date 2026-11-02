@@ -327,13 +327,23 @@ jobs:
           # comment (which reads plan.txt) would publish a working ping URL.
           # Everything downstream (artifact, comment) reads the REDACTED text.
           # PIPESTATUS[0] + pipefail keep tofu's real exit code through sed.
+          #
+          # `observability` plans with -refresh=false: a config-vs-state diff, which is what review needs.
+          # Grafana Cloud has no stack-service-accounts:read scope (only :write), so a read-only token can
+          # never refresh grafana_cloud_stack_service_account.alerting (403), and the write key must not
+          # reach a PR plan. The real refresh runs in the production-environment apply job with the write
+          # key (infra-apply.yml, apply-observability). See live/observability/README.md.
+          REFRESH_ARG=""
+          if [ "$STACK" = "observability" ]; then REFRESH_ARG="-refresh=false"; fi
           set -o pipefail
           set +e
-          tofu plan -input=false -lock=false -no-color -detailed-exitcode -out=tfplan 2>&1 \
+          # shellcheck disable=SC2086  # REFRESH_ARG is a fixed flag or empty
+          tofu plan -input=false -lock=false -no-color -detailed-exitcode $REFRESH_ARG -out=tfplan 2>&1 \
             | sed -E 's/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/<redacted>/g' \
             | tee plan.txt
           echo "exitcode=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
         env:
+          STACK: ${{ matrix.stack }}
           # Azure OIDC for the onprem azurerm backend (read identity — this job
           # plans lock-free, so write access is never needed).
           ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID_READ }}
