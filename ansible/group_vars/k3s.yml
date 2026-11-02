@@ -1,0 +1,6 @@
+---
+# One pin for the server and the agent, so they cannot drift (the same value as live/onprem-vm/files/k3s/version).
+k3s_version: "v1.36.5+k3s1"
+# sha256 of the installer at that tag (https://raw.githubusercontent.com/k3s-io/k3s/<tag>/install.sh): the
+# installer is fetched from the tag, not from get.k3s.io, and checked against this hash.
+k3s_install_script_sha256: "46177d4c99440b4c0311b67233823a8e8a2fc09693f6c89af1a7161e152fbfad"

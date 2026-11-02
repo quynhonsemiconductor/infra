@@ -59,3 +59,8 @@ entra-audit-report.md
 entra-audit-report.json
 **/graph.json
 **/exchange.json
+
+# Ansible: the real inventory is local; downloaded collections and caches are not committed
+ansible/inventory/local/
+ansible/.collections/
+ansible/.ansible/
