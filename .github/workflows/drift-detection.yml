@@ -37,8 +37,8 @@
 # reality. The refresh-only pass fails it only for drift that matters (drift mode of the shared destructive-guard action): a resource DELETED
 # outside OpenTofu, or any change to a DNS / edge / mail-identity / certificate / key resource. Other refresh-only drift
 # (provider-computed attributes: user_group_ids = [], tags = {}, security-group ingress that separate rule resources
-# added) is printed in the summary as informational. Reported nightly it was pure noise on runtime-dev, runtime-prod and
-# security-baseline, and an alarm that fires every night is one nobody reads.
+# added) is printed in the summary as informational. Reported nightly it was pure noise on the (since retired) AWS stacks,
+# and an alarm that fires every night is one nobody reads.
 #
 # A FAILED RUN ALERTS. A red scheduled run only emails whoever last touched the cron line. The `alert` job opens (or
 # updates) one GitHub issue labelled `drift-detection` and posts to the platform Teams channel, for ANY non-success
@@ -59,7 +59,6 @@ permissions:
 
 env:
   TOFU_VERSION: "1.9.1"
-  AWS_REGION: ap-southeast-1
 
 jobs:
   drift:
@@ -74,11 +73,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The same stacks infra-apply.yml manages, less observability (below). `organization` is deliberately
-        # absent from both: it is applied out of band, and this account is a MEMBER of
-        # another organisation (payer 033086823579), so parts of that stack cannot apply
-        # here at all. Adding it would produce permanent red that teaches people to ignore
-        # this job.
+        # The same stacks infra-apply.yml manages, less observability (below). The AWS stacks
+        # (bootstrap, security-baseline, runtime-dev, runtime-prod, organization) were retired on
+        # 2026-11-02 (AWS exit; state archived): they are not planned any more.
         #
         # `observability` is EXCLUDED, with a reason: it cannot be planned. Its state holds grafana_* objects created
         # under a provider alias that the 2026-09-20 split removed, so every plan fails with 'Provider configuration not
@@ -87,10 +84,6 @@ jobs:
         # night, which is how a real failure goes unread. Put it back, with TF_VAR_grafana_cloud_api_key and
         # TF_VAR_teams_webhook_url, in the same change that migrates its state.
         stack:
-          - bootstrap
-          - security-baseline
-          - runtime-dev
-          - runtime-prod
           - edge
           - storage-dev
           - storage-prod
@@ -99,8 +92,7 @@ jobs:
           # stack was previously excluded from planning entirely.
           - adaptive-metrics
           # The on-prem doors: azurerm backend (Entra OIDC, read identity), not
-          # the S3 one — the ARM_* env blocks below carry it and the AWS setup
-          # step is skipped for this stack. Talks to Cloudflare, so the read-only
+          # the S3 one — the ARM_* env blocks below carry it. Talks to Cloudflare, so the read-only
           # token check applies (contains lists updated with it).
           - onprem
 
@@ -109,43 +101,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        id: module-token
-        continue-on-error: true
-        with:
-          app-id: ${{ vars.QNSC_REPO_READER_APP_ID }}
-          private-key: ${{ secrets.QNSC_REPO_READER_PRIVATE_KEY }}
-          repositories: tf-modules
-          # Read-only: the installation can write org-wide; this job only reads modules.
-          permission-contents: read
-
-      # Which backend does this stack use? A stack that declares
-      # `backend "azurerm"` (stqnsctfstate, Entra OIDC) gets NO AWS credentials
-      # and the ARM_* environment below; every other stack keeps the AWS role.
-      # Moving a stack to Azure is then a backend-block change only.
-      - name: Detect the state backend
-        id: backend
-        env:
-          STACK: ${{ matrix.stack }}
-        run: |
-          if grep -qs 'backend "azurerm"' "live/${STACK}"/*.tf; then
-            echo "azure=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "azure=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      # Read-only role, same as infra-plan. A detector never needs write credentials.
-      # live/onprem skips AWS entirely (azurerm backend, Entra OIDC below).
-      - uses: quynhonsemiconductor/ci/actions/setup-tofu-aws@ea2c56bd9b03fb4d52e8fb9fe98dca95fd278638 # v1.24.5
-        if: steps.backend.outputs.azure != 'true'
-        with:
-          role-arn:     arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/qnsc-github-infra-plan
-          aws-region:   ${{ env.AWS_REGION }}
-          tofu-version: ${{ env.TOFU_VERSION }}
-          git-token:    ${{ steps.module-token.outputs.token }}
-
       - uses: quynhonsemiconductor/ci/actions/iac-lint@ea2c56bd9b03fb4d52e8fb9fe98dca95fd278638 # v1.24.5
-        if: steps.backend.outputs.azure == 'true'
         with:
           tofu-version: ${{ env.TOFU_VERSION }}
           fmt: 'false'   # install only
@@ -158,9 +114,9 @@ jobs:
           # The `&& … || ''` ternary renders an EMPTY STRING, not an unset
           # variable — harmless here (the azurerm backend and the cloudflare
           # provider only run for onprem), but do not read "" as "absent".
-          ARM_CLIENT_ID:       ${{ steps.backend.outputs.azure == 'true' && vars.AZURE_CLIENT_ID_READ || '' }}
-          ARM_TENANT_ID:       ${{ steps.backend.outputs.azure == 'true' && vars.ENTRA_TENANT_ID || '' }}
-          ARM_USE_OIDC:        ${{ steps.backend.outputs.azure == 'true' && 'true' || '' }}
+          ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID_READ }}
+          ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
+          ARM_USE_OIDC:        'true'
 
       - name: Require the read-only Cloudflare token
         if: ${{ contains(fromJSON('["edge","storage-dev","storage-prod","onprem"]'), matrix.stack) }}
@@ -172,8 +128,8 @@ jobs:
             exit 1
           fi
 
-      # `-lock=false` because the infra-plan role is read-only and cannot write the DynamoDB
-      # lock table. Neither pass mutates state, so running lock-free is safe; apply still
+      # `-lock=false` because the read identity cannot take the blob lease on the state
+      # file. Neither pass mutates state, so running lock-free is safe; apply still
       # locks via the admin role. PIPESTATUS[0] captures tofu's exit past the `tee`.
       - name: Detect external drift (refresh-only)
         id: refresh
@@ -202,9 +158,9 @@ jobs:
           # SAME TF_VAR_admin_* as the config pass — a refresh-only plan still
           # needs every required variable, and a missing one reads as drift. The
           # ternary below renders an empty string, not an unset variable.
-          ARM_CLIENT_ID:       ${{ steps.backend.outputs.azure == 'true' && vars.AZURE_CLIENT_ID_READ || '' }}
-          ARM_TENANT_ID:       ${{ steps.backend.outputs.azure == 'true' && vars.ENTRA_TENANT_ID || '' }}
-          ARM_USE_OIDC:        ${{ steps.backend.outputs.azure == 'true' && 'true' || '' }}
+          ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID_READ }}
+          ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
+          ARM_USE_OIDC:        'true'
           TF_VAR_admin_private_cidr: ${{ contains(fromJSON('["onprem","edge"]'), matrix.stack) && secrets.ADMIN_PRIVATE_CIDR || '' }}
           TF_VAR_warp_extra_excludes: ${{ matrix.stack == 'edge' && secrets.WARP_EXTRA_EXCLUDES || '[]' }}
         run: |
@@ -237,9 +193,9 @@ jobs:
           TF_VAR_adaptive_metrics_api_key: ${{ matrix.stack == 'adaptive-metrics' && secrets.GRAFANA_ADAPTIVE_METRICS_API_TOKEN_READONLY || '' }}
           # onprem: Azure OIDC (read identity) for the azurerm backend, plus the
           # stack's inputs (same secrets the apply job uses).
-          ARM_CLIENT_ID:       ${{ steps.backend.outputs.azure == 'true' && vars.AZURE_CLIENT_ID_READ || '' }}
-          ARM_TENANT_ID:       ${{ steps.backend.outputs.azure == 'true' && vars.ENTRA_TENANT_ID || '' }}
-          ARM_USE_OIDC:        ${{ steps.backend.outputs.azure == 'true' && 'true' || '' }}
+          ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID_READ }}
+          ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
+          ARM_USE_OIDC:        'true'
           TF_VAR_admin_private_cidr: ${{ contains(fromJSON('["onprem","edge"]'), matrix.stack) && secrets.ADMIN_PRIVATE_CIDR || '' }}
           TF_VAR_warp_extra_excludes: ${{ matrix.stack == 'edge' && secrets.WARP_EXTRA_EXCLUDES || '[]' }}
         run: |

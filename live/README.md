@@ -5,13 +5,16 @@ nested.**
 
 ```
 live/
-  bootstrap           organization (RETIRED, do not apply)    security-baseline
-  observability       edge                          ← account-wide, no env
-  runtime-dev         runtime-prod
-  storage-dev         storage-prod                  ← platform, per env
-  identity            onprem                        ← Phase-1 skeletons (Azure not
-                                                      set up yet; in NOT_PLANNABLE)
+  edge                observability       observability-alerting
+  adaptive-metrics    storage-dev         storage-prod
+  identity            onprem              onprem-vm
 ```
+
+> **Retired 2026-11-02 (AWS exit):** `bootstrap`, `security-baseline`, `runtime-dev`,
+> `runtime-prod` and `organization` are deleted. Their S3 state is archived
+> (Azure `stqnsctfstate/aws-archive/` and an encrypted copy in 1Password); the account
+> closure removes what is left. Every remaining stack keeps its state on Azure
+> (`stqnsctfstate`, key `infra/<stack>/terraform.tfstate`).
 
 ## Why the depth is fixed
 
@@ -44,7 +47,7 @@ join in the conformance tool — before it was cheaper to just flatten it.
 ## Platform or product is the STATE KEY, not the directory
 
 ```
-platform/<stack>/terraform.tfstate     bootstrap, edge, runtime-dev, …
+infra/<stack>/terraform.tfstate     edge, storage-*, observability*, adaptive-metrics, identity, onprem (Azure blob, container tfstate)
 products/<stack>/terraform.tfstate     none today (the EKS-era product stacks were removed 2026-10-13)
 ```
 
@@ -52,7 +55,7 @@ That distinction belongs in the key because `tofu` can read a key and cannot rea
 a directory tree. A `live/platform/` and `live/products/` split would express the
 same thing one level deeper, and buy back the problem above.
 
-Sorting does the grouping for free: `runtime-dev` sits beside `runtime-prod`.
+Sorting does the grouping for free: `storage-dev` sits beside `storage-prod`.
 
 ## Adding a stack
 

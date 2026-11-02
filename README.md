@@ -1,5 +1,13 @@
 # infra
 
+> **AWS exit, 2026-11-02.** The AWS stacks of this repository (`bootstrap`,
+> `security-baseline`, `runtime-dev`, `runtime-prod`, `organization`) are retired and
+> deleted; their state is archived and the account closure removes the rest. The sections
+> below that describe AWS (state backend, OIDC roles, IAM users, shared VPC, bootstrap)
+> are **historical**. Current layout: `live/README.md`. Every remaining stack uses the
+> Azure state backend and Entra OIDC; no workflow here holds AWS credentials.
+
+
 > Platform-level AWS infrastructure shared across all QNSC products.
 
 ## What this repo manages
