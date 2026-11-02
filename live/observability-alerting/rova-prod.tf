@@ -84,19 +84,19 @@ locals {
 }
 
 # The rova-prod slot of §12's SIX-check budget (rova+opshub prod+dev, kb-dev,
-# + one spare). PROD ONLY runs every 60 s from TWO probes (2026-11-03: rova
+# + one spare). PROD ONLY runs every 90 s from TWO probes (2026-11-03: rova
 # prod was down ~1h40; a 5-minute single-probe check plus `for: 5m` is up to
 # ~10 minutes to a page). This exceeds §12's one-probe cap on purpose for this
-# one check: ~86k executions/month (2 probes x 1440/day x 30), with the dev
-# checks ~104k/month in total, just over the 100k free tier. The dev checks
-# stay at 5 min from one probe.
+# one check: ~57.6k executions/month (2 probes x 960/day x 30); with the dev
+# checks the stack stays under the 100k free tier (owner decision 2026-11-03:
+# 90 s, not 60 s). The dev checks stay at 5 min from one probe.
 resource "grafana_synthetic_monitoring_check" "rova_prod_readyz" {
   count = local.uptime_live ? 1 : 0
   # the grafana.sm alias never configures while count is 0 (no instances)
   provider  = grafana.sm
   job       = "rova-prod-readyz"
   target    = "https://rova.qnsc.vn/readyz"
-  frequency = 60000 # ms — every 60 s (incident 2026-11-03)
+  frequency = 90000 # ms — every 90 s (incident 2026-11-03; 90 s keeps the free tier)
   timeout   = 5000  # ms
   enabled   = true
   # The probe ids come from the SM API through the data source (uptime-dev.tf),
