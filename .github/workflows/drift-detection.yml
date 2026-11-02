@@ -182,7 +182,7 @@ jobs:
           # nightly plan needs the token + URL here too (matrix-scoped, same form
           # as infra-plan.yml). Empty for every other stack.
           TF_VAR_adaptive_metrics_url:   ${{ matrix.stack == 'adaptive-metrics' && vars.AM_METRICS_URL || '' }}
-          TF_VAR_adaptive_metrics_api_key: ${{ matrix.stack == 'adaptive-metrics' && secrets.GRAFANA_ADAPTIVE_METRICS_API_TOKEN || '' }}
+          TF_VAR_adaptive_metrics_api_key: ${{ matrix.stack == 'adaptive-metrics' && secrets.GRAFANA_ADAPTIVE_METRICS_API_TOKEN_READONLY || '' }}
           # onprem: Azure OIDC (read identity) for the azurerm backend, and the
           # SAME TF_VAR_admin_* as the config pass — a refresh-only plan still
           # needs every required variable, and a missing one reads as drift. The
@@ -219,7 +219,7 @@ jobs:
           # nightly plan needs the token + URL here too (matrix-scoped, same form
           # as infra-plan.yml). Empty for every other stack.
           TF_VAR_adaptive_metrics_url:   ${{ matrix.stack == 'adaptive-metrics' && vars.AM_METRICS_URL || '' }}
-          TF_VAR_adaptive_metrics_api_key: ${{ matrix.stack == 'adaptive-metrics' && secrets.GRAFANA_ADAPTIVE_METRICS_API_TOKEN || '' }}
+          TF_VAR_adaptive_metrics_api_key: ${{ matrix.stack == 'adaptive-metrics' && secrets.GRAFANA_ADAPTIVE_METRICS_API_TOKEN_READONLY || '' }}
           # onprem: Azure OIDC (read identity) for the azurerm backend, plus the
           # stack's inputs (same secrets the apply job uses).
           ARM_CLIENT_ID:       ${{ matrix.stack == 'onprem' && vars.AZURE_CLIENT_ID_READ || '' }}
