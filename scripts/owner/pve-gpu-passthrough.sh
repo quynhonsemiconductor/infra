@@ -87,7 +87,7 @@ check_state() {
 	[ -f "$BLACKLIST" ] && pass "blacklist present" || { say "FAIL: $BLACKLIST missing"; rc=1; }
 	[ -f "$VFIO" ] && pass "vfio ids present" || { say "FAIL: $VFIO missing"; rc=1; }
 	[ -f "$MODLOAD" ] && pass "vfio modules load at boot" || { say "FAIL: $MODLOAD missing"; rc=1; }
-	pvesm config local 2>/dev/null | grep -q "content.*snippets" && pass "local datastore allows snippets" || { say "FAIL: snippets not enabled on local"; rc=1; }
+	awk '/^dir: local$/{f=1;next} f&&/^[a-z]+: /{f=0} f&&$1=="content"{print $2}' /etc/pve/storage.cfg | grep -q snippets && pass "local datastore allows snippets" || { say "FAIL: snippets not enabled on local"; rc=1; }
 	grep -q 'iommu=pt' "$CMDLINE_FILE" 2>/dev/null && pass "iommu=pt on the kernel cmdline" ||
 		{ say "FAIL: iommu=pt missing from $CMDLINE_FILE"; rc=1; }
 	if pvesh get "/cluster/mapping/pci/$MAPPING_ID" >/dev/null 2>&1; then
@@ -162,10 +162,11 @@ update-initramfs -u -k all
 say "update-initramfs done"
 
 # 4b. ai-01's cloud-init snippet lives on the 'local' datastore
-if pvesm config local 2>/dev/null | grep -q 'content.*snippets'; then
+local_content() { awk '/^dir: local$/{f=1;next} f&&/^[a-z]+: /{f=0} f&&$1=="content"{print $2}' /etc/pve/storage.cfg; }
+if local_content | grep -q snippets; then
 	say "local datastore already allows snippets"
 else
-	cur=$(pvesm config local | awk '/content/{print $2}')
+	cur=$(local_content)
 	pvesm set local --content "${cur},snippets"
 	say "enabled snippets on local (was: $cur)"
 fi
