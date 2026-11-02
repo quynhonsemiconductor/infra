@@ -166,14 +166,10 @@ jobs:
           # `observability` LEFT this list 2026-11-02: its orphaned grafana_* objects are now forgotten by
           # `removed` blocks behind a read-only `grafana.stack` bridge (live/observability/main.tf).
           #
-          # github (added 2026-11-02, live/github): plannable the moment the owner has created
-          # the read GitHub App (`qnsc-iac-read`) and set repo variable IAC_READ_APP_ID +
-          # repo secret IAC_READ_APP_KEY (live/github/README.md). Until then a plan cannot
-          # authenticate, so the stack is named here instead of failing every PR.
-          # REMOVE `github` FROM THIS LIST in the one-line PR that follows: the apply and
-          # drift jobs already use it, and a stack that is both planned and applied is the
-          # whole point.
-          NOT_PLANNABLE="identity onprem-vm github"
+          # github (live/github) is planned with a short-lived token minted from the READ-ONLY
+          # GitHub App `qnsc-iac-read` (IAC_READ_APP_ID / IAC_READ_APP_KEY), see the mint step
+          # in the plan job.
+          NOT_PLANNABLE="identity onprem-vm"
 
           SKIPPED=""
           PLANNABLE=""
