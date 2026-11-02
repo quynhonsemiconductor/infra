@@ -49,6 +49,7 @@ pass() { printf 'PASS: %s\n' "$*"; }
 
 BLACKLIST=/etc/modprobe.d/blacklist-qnsc-gpu.conf
 VFIO=/etc/modprobe.d/vfio-qnsc-gpu.conf
+MODLOAD=/etc/modules-load.d/vfio-qnsc.conf
 CMDLINE_FILE=/etc/kernel/cmdline
 
 # ── verify (used by --check and at the end of --apply) ──────────────────────
@@ -85,6 +86,8 @@ check_state() {
 	fi
 	[ -f "$BLACKLIST" ] && pass "blacklist present" || { say "FAIL: $BLACKLIST missing"; rc=1; }
 	[ -f "$VFIO" ] && pass "vfio ids present" || { say "FAIL: $VFIO missing"; rc=1; }
+	[ -f "$MODLOAD" ] && pass "vfio modules load at boot" || { say "FAIL: $MODLOAD missing"; rc=1; }
+	pvesm config local 2>/dev/null | grep -q "content.*snippets" && pass "local datastore allows snippets" || { say "FAIL: snippets not enabled on local"; rc=1; }
 	grep -q 'iommu=pt' "$CMDLINE_FILE" 2>/dev/null && pass "iommu=pt on the kernel cmdline" ||
 		{ say "FAIL: iommu=pt missing from $CMDLINE_FILE"; rc=1; }
 	if pvesh get "/cluster/mapping/pci/$MAPPING_ID" >/dev/null 2>&1; then
@@ -113,6 +116,7 @@ blacklist nvidia
 blacklist nvidia_drm
 blacklist nvidia_modeset
 blacklist nvidia_uvm
+blacklist nvidiafb
 EOF
 	say "wrote $BLACKLIST"
 fi
@@ -124,6 +128,9 @@ else
 	cat >"$VFIO" <<EOF
 # ai-01 GPU passthrough (§9.1): claim the card and its audio function for vfio.
 options vfio-pci ids=$GPU_ID,$AUDIO_ID
+# vfio-pci must claim both functions before the host drivers do
+softdep nouveau pre: vfio-pci
+softdep snd_hda_intel pre: vfio-pci
 EOF
 	say "wrote $VFIO"
 fi
@@ -140,13 +147,27 @@ else
 	say "added iommu=pt to $CMDLINE_FILE"
 fi
 
-# 4. rebuild the ESP entry the systemd-boot install actually boots
-if command -v proxmox-boot-tool >/dev/null; then
-	proxmox-boot-tool refresh
-	say "proxmox-boot-tool refresh done"
+# 3b. load vfio at boot (it has no modalias for this card, so nothing else loads it)
+if [ -f "$MODLOAD" ]; then
+	say "vfio modules-load already present"
 else
-	update-initramfs -u -k all
-	say "update-initramfs done (no proxmox-boot-tool)"
+	printf 'vfio\nvfio_iommu_type1\nvfio_pci\n' >"$MODLOAD"
+	say "wrote $MODLOAD"
+fi
+
+# 4. rebuild the initramfs so it carries the new modprobe.d files; on a
+#    proxmox-boot-tool host its hook copies the new image to the ESP
+#    (proxmox-boot-tool refresh alone only re-copies the OLD initramfs).
+update-initramfs -u -k all
+say "update-initramfs done"
+
+# 4b. ai-01's cloud-init snippet lives on the 'local' datastore
+if pvesm config local 2>/dev/null | grep -q 'content.*snippets'; then
+	say "local datastore already allows snippets"
+else
+	cur=$(pvesm config local | awk '/content/{print $2}')
+	pvesm set local --content "${cur},snippets"
+	say "enabled snippets on local (was: $cur)"
 fi
 
 # 5. the mapping Terraform passes (an API token cannot pass a raw hostpci id)
