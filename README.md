@@ -132,6 +132,22 @@ Apply order matters in two places: `live/edge` creates the wildcard ACM cert tha
 runtime stacks read, so it applies first; and `live/bootstrap` owns the state backend
 itself, so it is the one stack bootstrapped manually (see above).
 
+## How an apply works now
+
+`.github/workflows/infra-apply.yml` runs on every push to `main` that touches `live/**` or the workflow (and on manual dispatch). It plans first and asks for approval only for what changes:
+
+1. **detect**: the stacks this push touched (a change to the workflow or to `.github/scripts/plan-fingerprint.sh` selects all). On dispatch, the `stacks` input (comma list, or `all`; unknown names fail the run; `observability` must be named, it is not in `all`).
+2. **plan** (one job per stack, NO environment, the read-only identity and `*_READONLY` tokens, same as `infra-plan.yml`): `tofu plan -detailed-exitcode`. The job summary lists `+add ~change -destroy` and the resource addresses, never a value, plus a **fingerprint**: sha256 of the sorted `<address> <action>` lines of the plan. Plan files and plan JSON are never uploaded (public repo, plans hold secret values); only `{stack, has_changes, fingerprint}` crosses jobs.
+3. **gate** ("Plan summary"): which stacks have changes. A stack with none never asks for approval.
+4. **apply-\*** only for stacks with changes, in environment `production` (the owner approves on the run page). It re-plans with the write credentials, recomputes the fingerprint and **fails without applying** if it differs from the one shown ("plan changed since approval, re-run"). The destructive-guard and `allow_destructive` / `allow-dns-destroy` still apply to that plan; empty-secret guards are unchanged.
+
+Order: `onprem` after `edge` (it reads the Access apps edge creates), `observability-alerting` after `observability`. `storage-prod` stays dispatch-only (`apply_prod`). Concurrency is per ref, never cancelled mid-apply.
+
+Good to know:
+- **A plan that errors does not apply that stack** and ends the run red (`Plan verdict`), but does not hold back independent stacks. After applying `edge`, `onprem`'s approved fingerprint no longer matches (its plan changed): re-run the workflow, it plans `onprem` fresh.
+- **Legacy stacks** (`LEGACY_STACKS` in the workflow, today `observability`): the read-only plan is not comparable to the write plan (a read-only Grafana token cannot refresh the stack service account; PR plans use `-refresh=false`), so there is no plan stage and no fingerprint: selecting the stack means its apply job runs and asks for approval, as before. A stack whose read-only inputs differ from its write inputs (for example a value that exists only in the `production` environment) would fail closed on the fingerprint: add it to `LEGACY_STACKS`.
+- Run it by hand: Actions > Infrastructure · Apply > Run workflow, `stacks: edge,onprem`.
+
 ## Scheduled controls
 
 Three jobs run unattended, each covering a failure class the other two cannot see. They

@@ -295,7 +295,8 @@ jobs:
       fingerprints: ${{ steps.collect.outputs.fingerprints }}
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        if: ${{ needs.plan.result == 'success' }}
+        if: ${{ needs.plan.result != 'skipped' }}
+        continue-on-error: true   # every plan leg failed: no artifact, handled below
         with:
           pattern: fp-*
           merge-multiple: true
@@ -305,13 +306,11 @@ jobs:
         id: collect
         env:
           STACKS: ${{ needs.detect.outputs.stacks }}
-          PLAN_RESULT: ${{ needs.plan.result }}
         run: |
           set -euo pipefail
-          case "$PLAN_RESULT" in
-            success|skipped) ;;
-            *) echo "::error::a plan failed or was cancelled ($PLAN_RESULT). Nothing is applied in this run: fix the plan and re-run."; exit 1 ;;
-          esac
+          # A stack whose plan failed is NOT applied (and the run ends red through `plan-verdict`), but it must
+          # not hold back an independent stack: onprem reads the Access app that edge creates, so its plan can
+          # fail until edge is applied, and edge must still be able to apply first.
           changed='[]'; fps='{}'
           {
             echo "### Plan stage"
@@ -327,7 +326,11 @@ jobs:
                 continue ;;
             esac
             f="fp/fp-${stack}.json"
-            [ -s "$f" ] || { echo "::error::no plan result for $stack"; exit 1; }
+            if [ ! -s "$f" ]; then
+              echo "::warning::no plan result for $stack (its plan failed): not applied in this run"
+              echo "| $stack | **plan failed** | | no, not applied |" >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
             has=$(jq -r .has_changes "$f"); fp=$(jq -r .fingerprint "$f")
             if [ "$has" = "true" ]; then
               changed=$(jq -c --arg s "$stack" '. + [$s]' <<<"$changed")
@@ -338,6 +341,18 @@ jobs:
             fi
           done
           { echo "changed=$changed"; echo "fingerprints=$fps"; } >> "$GITHUB_OUTPUT"
+
+  # A failed plan leg ends the run red (the gate lets the other stacks go on).
+  plan-verdict:
+    name: Plan verdict
+    needs: [plan]
+    if: ${{ !cancelled() && needs.plan.result == 'failure' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - run: |
+          echo "::error::at least one plan failed or errored. That stack was NOT applied; independent stacks were not held back. Read the failed Plan job, fix it, re-run."
+          exit 1
 
   apply-edge:
     name: Apply edge
