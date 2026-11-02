@@ -38,8 +38,8 @@ variable "ai01_cores" {
 
 variable "ai01_memory_mb" {
   type        = number
-  default     = 20480
-  description = "20 GiB. Ballooning OFF is required for passthrough (the provider sets floating = 0)."
+  default     = 12288
+  description = "12 GiB (12288 MiB; was 20 GiB before Phase 3). Ballooning OFF is required for passthrough (the provider sets floating = 0). An in-place change that needs the guest restarted: docs/runbooks/phase3-window.md."
 }
 
 variable "ai01_data_disk_gb" {
