@@ -95,6 +95,10 @@ jobs:
           # the S3 one — the ARM_* env blocks below carry it. Talks to Cloudflare, so the read-only
           # token check applies (contains lists updated with it).
           - onprem
+          # GitHub org config (rulesets, platform repo settings, infra environments):
+          # azurerm backend (read identity) plus the READ-ONLY fine-grained token
+          # (GH_IAC_TOKEN_READONLY). Never falls back to the write token.
+          - github
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -125,6 +129,16 @@ jobs:
         run: |
           if [ "$HAVE_TOKEN" != "true" ]; then
             echo "::error title=Drift cannot see Cloudflare::secrets.CLOUDFLARE_API_TOKEN_READONLY is not set. Create a READ-ONLY Cloudflare API token (scopes in this file's header) and add it as an organisation or repository secret. This job never falls back to the write token."
+            exit 1
+          fi
+
+      - name: Require the read-only GitHub token
+        if: ${{ matrix.stack == 'github' }}
+        env:
+          HAVE_TOKEN: ${{ secrets.GH_IAC_TOKEN_READONLY != '' }}
+        run: |
+          if [ "$HAVE_TOKEN" != "true" ]; then
+            echo "::error title=Drift cannot see GitHub::secrets.GH_IAC_TOKEN_READONLY is not set. Create the READ-ONLY fine-grained token (permissions in live/github/README.md) and add it as a repository secret. This job never falls back to the write token."
             exit 1
           fi
 
@@ -163,6 +177,7 @@ jobs:
           ARM_USE_OIDC:        'true'
           TF_VAR_admin_private_cidr: ${{ contains(fromJSON('["onprem","edge"]'), matrix.stack) && secrets.ADMIN_PRIVATE_CIDR || '' }}
           TF_VAR_warp_extra_excludes: ${{ matrix.stack == 'edge' && secrets.WARP_EXTRA_EXCLUDES || '[]' }}
+          TF_VAR_github_token: ${{ matrix.stack == 'github' && secrets.GH_IAC_TOKEN_READONLY || '' }}
         run: |
           set +e
           tofu plan -refresh-only -input=false -lock=false -no-color -detailed-exitcode -out=refresh.tfplan 2>&1 | tee refresh.txt
@@ -198,6 +213,7 @@ jobs:
           ARM_USE_OIDC:        'true'
           TF_VAR_admin_private_cidr: ${{ contains(fromJSON('["onprem","edge"]'), matrix.stack) && secrets.ADMIN_PRIVATE_CIDR || '' }}
           TF_VAR_warp_extra_excludes: ${{ matrix.stack == 'edge' && secrets.WARP_EXTRA_EXCLUDES || '[]' }}
+          TF_VAR_github_token: ${{ matrix.stack == 'github' && secrets.GH_IAC_TOKEN_READONLY || '' }}
         run: |
           set +e
           tofu plan -input=false -lock=false -no-color -detailed-exitcode 2>&1 | tee plan.txt

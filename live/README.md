@@ -8,6 +8,7 @@ live/
   edge                observability       observability-alerting
   adaptive-metrics    storage-dev         storage-prod
   identity            onprem              onprem-vm
+  github
 ```
 
 > **Retired 2026-11-02 (AWS exit):** `bootstrap`, `security-baseline`, `runtime-dev`,

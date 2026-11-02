@@ -163,7 +163,14 @@ jobs:
           # AM_METRICS_URL. It is planned here and applied by the apply-adaptive-metrics job.
           # identity stays here on purpose: owner-only plan/apply (public repo; plan output would expose break-glass UPNs and the Entra role layout).
           # onprem-vm is owner-only too: CI has no Proxmox token, and the endpoint is the admin door.
-          NOT_PLANNABLE="observability identity onprem-vm"
+          # github (added 2026-11-02, live/github): plannable the moment the owner creates
+          # the READ-ONLY fine-grained token and stores it as repository secret
+          # GH_IAC_TOKEN_READONLY (permissions in live/github/README.md). Until then a plan
+          # cannot authenticate, so the stack is named here instead of failing every PR.
+          # REMOVE `github` FROM THIS LIST in the one-line PR that follows the secret: the
+          # apply and drift jobs already use it, and a stack that is both planned and
+          # applied is the whole point.
+          NOT_PLANNABLE="observability identity onprem-vm github"
 
           SKIPPED=""
           PLANNABLE=""
@@ -373,6 +380,10 @@ jobs:
           # variable anymore.
           TF_VAR_admin_private_cidr:     ${{ contains(fromJSON('["onprem","edge"]'), matrix.stack) && secrets.ADMIN_PRIVATE_CIDR || '' }}
           TF_VAR_warp_extra_excludes:    ${{ matrix.stack == 'edge' && secrets.WARP_EXTRA_EXCLUDES || '[]' }}
+          # live/github: READ-ONLY fine-grained token (rulesets, repository settings and
+          # environments, no write). The write token is an environment secret of
+          # `production` and reaches the apply job only.
+          TF_VAR_github_token:           ${{ matrix.stack == 'github' && secrets.GH_IAC_TOKEN_READONLY || '' }}
 
       # TASK 0.3 / §17b — refuse a plan that would lose data, before anyone reads
       # it. Runs BEFORE the plan comment on purpose: if the answer is "this deletes
