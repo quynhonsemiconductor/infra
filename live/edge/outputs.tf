@@ -14,11 +14,13 @@ output "custom_ruleset_id" {
 }
 
 output "acm_cert_arn" {
-  # AWS exit: the certificate is no longer managed here. Kept (null) only so
-  # runtime-dev/runtime-prod, which read it through terraform_remote_state, can
-  # still be refreshed and destroyed. Delete this output with those stacks.
-  value       = null
-  description = "Deprecated, always null. The ACM certificate left this stack with the AWS exit."
+  # Still the real ARN: runtime-dev/runtime-prod read it through
+  # terraform_remote_state and set it on the ALB HTTPS listener, so a null here
+  # would remove the listener certificate on their next apply (runtime-prod is
+  # the soak rollback path). Looked up, not managed. Delete this output, the
+  # data source and the provider with those stacks.
+  value       = data.aws_acm_certificate.wildcard.arn
+  description = "ARN of the shared *.qnsc.vn ACM certificate (ap-southeast-1), read by runtime-dev/runtime-prod. No longer managed by this stack."
 }
 
 output "landing_pages_subdomain" {

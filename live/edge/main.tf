@@ -107,13 +107,23 @@ resource "cloudflare_ruleset" "assets_nosniff" {
 # AWS exit (audit-infra 2026-11-02 A-3): the shared *.qnsc.vn ACM certificate
 # and its DNS validation record are no longer managed here.
 #
-# `destroy = false` on purpose: the AWS ALB (the rova rollback path during the
-# 72 h soak) still serves this certificate, and the validation CNAME keeps ACM
-# renewal working until the account is closed. Both go away with the account;
-# the CNAME is removed by hand in the dashboard afterwards (audit E-5). The plan
-# for this change must show these three as "will no longer be managed", never as
-# a destroy.
-# =============================================================================
+# The `removed` blocks below only FORGET the objects in state: in OpenTofu 1.9.1
+# (CI) a `removed` block has no `destroy` argument and no `lifecycle` block, and
+# its default is to leave the real object alone. The AWS ALB (the rova rollback
+# path during the 72 h soak) still serves this certificate, and the validation
+# CNAME keeps ACM renewal working until the account is closed. Both go away with
+# the account; the CNAME is removed by hand in the dashboard afterwards (audit
+# E-5). The plan must show these three as "removed from the OpenTofu state but
+# will not be destroyed", never as a destroy.
+#
+# The certificate is still READ (data source below) so `acm_cert_arn` keeps the
+# real ARN for runtime-dev/runtime-prod until those stacks are destroyed.
+data "aws_acm_certificate" "wildcard" {
+  domain      = "*.${var.certificate_domain}"
+  statuses    = ["ISSUED"]
+  most_recent = true
+}
+
 removed {
   from = aws_acm_certificate.wildcard
 }
