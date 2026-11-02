@@ -454,7 +454,7 @@ jobs:
     if: ${{ always() && contains(fromJson(needs.detect.outputs.stacks), 'observability-alerting') && needs.apply-observability.result != 'failure' && needs.apply-observability.result != 'cancelled' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    environment: shared   # platform blast radius — auto-apply on merge (parity with observability-alerting); the PR review is the gate
+    environment: production   # platform blast radius — auto-apply on merge (parity with observability-alerting); the PR review is the gate
     permissions:
       contents: read
       id-token: write
@@ -465,15 +465,20 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: quynhonsemiconductor/ci/actions/setup-tofu-aws@ea2c56bd9b03fb4d52e8fb9fe98dca95fd278638 # v1.24.5
+      # tofu only: this stack's state is on Azure, so the job holds no AWS
+      # credentials (the apply identity federates environment:production).
+      - uses: quynhonsemiconductor/ci/actions/iac-lint@ea2c56bd9b03fb4d52e8fb9fe98dca95fd278638 # v1.24.5
         with:
-          role-arn:     arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/qnsc-github-infra-apply
-          aws-region:   ${{ env.AWS_REGION }}
           tofu-version: ${{ env.TOFU_VERSION }}
+          fmt: 'false'   # install only
 
       - name: tofu init
         working-directory: live/observability-alerting
         run: tofu init -input=false
+        env:
+          ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
+          ARM_USE_OIDC:        'true'
 
       - name: tofu plan
         id: plan
@@ -486,6 +491,9 @@ jobs:
           echo "exitcode=$ec" >> "$GITHUB_OUTPUT"
           if [ "$ec" = "1" ]; then exit 1; fi
         env:
+          ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
+          ARM_USE_OIDC:        'true'
           TF_VAR_teams_webhook_url: ${{ secrets.TEAMS_ALERTS_WEBHOOK_URL }}
           TF_VAR_office_ip: ${{ vars.OFFICE_IP }}
           # opshub prod monitoring (live/observability-alerting/opshub-prod.tf) —
@@ -518,6 +526,10 @@ jobs:
           ec=${PIPESTATUS[0]}
           echo "tofu apply exit: $ec"
           exit "$ec"
+        env:
+          ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
+          ARM_USE_OIDC:        'true'
 
   apply-adaptive-metrics:
     name: Apply adaptive-metrics
