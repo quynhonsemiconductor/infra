@@ -66,16 +66,16 @@ TOKEN="$(ssh "${SSH_USER}@${SERVER}" 'sudo cat /var/lib/rancher/k3s/server/node-
 [ -n "$TOKEN" ] || fail "could not read the node token from ${SERVER}"
 
 say "joining as $(hostname) with k3s $VERSION"
-# The token reaches the installer as a 0600 file in tmpfs, passed by PATH, and
-# is removed on exit — never argv, never part of the script's own stdin.
-TOKEN_FILE="$(mktemp -p /run qnsc-k3s-token.XXXXXX)"
-trap 'rm -f "$TOKEN_FILE" /run/qnsc-k3s-install.sh' EXIT
-chmod 600 "$TOKEN_FILE"
-printf '%s' "$TOKEN" >"$TOKEN_FILE"
+# The token reaches the installer through the ENVIRONMENT only (never argv, never a
+# file we create): install.sh writes it to /etc/systemd/system/k3s-agent.service.env
+# (root, 0600), which is where the agent reads it on every restart. A temporary token
+# file would be gone at the next restart.
+WORK="$(mktemp -d -p "${XDG_RUNTIME_DIR:-/dev/shm}" qnsc-k3s.XXXXXX)"
+trap 'rm -rf "$WORK"' EXIT
+curl -sfL https://get.k3s.io -o "$WORK/install.sh"
+K3S_URL="https://${SERVER}:6443" K3S_TOKEN="$TOKEN" INSTALL_K3S_VERSION="$VERSION" \
+	$SUDO -E sh "$WORK/install.sh" agent
 unset TOKEN
-curl -sfL https://get.k3s.io -o /run/qnsc-k3s-install.sh
-K3S_URL="https://${SERVER}:6443" K3S_TOKEN_FILE="$TOKEN_FILE" \
-	INSTALL_K3S_VERSION="$VERSION" $SUDO -E sh /run/qnsc-k3s-install.sh agent
 
 # 5. what the owner then checks (documented in the README)
 say ""
