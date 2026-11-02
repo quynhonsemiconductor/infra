@@ -14,8 +14,13 @@ output "custom_ruleset_id" {
 }
 
 output "acm_cert_arn" {
-  value       = aws_acm_certificate_validation.wildcard.certificate_arn
-  description = "Validated wildcard *.qnsc.vn ACM cert ARN (ap-southeast-1) for the shared ALB. Consumed by runtime-dev/runtime-prod via terraform_remote_state."
+  # Still the real ARN: runtime-dev/runtime-prod read it through
+  # terraform_remote_state and set it on the ALB HTTPS listener, so a null here
+  # would remove the listener certificate on their next apply (runtime-prod is
+  # the soak rollback path). Looked up, not managed. Delete this output, the
+  # data source and the provider with those stacks.
+  value       = data.aws_acm_certificate.wildcard.arn
+  description = "ARN of the shared *.qnsc.vn ACM certificate (ap-southeast-1), read by runtime-dev/runtime-prod. No longer managed by this stack."
 }
 
 output "landing_pages_subdomain" {
