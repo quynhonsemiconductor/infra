@@ -35,9 +35,9 @@ Role `apparmor_containerd` (run by `k3s-server.yml`, `k3s-agent-gpu.yml`, `k3s-a
   `ptrace (trace,read,tracedby,readby) peer=cri-containerd.apparmor.d//&*`. Validated with `apparmor_parser -QT`
   before it is written, loaded with `apparmor_parser -r` (running containers pick it up; k3s is not restarted).
   containerd does not load its own profile when one of that name is already loaded.
-- Drop-in `/etc/systemd/system/<k3s|k3s-agent>.service.d/10-apparmor.conf`: `After=` and `Requires=apparmor.service`,
-  so at boot apparmor.service has loaded the override before containerd starts. Consequence: restarting
-  apparmor.service also restarts k3s; reload it instead.
+- Drop-in `/etc/systemd/system/<k3s|k3s-agent>.service.d/10-apparmor.conf`: `After=` and `Wants=apparmor.service`,
+  so at boot apparmor.service has loaded the override before containerd starts. `Wants=`, not `Requires=`: with
+  `Requires=` a restart of apparmor.service (a package upgrade, for one) would also restart k3s and take prod down.
 - Verify: counts `apparmor="DENIED" operation="signal"` lines for the profile in `journalctl -k -b`. Reports by
   default; `-e apparmor_containerd_strict=true` fails the run when the count is not 0. Denials logged before the
   override was loaded in the same boot also count.

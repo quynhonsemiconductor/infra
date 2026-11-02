@@ -31,7 +31,8 @@
     group: root
     mode: "0755"
 
-# Requires= also stops/restarts k3s with apparmor.service: reload apparmor.service on a node, never restart it.
+# Wants= (not Requires=): a restart of apparmor.service (e.g. a package upgrade) must never restart k3s. With After=
+# it still orders k3s after the profiles are loaded at boot.
 - name: Start k3s only after AppArmor has loaded the profiles
   ansible.builtin.copy:
     dest: "/etc/systemd/system/{{ apparmor_containerd_k3s_unit }}.service.d/10-apparmor.conf"
@@ -43,7 +44,7 @@
       # The fixed cri-containerd.apparmor.d profile must be loaded before containerd starts (apparmor_containerd role).
       [Unit]
       After=apparmor.service
-      Requires=apparmor.service
+      Wants=apparmor.service
   notify: Reload systemd units
 
 - name: Apply the profile and the drop-in now
