@@ -177,6 +177,4 @@ which is why that job runs daily rather than weekly.
 
 ## VPC allocation
 
-`allocations.json` is the human register of `10.<net>.0.0/16` assignments. New products and
-shared-services tenants consume the shared runtime VPC and therefore take **no** octet —
-see `allocation_policy` in that file before adding an entry.
+Retired with the AWS estate. The old `10.<net>.0.0/16` register is `archive/allocations.json` (a record, not a policy).

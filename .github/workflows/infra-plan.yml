@@ -165,6 +165,10 @@ jobs:
           # onprem-vm is owner-only too: CI has no Proxmox token, and the endpoint is the admin door.
           # `observability` LEFT this list 2026-11-02: its orphaned grafana_* objects are now forgotten by
           # `removed` blocks behind a read-only `grafana.stack` bridge (live/observability/main.tf).
+          #
+          # github (live/github) is planned with a short-lived token minted from the READ-ONLY
+          # GitHub App `qnsc-iac-read` (IAC_READ_APP_ID / IAC_READ_APP_KEY), see the mint step
+          # in the plan job.
           NOT_PLANNABLE="identity onprem-vm"
 
           SKIPPED=""
@@ -312,6 +316,20 @@ jobs:
           ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
           ARM_USE_OIDC:        'true'
 
+      # live/github only: a ~1 hour installation token from the READ-ONLY app (Administration
+      # read, Environments read; Metadata is implicit). Nothing is stored; the token is revoked
+      # when the job ends. Skipped for every other stack, so their runs are unchanged.
+      - name: Mint the read-only GitHub App token (live/github)
+        id: gh-read
+        if: ${{ matrix.stack == 'github' }}
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510  # v3.3.0
+        with:
+          app-id: ${{ vars.IAC_READ_APP_ID }}
+          private-key: ${{ secrets.IAC_READ_APP_KEY }}
+          owner: quynhonsemiconductor
+          permission-administration: read
+          permission-environments: read
+
       - name: tofu plan
         id: plan
         working-directory: live/${{ matrix.stack }}
@@ -333,8 +351,14 @@ jobs:
           # never refresh grafana_cloud_stack_service_account.alerting (403), and the write key must not
           # reach a PR plan. The real refresh runs in the production-environment apply job with the write
           # key (infra-apply.yml, apply-observability). See live/observability/README.md.
+          # `github` plans with -refresh=false too, for a different reason: the READ app cannot see
+          # repository `bypass_actors` or the merge settings (GitHub returns them to admin/push callers
+          # only), so a refreshed read-only plan shows phantom diffs on every repo and ruleset. The PR
+          # plan is therefore config-vs-state; the real refresh runs in the production-environment apply
+          # job with the apply app, and the monthly `github drift` workflow. No write scope is ever added
+          # to the read app. See live/github/README.md.
           REFRESH_ARG=""
-          if [ "$STACK" = "observability" ]; then REFRESH_ARG="-refresh=false"; fi
+          if [ "$STACK" = "observability" ] || [ "$STACK" = "github" ]; then REFRESH_ARG="-refresh=false"; fi
           set -o pipefail
           set +e
           # shellcheck disable=SC2086  # REFRESH_ARG is a fixed flag or empty
@@ -385,6 +409,10 @@ jobs:
           # variable anymore.
           TF_VAR_admin_private_cidr:     ${{ contains(fromJSON('["onprem","edge"]'), matrix.stack) && secrets.ADMIN_PRIVATE_CIDR || '' }}
           TF_VAR_warp_extra_excludes:    ${{ matrix.stack == 'edge' && secrets.WARP_EXTRA_EXCLUDES || '[]' }}
+          # live/github: a short-lived token minted from the READ-ONLY GitHub App by the
+          # step above (rulesets, repository settings and environments, no write). The
+          # write app exists for the apply job only, behind the `production` reviewer.
+          TF_VAR_github_token:           ${{ steps.gh-read.outputs.token }}
 
       # TASK 0.3 / §17b — refuse a plan that would lose data, before anyone reads
       # it. Runs BEFORE the plan comment on purpose: if the answer is "this deletes

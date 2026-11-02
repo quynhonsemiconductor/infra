@@ -1,0 +1,13 @@
+{
+  "name": "qnsc-iac-read",
+  "url": "https://github.com/quynhonsemiconductor/infra",
+  "redirect_url": "http://127.0.0.1:8765/callback",
+  "description": "Read-only credential for infra live/github plans and nightly drift (rulesets, repository settings, environments). No write permission, no webhooks.",
+  "public": false,
+  "default_permissions": {
+    "administration": "read",
+    "environments": "read",
+    "metadata": "read"
+  },
+  "default_events": []
+}

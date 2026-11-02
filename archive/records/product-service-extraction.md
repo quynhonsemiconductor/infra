@@ -1,5 +1,7 @@
 # Plan: Extract the per-service composition bundle (`product-service`)
 
+> **ARCHIVED 2026-11-02.** Describes the AWS/EKS/RDS estate, which no longer exists (AWS exit, `docs/runbooks/aws-exit.md`). Kept as a record of past decisions; do not follow it. The live layout is `live/` and the on-prem platform docs in product-docs.
+
 Status: **SUPERSEDED — do not execute** · Owner: Platform · Superseded 2026-09-16
 
 > ## Why this plan is not being run

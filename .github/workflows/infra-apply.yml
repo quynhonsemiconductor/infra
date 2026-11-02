@@ -26,7 +26,8 @@
 #
 # LEGACY_STACKS (below): stacks whose read-only plan is not comparable to the write
 # plan (`observability`: a read-only Grafana token cannot refresh its stack service
-# account, infra-plan.yml plans it with -refresh=false). They skip the plan stage and
+# account; `github`: the read app cannot see bypass actors or merge settings; both
+# are planned with -refresh=false in infra-plan.yml). They skip the plan stage and
 # the fingerprint check: selected means the apply job runs and asks for approval, as
 # it did before this flow. Nothing is weakened for them: empty-secret guards and the
 # destructive-guard are unchanged. A stack whose read-only inputs differ from its
@@ -65,7 +66,7 @@ on:
         type: boolean
         default: false
       stacks:
-        description: "Comma-separated stacks to plan and apply (edge, storage-dev, storage-prod, observability, observability-alerting, adaptive-metrics, onprem), or `all` (default: every stack except observability, which must be named). Unknown names fail the run."
+        description: "Comma-separated stacks to plan and apply (edge, storage-dev, storage-prod, observability, observability-alerting, adaptive-metrics, onprem, github), or `all` (default: every stack except observability, which must be named). Unknown names fail the run."
         type: string
         default: all
       allow_destructive:
@@ -86,7 +87,7 @@ env:
   TOFU_VERSION: "1.9.1"
   # Stacks whose read-only plan is not comparable to the write plan: no plan stage, no fingerprint
   # check, the apply job asks for approval whenever the stack is selected (see the header).
-  LEGACY_STACKS: "observability"
+  LEGACY_STACKS: "observability github"
 
 jobs:
   # ───────────────────────────────────────────────────────────────────────
@@ -115,10 +116,10 @@ jobs:
           STACKS_INPUT: ${{ inputs.stacks }}
         run: |
           set -euo pipefail
-          KNOWN="edge storage-dev storage-prod observability observability-alerting adaptive-metrics onprem"
+          KNOWN="edge storage-dev storage-prod observability observability-alerting adaptive-metrics onprem github"
           # `observability` is not in the default set: it is selected by a change under live/observability/
           # or by naming it in the dispatch input (it is a LEGACY stack, see the workflow header).
-          DEFAULT="edge storage-dev storage-prod observability-alerting adaptive-metrics onprem"
+          DEFAULT="edge storage-dev storage-prod observability-alerting adaptive-metrics onprem github"
           sel=""
           if [ "$EVENT" = "workflow_dispatch" ]; then
             req=$(printf '%s' "${STACKS_INPUT:-all}" | tr ',' ' ' | xargs)
@@ -748,6 +749,111 @@ jobs:
           ARM_USE_OIDC:        'true'
           TF_VAR_adaptive_metrics_url:   ${{ vars.AM_METRICS_URL }}
           TF_VAR_adaptive_metrics_api_key: ${{ secrets.GRAFANA_ADAPTIVE_METRICS_API_TOKEN }}
+
+  # live/github — GitHub organisation config (rulesets, platform repo settings, infra
+  # environments). State on Azure like the other stacks. The only credential besides
+  # Azure OIDC is a ~1 hour token minted from the WRITE GitHub App (`qnsc-iac-apply`),
+  # whose id and private key are environment variable/secret of `production`
+  # (IAC_APPLY_APP_ID, IAC_APPLY_APP_KEY). That is why this job pins that environment:
+  # the required reviewer is the human gate, and the plan below is what the reviewer
+  # approves. The stack has prevent_destroy on every ruleset and repository, so a bad
+  # edit fails the plan instead of deleting branch protection.
+  #
+  # REFRESH IS ON here, on purpose: the read app cannot see repository bypass actors or the
+  # merge settings, so PR plans of this stack run with -refresh=false (config vs state) and
+  # this job is the first place a real read of the organisation happens. EXCEPTION to the
+  # plan-first flow (README "How an apply works now"): `github` is a LEGACY stack (no plan stage, no
+  # fingerprint): the plan that counts is the one made INSIDE this production job with the apply app,
+  # because no token a PR may hold can produce a faithful one. The monthly github-drift workflow
+  # repeats that plan on a schedule (see live/github/README.md).
+  apply-github:
+    name: Apply github
+    needs: [detect, gate]
+    if: ${{ !cancelled() && needs.gate.result == 'success' && contains(fromJson(needs.gate.outputs.changed), 'github') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production   # org-wide repository protection — the reviewer gate
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: read   # destructive-guard reads the PR labels
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: quynhonsemiconductor/ci/actions/iac-lint@ea2c56bd9b03fb4d52e8fb9fe98dca95fd278638 # v1.24.5
+        with:
+          tofu-version: ${{ env.TOFU_VERSION }}
+          fmt: 'false'   # install only
+
+      - name: Mint the apply GitHub App token
+        id: gh-apply
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510  # v3.3.0
+        with:
+          app-id: ${{ vars.IAC_APPLY_APP_ID }}
+          private-key: ${{ secrets.IAC_APPLY_APP_KEY }}
+          owner: quynhonsemiconductor
+          permission-administration: write
+          permission-environments: write
+
+      - name: tofu init
+        working-directory: live/github
+        run: tofu init -input=false
+        env:
+          ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
+          ARM_USE_OIDC:        'true'
+
+      - name: tofu plan
+        id: plan
+        working-directory: live/github
+        run: |
+          set +e
+          tofu plan -input=false -detailed-exitcode -out tfplan -no-color 2>&1 | tee plan.txt
+          ec=${PIPESTATUS[0]}
+          echo "tofu plan detailed exit code: $ec (0=no change, 2=changes, 1=error)"
+          echo "exitcode=$ec" >> "$GITHUB_OUTPUT"
+          if [ "$ec" = "1" ]; then exit 1; fi
+        env:
+          ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
+          ARM_USE_OIDC:        'true'
+          TF_VAR_github_token: ${{ steps.gh-apply.outputs.token }}
+
+      # Legacy stack: no approved fingerprint, so this only writes the summary of what is about to be applied.
+      - name: Verify the plan is the one that was approved
+        if: steps.plan.outputs.exitcode != '1'
+        working-directory: live/github
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/plan-fingerprint.sh" check github
+        env:
+          EXPECTED_FP: ${{ fromJson(needs.gate.outputs.fingerprints)['github'] }}
+          ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
+          ARM_USE_OIDC:        'true'
+
+      - name: Refuse destructive DNS / identity changes
+        if: steps.plan.outputs.exitcode == '2'
+        uses: quynhonsemiconductor/ci/actions/destructive-guard@ea2c56bd9b03fb4d52e8fb9fe98dca95fd278638 # v1.24.5
+        with:
+          working-directory: live/github
+          dispatch-allow: ${{ inputs.allow_destructive }}
+
+      - name: tofu apply
+        if: steps.plan.outputs.exitcode == '2'
+        working-directory: live/github
+        run: |
+          set -o pipefail
+          tofu apply -input=false tfplan 2>&1 | tee apply.txt
+          ec=${PIPESTATUS[0]}
+          echo "tofu apply exit: $ec"
+          exit "$ec"
+        env:
+          ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
+          ARM_USE_OIDC:        'true'
+          TF_VAR_github_token: ${{ steps.gh-apply.outputs.token }}
 
   # live/onprem — the on-prem doors (Cloudflare Tunnels). Azure OIDC ONLY: the
   # azurerm backend (stqnsctfstate, Entra auth) and the cloudflare provider; the

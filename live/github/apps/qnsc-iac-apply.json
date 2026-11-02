@@ -1,0 +1,13 @@
+{
+  "name": "qnsc-iac-apply",
+  "url": "https://github.com/quynhonsemiconductor/infra",
+  "redirect_url": "http://127.0.0.1:8765/callback",
+  "description": "Write credential for infra live/github apply, used only by the apply job in environment production. No webhooks.",
+  "public": false,
+  "default_permissions": {
+    "administration": "write",
+    "environments": "write",
+    "metadata": "read"
+  },
+  "default_events": []
+}
