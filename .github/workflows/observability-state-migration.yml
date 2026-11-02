@@ -47,7 +47,7 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    environment: shared
+    environment: production
 
     env:
       # The script's empty-plan gate and the two post-plan steps run `tofu plan`
