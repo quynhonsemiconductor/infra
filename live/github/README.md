@@ -1,12 +1,12 @@
 # live/github — GitHub organisation config as code
 
 Repository **rulesets** (all 42 that exist, across 17 repositories), the **merge settings** of the platform
-repos, and the **environments** of `infra`, imported exactly as they are on
+repos, and the **environment** (`production`) of `infra`, imported exactly as they are on
 2026-11-02. State: Azure `stqnsctfstate`, key `infra/github/terraform.tfstate`.
 Provider `integrations/github` `~> 6.13` (6.13.0, latest stable at the time).
 
 Nothing here changes a setting: the first apply only **imports** (the plan after the
-import is empty, checked on a scratch state with a read token: 53 imported resources,
+import is empty, checked on a scratch state with a read token: 50 imported resources,
 `No changes`, and a one-value mutation shows up as a change).
 
 ## What is managed
@@ -15,7 +15,7 @@ import is empty, checked on a scratch state with a read token: 53 imported resou
 |---|---|---|
 | `rulesets.tf` | `github_repository_ruleset.this` (42, for_each over a data map) | every ruleset, bypass actors included (team `merge-bypass`, app `qnsc-automation`, team `vlsi-leads`). `prevent_destroy`. |
 | `repos.tf` | `github_repository.this` (6: `.github`, `app-platform`, `ci`, `gitops`, `infra`, `tf-modules`) | merge methods, auto-merge, delete-branch-on-merge, commit titles. Live values, `prevent_destroy`. |
-| `repos.tf` | `github_repository_environment` + deployment policy (infra: `production`, `shared`, `develop`) | `production`: required reviewer + branch policy `main`. |
+| `repos.tf` | `github_repository_environment` + deployment policy (infra: `production`) | required reviewer + branch policy `main`. (`shared` and `develop` were deleted on 2026-11-02, empty and unreferenced.) |
 
 Adding a repo to `repos.tf` or a ruleset to `rulesets.tf` is one map entry. The
 `import {}` blocks stay in place after the first apply (OpenTofu skips an import whose
@@ -139,7 +139,7 @@ Notes:
    cd live/github && tofu init              # creates infra/github/terraform.tfstate, empty; changes nothing else
    ```
    Then re-run the failed `Plan github` job on the PR.
-2. Merge. The apply job (`apply-github`) mints the apply token, shows `53 to import, 0 to change`,
+2. Merge. The apply job (`apply-github`) mints the apply token, shows `50 to import, 0 to change`,
    waits for the `production` reviewer, then imports into the empty state.
 3. One-line follow-up PR: remove `github` from `NOT_PLANNABLE` in `infra-plan.yml`, so PRs get a plan
    of this stack from then on.
@@ -153,5 +153,5 @@ nothing else is affected.
 export GITHUB_TOKEN=...           # any token with Administration + Environments read; from your own shell, never argv or Git
 cd live/github
 tofu init -backend=false          # local state; the real state is on Azure
-tofu plan                         # 53 to import on an empty state
+tofu plan                         # 50 to import on an empty state
 ```

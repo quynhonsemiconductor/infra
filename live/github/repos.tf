@@ -80,10 +80,9 @@ import {
 
 # ── Environments (infra) ─────────────────────────────────────────────────────
 # `production` is the apply gate: every infra apply job pins it, the Azure apply
-# identity federates only it, and the required reviewer is the human gate. `shared`
-# (branch-gated, no reviewer) and `develop` are imported as they are; moving the
-# remaining apply jobs from `shared` to `production` is audit item A-4/C-2, not
-# done here.
+# identity federates only it, and the required reviewer is the human gate. (`shared`
+# and `develop` were deleted on 2026-11-02, empty and unreferenced, so they are not
+# here.)
 locals {
   reviewer_owner_user_id = 297359903 # GitHub user id of the owner (login shown on the repo's environment settings)
 }
@@ -110,51 +109,11 @@ resource "github_repository_environment_deployment_policy" "infra_production_mai
   branch_pattern = "main"
 }
 
-resource "github_repository_environment" "infra_shared" {
-  repository        = github_repository.this["infra"].name
-  environment       = "shared"
-  can_admins_bypass = true
-
-  deployment_branch_policy {
-    protected_branches     = false
-    custom_branch_policies = true
-  }
-}
-
-resource "github_repository_environment_deployment_policy" "infra_shared_main" {
-  repository     = github_repository.this["infra"].name
-  environment    = github_repository_environment.infra_shared.environment
-  branch_pattern = "main"
-}
-
-resource "github_repository_environment" "infra_develop" {
-  repository          = github_repository.this["infra"].name
-  environment         = "develop"
-  can_admins_bypass   = true
-  prevent_self_review = false
-
-  reviewers {
-    users = [local.reviewer_owner_user_id]
-  }
-}
-
 import {
   to = github_repository_environment.infra_production
   id = "infra:production"
 }
 import {
-  to = github_repository_environment.infra_shared
-  id = "infra:shared"
-}
-import {
-  to = github_repository_environment.infra_develop
-  id = "infra:develop"
-}
-import {
   to = github_repository_environment_deployment_policy.infra_production_main
   id = "infra:production:64532593"
-}
-import {
-  to = github_repository_environment_deployment_policy.infra_shared_main
-  id = "infra:shared:64915003"
 }
