@@ -37,6 +37,8 @@ locals {
 }
 
 resource "github_repository" "this" {
+  # checkov:skip=CKV_GIT_1:every code repo is PUBLIC on purpose (owner decision; GitHub Free needs it for rulesets and environment reviewers), see the public-repo identifier policy
+  # checkov:skip=CKV2_GIT_1:branch protection is by repository RULESET (rulesets.tf, github_repository_ruleset), which this check does not recognise
   for_each = local.repos
 
   name         = each.key
