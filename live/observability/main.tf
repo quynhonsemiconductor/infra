@@ -65,6 +65,79 @@ provider "grafana" {
   cloud_access_policy_token = var.grafana_cloud_api_key
 }
 
+# ── ORPHANED GRAFANA OBJECTS (the 2026-09-20 split) — FORGET, NEVER DESTROY ───
+# The state of this stack still lists ten objects that live INSIDE the Grafana instance. They
+# were created through a `grafana.stack` provider alias that the split removed, and they are
+# now owned by live/observability-alerting (its plan is "No changes"). With the alias gone,
+# OpenTofu refuses to plan at all ("Provider configuration not present ... (orphan)").
+#
+# `removed { destroy = false }` forgets an object without touching it, but OpenTofu still needs
+# the ORIGINAL provider configuration to refresh the object first. So the alias comes back, as
+# a READ-ONLY bridge: it is configured from this stack's own last-applied outputs (the instance
+# URL and the stack service-account token, the same two values live/observability-alerting
+# reads), and the plan only ever issues GET requests against it (checked: with a stub API the
+# plan made two GETs and reported "to forget"; nothing else).
+#
+# SUNSET: once an apply has forgotten the ten objects, delete this data source, this provider
+# alias and the ten `removed` blocks in one PR. Until then do not add resources to the alias.
+data "terraform_remote_state" "self" {
+  backend = "azurerm"
+  config = {
+    use_azuread_auth     = true
+    resource_group_name  = "rg-qnsc-platform"
+    storage_account_name = "stqnsctfstate"
+    container_name       = "tfstate"
+    key                  = "infra/observability/terraform.tfstate"
+  }
+}
+
+provider "grafana" {
+  alias = "stack"
+  url   = data.terraform_remote_state.self.outputs.alerting_grafana_url
+  auth  = data.terraform_remote_state.self.outputs.alerting_service_account_token
+}
+
+removed {
+  from = grafana_folder.company
+  lifecycle { destroy = false }
+}
+removed {
+  from = grafana_folder.alerts
+  lifecycle { destroy = false }
+}
+removed {
+  from = grafana_folder.dashboards
+  lifecycle { destroy = false }
+}
+removed {
+  from = grafana_folder.slos
+  lifecycle { destroy = false }
+}
+removed {
+  from = grafana_folder.rally_dashboards
+  lifecycle { destroy = false }
+}
+removed {
+  from = grafana_folder.opshub_dashboards
+  lifecycle { destroy = false }
+}
+removed {
+  from = grafana_dashboard.system_overview
+  lifecycle { destroy = false }
+}
+removed {
+  from = grafana_contact_point.teams
+  lifecycle { destroy = false }
+}
+removed {
+  from = grafana_notification_policy.root
+  lifecycle { destroy = false }
+}
+removed {
+  from = grafana_rule_group.series_near_cap
+  lifecycle { destroy = false }
+}
+
 variable "grafana_cloud_api_key" {
   description = "Cloud Access Policy token (stacks:read, stacks:write, stack-service-accounts:write) — the one credential created by hand. See header comment."
   type        = string
