@@ -124,3 +124,8 @@ variable "k3s01_ipv4_address" {
     error_message = "k3s01_ipv4_address must be an address in CIDR notation."
   }
 }
+
+variable "proxmox_ssh_address" {
+  type        = string
+  description = "Address the provider SSHes to (as root, via the owner's ssh-agent) to upload snippets. Site value, git-ignored tfvars only."
+}

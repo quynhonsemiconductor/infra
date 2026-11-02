@@ -10,7 +10,8 @@
 # sites without carrying access. The VLAN tag is REQUIRED — it is site
 # topology, which this public repo does not carry.
 
-proxmox_node = "pve01"
+proxmox_node        = "pve01"
+proxmox_ssh_address = "192.0.2.10"
 
 vm_id   = 100
 vm_name = "k3s-01"

@@ -10,4 +10,16 @@ provider "proxmox" {
   endpoint  = var.proxmox_endpoint
   api_token = var.proxmox_api_token
   insecure  = var.proxmox_tls_insecure
+
+  # The Proxmox API cannot upload snippets (ai-01's cloud-init user data): the
+  # provider writes them over SSH to the node. The owner's ssh-agent holds the key;
+  # nothing secret is in this stack.
+  ssh {
+    agent    = true
+    username = "root"
+    node {
+      name    = var.proxmox_node
+      address = var.proxmox_ssh_address
+    }
+  }
 }
