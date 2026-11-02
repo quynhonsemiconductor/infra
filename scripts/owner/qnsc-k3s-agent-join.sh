@@ -49,7 +49,7 @@ $SUDO nvidia-ctk runtime configure --runtime=containerd \
 	--config=/var/lib/rancher/k3s/agent/etc/containerd/config.toml.tmpl 2>/dev/null ||
 	$SUDO mkdir -p /var/lib/rancher/k3s/agent/etc/containerd
 
-# 3. the agent config: server, label, taint. No token here.
+# 3. the agent config: server, label, taint (the token is appended in step 4).
 $SUDO install -d -m 0755 /etc/rancher/k3s
 $SUDO tee /etc/rancher/k3s/config.yaml >/dev/null <<YAML
 server: https://${SERVER}:6443
@@ -59,23 +59,24 @@ node-taint:
   - qnsc.vn/pool=ai:NoSchedule
 YAML
 
-# 4. version + token: token in the environment only
+# 4. version + token: token through stdin into config.yaml, never argv
 VERSION="$(tr -d '[:space:]' <"$VERSION_FILE")"
 [ -n "$VERSION" ] || fail "no version in $VERSION_FILE"
 TOKEN="$(ssh "${SSH_USER}@${SERVER}" 'sudo cat /var/lib/rancher/k3s/server/node-token')"
 [ -n "$TOKEN" ] || fail "could not read the node token from ${SERVER}"
 
 say "joining as $(hostname) with k3s $VERSION"
-# The token reaches the installer through the ENVIRONMENT only (never argv, never a
-# file we create): install.sh writes it to /etc/systemd/system/k3s-agent.service.env
-# (root, 0600), which is where the agent reads it on every restart. A temporary token
-# file would be gone at the next restart.
+# The token goes into /etc/rancher/k3s/config.yaml (`token:`), written through stdin
+# (never argv) and left root-only 0600: k3s reads it there on every start. The
+# environment is not a channel: sudo-rs (Ubuntu 26.04) ignores `sudo -E`.
+printf 'token: "%s"\n' "$TOKEN" | $SUDO tee -a /etc/rancher/k3s/config.yaml >/dev/null
+$SUDO chmod 600 /etc/rancher/k3s/config.yaml
+unset TOKEN
 WORK="$(mktemp -d -p "${XDG_RUNTIME_DIR:-/dev/shm}" qnsc-k3s.XXXXXX)"
 trap 'rm -rf "$WORK"' EXIT
 curl -sfL https://get.k3s.io -o "$WORK/install.sh"
-K3S_URL="https://${SERVER}:6443" K3S_TOKEN="$TOKEN" INSTALL_K3S_VERSION="$VERSION" \
-	$SUDO -E sh "$WORK/install.sh" agent
-unset TOKEN
+# server, label, taint and token all come from config.yaml; only the version is passed
+$SUDO env INSTALL_K3S_VERSION="$VERSION" sh "$WORK/install.sh" agent
 
 # 5. what the owner then checks (documented in the README)
 say ""
