@@ -12,7 +12,8 @@
 #   kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff"} 0/1
 #   kube_pod_status_ready{condition="true"}                             0/1
 # Pod names for CNPG clusters are `<cluster>-<ordinal>` (§6.3: pg-rova,
-# pg-dev); the regex keeps CNPG's own jobs out.
+# pg-dev); `pg-[a-z0-9]+-[0-9]+` matches every cluster's instances and keeps
+# CNPG's and our own jobs out (pg-rova-dump-<n>-<hash>, pg-*-role-timeouts-*).
 #
 # ── ROUTING ────────────────────────────────────────────────────────────────
 # prod rules carry env=production (Teams + devops@ via the root policy). dev
@@ -22,9 +23,9 @@
 #
 # ── NOISE CONTROL ──────────────────────────────────────────────────────────
 # `for: 10m` for CrashLoop (a single restart is not an alert; ten minutes of
-# CrashLoopBackOff is). Postgres readiness uses `for: 5m` — a pod that is not
-# ready for five minutes on a single-instance cluster is an outage, and one
-# instance in dev has no failover to wait out.
+# CrashLoopBackOff is). Postgres readiness uses `for: 2m` (was 5m until the
+# 2026-11-03 rova outage) — a single-instance cluster has no failover to wait
+# out, so two minutes not Ready IS the outage. Prod critical, dev warning.
 # =============================================================================
 
 # ── CrashLoop, prod + platform namespaces ─────────────────────────────────
@@ -205,7 +206,7 @@ resource "grafana_rule_group" "onprem_pg_rova_ready" {
   rule {
     name           = "k3s-pg-rova-not-ready"
     condition      = "B"
-    for            = "5m"
+    for            = "2m"
     no_data_state  = "OK"
     exec_err_state = "KeepLast"
 
@@ -222,7 +223,7 @@ resource "grafana_rule_group" "onprem_pg_rova_ready" {
       model = jsonencode({
         refId         = "A"
         datasource    = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
-        expr          = "min by (namespace, pod) (kube_pod_status_ready{condition=\"true\", namespace=\"data-prod\", pod=~\"pg-rova-[0-9].*\"}) < 1"
+        expr          = "min by (namespace, pod) (kube_pod_status_ready{condition=\"true\", namespace=\"data-prod\", pod=~\"pg-[a-z0-9]+-[0-9]+\"}) < 1"
         instant       = true
         range         = false
         intervalMs    = 1000
@@ -264,7 +265,7 @@ resource "grafana_rule_group" "onprem_pg_rova_ready" {
     }
 
     annotations = {
-      summary = "pg-rova pod {{ $labels.pod }} has not been Ready for 5 minutes — the prod database is down or starting (ONPREM-PLAN §12)."
+      summary = "Prod Postgres pod {{ $labels.pod }} has not been Ready for 2 minutes — the prod database is down or starting (ONPREM-PLAN §12)."
     }
   }
 }
@@ -279,7 +280,7 @@ resource "grafana_rule_group" "onprem_pg_dev_ready" {
   rule {
     name           = "k3s-pg-dev-not-ready"
     condition      = "B"
-    for            = "5m"
+    for            = "2m"
     no_data_state  = "OK"
     exec_err_state = "KeepLast"
 
@@ -296,7 +297,7 @@ resource "grafana_rule_group" "onprem_pg_dev_ready" {
       model = jsonencode({
         refId         = "A"
         datasource    = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
-        expr          = "min by (namespace, pod) (kube_pod_status_ready{condition=\"true\", namespace=\"data-dev\", pod=~\"pg-dev-[0-9].*\"}) < 1"
+        expr          = "min by (namespace, pod) (kube_pod_status_ready{condition=\"true\", namespace=\"data-dev\", pod=~\"pg-[a-z0-9]+-[0-9]+\"}) < 1"
         instant       = true
         range         = false
         intervalMs    = 1000
@@ -335,11 +336,11 @@ resource "grafana_rule_group" "onprem_pg_dev_ready" {
       product  = "platform"
       env      = "development"
       paging   = "teams"
-      severity = "critical"
+      severity = "warning"
     }
 
     annotations = {
-      summary = "pg-dev pod {{ $labels.pod }} has not been Ready for 5 minutes — the shared dev database is down or starting."
+      summary = "Dev Postgres pod {{ $labels.pod }} has not been Ready for 2 minutes — the shared dev database is down or starting."
     }
   }
 }

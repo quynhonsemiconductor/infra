@@ -57,7 +57,7 @@
 #
 # NOTE ON THE SM ALERT ROUTE: alert_sensitivity creates no rules by itself and
 # SM check labels do not become alert labels — the real alert is the
-# flag-gated grafana_rule_group below (probe_success == 0 for 5m, rule labels
+# flag-gated grafana_rule_group below (probe_success == 0 on every probe for 2m, rule labels
 # env=production + product=rova), routed by grafana_notification_policy.root
 # (Teams for prod, devops@ always) — §12's routing.
 # =============================================================================
@@ -84,23 +84,31 @@ locals {
 }
 
 # The rova-prod slot of §12's SIX-check budget (rova+opshub prod+dev, kb-dev,
-# + one spare) — this PR fills a budgeted slot, it does not grow it. 5-minute
-# HTTP GET per §12. alert_sensitivity = "high" records sensitivity on the SM
-# side; the ALERT itself is the flag-gated rule group below.
+# + one spare). PROD ONLY runs every 60 s from TWO probes (2026-11-03: rova
+# prod was down ~1h40; a 5-minute single-probe check plus `for: 5m` is up to
+# ~10 minutes to a page). This exceeds §12's one-probe cap on purpose for this
+# one check: ~86k executions/month (2 probes x 1440/day x 30), with the dev
+# checks ~104k/month in total, just over the 100k free tier. The dev checks
+# stay at 5 min from one probe.
 resource "grafana_synthetic_monitoring_check" "rova_prod_readyz" {
   count = local.uptime_live ? 1 : 0
   # the grafana.sm alias never configures while count is 0 (no instances)
   provider  = grafana.sm
   job       = "rova-prod-readyz"
   target    = "https://rova.qnsc.vn/readyz"
-  frequency = 300000 # ms — every 5 min, §12
-  timeout   = 5000   # ms — validate against the SM API's cap in the flip PR
+  frequency = 60000 # ms — every 60 s (incident 2026-11-03)
+  timeout   = 5000  # ms
   enabled   = true
-  # The probe id comes from the SM API through the data source (uptime-dev.tf),
-  # not from a hand-set variable: the fast track cannot wait for a human to read
-  # a number out of the UI. One public probe, "Singapore" — §12 caps the estate
-  # at one probe, and a fixed name keeps the choice reviewable in git.
-  probes = [data.grafana_synthetic_monitoring_probes.main[0].probes["Singapore"]]
+  # The probe ids come from the SM API through the data source (uptime-dev.tf),
+  # not from a hand-set variable. Two public probes on different continents, so
+  # one probe's network trouble cannot page alone (the rule needs BOTH failing)
+  # and a regional outage on the path still shows. Fixed names keep the choice
+  # reviewable in git; both have run this check before (Frankfurt until
+  # 2026-11-02).
+  probes = [
+    data.grafana_synthetic_monitoring_probes.main[0].probes["Singapore"],
+    data.grafana_synthetic_monitoring_probes.main[0].probes["Frankfurt"],
+  ]
   # No alert_sensitivity: SM legacy alerting is forbidden on new installations
   # ("legacy alerts usage is forbidden"); paging is the grafana_rule_group below
   # on probe_success.
@@ -121,8 +129,10 @@ resource "grafana_synthetic_monitoring_check" "rova_prod_readyz" {
 }
 
 # ── Synthetic Monitoring alert rule ─────────────────────────────────────────
-# §12's prod routing as code: fires when the check's probe reports failure
-# (probe_success == 0) for 5 minutes. Rule labels env=production + product=rova
+# §12's prod routing as code: fires when EVERY probe reports failure
+# (max over probes of probe_success == 0) for 2 minutes. `max by (job,
+# instance)` also drops `config_version`, which changes on every check update
+# and would otherwise restart the pending timer. Rule labels env=production + product=rova
 # route it through grafana_notification_policy.root — Teams for prod, devops@
 # always — the same policy every other rule in this stack uses. Same datasource
 # (the stack's managed Prometheus, where SM publishes probe_success) as
@@ -136,7 +146,7 @@ resource "grafana_rule_group" "rova_prod_readyz_down" {
   rule {
     name           = "rova-prod-readyz-down"
     condition      = "B"
-    for            = "5m"
+    for            = "2m"
     no_data_state  = "OK"
     exec_err_state = "Error"
 
@@ -153,7 +163,7 @@ resource "grafana_rule_group" "rova_prod_readyz_down" {
       model = jsonencode({
         refId         = "A"
         datasource    = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
-        expr          = "probe_success{job=\"rova-prod-readyz\"}"
+        expr          = "max by (job, instance) (probe_success{job=\"rova-prod-readyz\"})"
         instant       = true
         range         = false
         intervalMs    = 1000
@@ -195,7 +205,7 @@ resource "grafana_rule_group" "rova_prod_readyz_down" {
     }
 
     annotations = {
-      summary = "Synthetic check rova-prod-readyz failing: https://rova.qnsc.vn/readyz has returned non-2xx/3xx (or timed out) from the SM probe for 5 minutes (§12)."
+      summary = "Synthetic check rova-prod-readyz failing: https://rova.qnsc.vn/readyz has returned non-2xx/3xx (or timed out) from every SM probe for 2 minutes (§12)."
     }
   }
 }
