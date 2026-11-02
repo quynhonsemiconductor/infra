@@ -6,7 +6,7 @@
 variable "mcp_hub_enabled" {
   type        = bool
   default     = false
-  description = "Create the GitHub and Grafana Cloud servers in the MCP portal. TF_VAR_mcp_hub_enabled (repo variable MCP_HUB_ENABLED). Needs mcp_github_oauth_client_id and mcp_github_oauth_client_secret."
+  description = "Create the GitHub and Grafana Cloud servers in the MCP portal. TF_VAR_mcp_hub_enabled (repo variable MCP_HUB_ENABLED). Needs mcp_github_oauth_client_id; the apply job also needs the secret."
 }
 
 variable "mcp_github_oauth_client_id" {
