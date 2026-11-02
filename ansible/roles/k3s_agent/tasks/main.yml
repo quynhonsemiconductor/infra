@@ -60,10 +60,3 @@
   vars:
     k3s_install_role: agent
   tags: [k3s_agent_install]
-
-- name: Enable and start the k3s agent
-  ansible.builtin.service:
-    name: k3s-agent
-    state: started
-    enabled: true
-  tags: [k3s_agent_install]

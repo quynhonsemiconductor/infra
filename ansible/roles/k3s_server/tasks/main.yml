@@ -46,10 +46,3 @@
   vars:
     k3s_install_role: server
   tags: [k3s_server_install]
-
-- name: Enable and start k3s
-  ansible.builtin.service:
-    name: k3s
-    state: started
-    enabled: true
-  tags: [k3s_server_install]

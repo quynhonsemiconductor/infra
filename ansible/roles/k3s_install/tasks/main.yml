@@ -1,7 +1,8 @@
 ---
 # Install (or upgrade to) the pinned k3s. The installer is fetched from the TAG (not get.k3s.io, which moves) and
-# verified against k3s_install_script_sha256. Skipped entirely when the pinned version is already installed.
-# Called by k3s_server, k3s_agent_gpu and k3s_agent AFTER they wrote their config.yaml.
+# verified against k3s_install_script_sha256; download and install are skipped when the pinned version is installed.
+# Called by k3s_server, k3s_agent_gpu and k3s_agent AFTER they wrote their config.yaml; it also enables and starts
+# the unit.
 - name: Assert the pin is set
   ansible.builtin.assert:
     that:
@@ -26,6 +27,10 @@
     owner: root
     group: root
     mode: "0700"
+  register: k3s_install_fetch
+  until: k3s_install_fetch is succeeded
+  retries: 3
+  delay: 10
   when: k3s_version not in k3s_install_current.stdout
 
 - name: Run the installer (the node has no k3s at this version)
@@ -33,5 +38,19 @@
     cmd: "/var/tmp/k3s-install-{{ k3s_version }}.sh {{ k3s_install_role }}"
   environment:
     INSTALL_K3S_VERSION: "{{ k3s_version }}"
+  # The installer downloads the binary from GitHub release assets; retry transient download failures.
+  register: k3s_install_run
+  until: k3s_install_run is succeeded
+  retries: 3
+  delay: 10
   when: k3s_version not in k3s_install_current.stdout
   changed_when: true
+
+# Started here, not in the calling roles, so check mode can skip it on a node the installer has not run on yet
+# (the unit does not exist until it does).
+- name: Enable and start k3s
+  ansible.builtin.service:
+    name: "{{ 'k3s' if k3s_install_role == 'server' else 'k3s-agent' }}"
+    state: started
+    enabled: true
+  when: not (ansible_check_mode and k3s_version not in k3s_install_current.stdout)
