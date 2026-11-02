@@ -110,7 +110,9 @@ resource "cloudflare_dns_record" "admin_hosts" {
   zone_id = var.cloudflare_zone_id
   name    = var.admin_hostnames[each.value]
   type    = "CNAME"
-  content = "${data.cloudflare_zero_trust_tunnel_cloudflared.qnsc_admin[0].id}.cfargotunnel.com"
+  # `argocd` is served from INSIDE the cluster (qnsc-apps tunnel, a ClusterIP
+  # origin); pve and pbs live on pve01 (qnsc-admin tunnel).
+  content = "${each.value == "argocd" ? data.cloudflare_zero_trust_tunnel_cloudflared.qnsc_apps[0].id : data.cloudflare_zero_trust_tunnel_cloudflared.qnsc_admin[0].id}.cfargotunnel.com"
   ttl     = 1
   proxied = true
 
