@@ -205,8 +205,9 @@
       no_log: true
       when: not pve_base_notify_exists | bool or pve_base_notify_teams_rotate | bool
 
-    # The URL goes in through stdin, so it is not in this task's command line; pvesh itself only takes it as an
-    # argument, which on the host is visible to root only for the moment the call runs.
+    # The URL goes in through stdin, so it is not in this task's command line (it is in the module arguments Ansible
+    # copies to the host's remote temp dir for the task, removed afterwards). pvesh only takes it as an argument, so it is
+    # in the host's process list (/proc/<pid>/cmdline) for the moment the call runs; pve01 has no other local users.
     - name: Create the Teams webhook endpoint, or update it (and the secret only on rotate)
       ansible.builtin.command:
         argv:
@@ -266,12 +267,16 @@
           - "{{ pve_base_managed_comment }}"
           - --disable
           - "0"
+        # pvesh may print a list option as a list or as a comma string.
+        pve_base_notify_matcher_sev: >-
+          {{ (pve_base_notify_matcher.stdout | from_json)['match-severity'] | default([])
+             if pve_base_notify_matcher.rc == 0 else [] }}
       changed_when: true
       when: >-
         pve_base_notify_matcher.rc != 0 or (
              (pve_base_notify_matcher.stdout | from_json).target | default([]) != [pve_base_notify_teams_endpoint]
-          or (pve_base_notify_matcher.stdout | from_json)['match-severity'] | default([]) | sort
-             != pve_base_notify_teams_severities | sort
+          or (pve_base_notify_matcher_sev if pve_base_notify_matcher_sev is string else pve_base_notify_matcher_sev | join(','))
+             | split(',') | sort != pve_base_notify_teams_severities | sort
           or (pve_base_notify_matcher.stdout | from_json)['match-field'] | default([]) != []
           or (pve_base_notify_matcher.stdout | from_json)['match-calendar'] | default([]) != []
           or (pve_base_notify_matcher.stdout | from_json).mode | default('all') != 'all'
