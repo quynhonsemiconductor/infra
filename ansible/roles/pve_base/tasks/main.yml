@@ -39,7 +39,11 @@
   tags: [pve_base_repos]
   block:
     - name: Look for an existing no-subscription source
-      ansible.builtin.command: grep -rlE "pve-no-subscription" /etc/apt/sources.list /etc/apt/sources.list.d
+      # Search /etc/apt itself: a deb822-only host (PVE 9) has no /etc/apt/sources.list, and grep exits 2 on a
+      # missing path. Renamed *.disabled files do not count.
+      ansible.builtin.command: >-
+        grep -rlE "pve-no-subscription" /etc/apt
+        --include=sources.list --include=*.list --include=*.sources
       register: pve_base_nosub_existing
       changed_when: false
       failed_when: pve_base_nosub_existing.rc > 1
