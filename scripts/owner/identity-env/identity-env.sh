@@ -132,7 +132,10 @@ for k in "${KEYS[@]}"; do
   [[ -n "$want" ]] || die "service $k has no customKeyIdentifier (thumbprint)"
   # Every mail certificate (prod included) is read from 1Password as its PUBLIC part only. The rova-prod Key Vault
   # entry is a plain secret holding the private key too, so the kit never reads Key Vault.
-  pem=$(op read "op://$VAULT/Entra mail cert – ${k//_/-} – certificate/$CERT_FIELD" 2>/dev/null) || die "op lookup failed: mail cert $k"
+  # `op read` refuses the en dash in these titles, so read the field by item title (any character allowed).
+  pem=$(op item get "Entra mail cert – ${k//_/-} – certificate" --vault "$VAULT" --fields "$CERT_FIELD" --format json 2>/dev/null \
+    | jq -r '.value // empty') || die "op lookup failed: mail cert $k"
+  [[ -n "$pem" ]] || die "op lookup failed: mail cert $k"
   [[ "$pem" == *"BEGIN CERTIFICATE"* ]] || die "mail cert $k is not a certificate"
   [[ "$pem" != *"PRIVATE KEY"* ]] || die "mail cert $k carries a private key: refusing"
   have=$(printf '%s\n' "$pem" | thumb_of_pem)

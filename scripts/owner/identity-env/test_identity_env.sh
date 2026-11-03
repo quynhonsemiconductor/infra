@@ -60,10 +60,15 @@ esac
 STUB
 cat >"$BIN/op" <<'STUB'
 #!/usr/bin/env bash
-ref="$2"; echo "op read" >>"$FX/calls.log"
-case "$ref" in
-  "op://QNSC/Entra mail cert – "*" – certificate/notesPlain") p=${ref#*cert – }; p=${p%% – *}; cat "$FX/op-${p//-/_}" ;;
-  *) echo "unexpected op ref" >&2; exit 9 ;;
+# real op: `op item get <title> --vault QNSC --fields notesPlain --format json` -> {"value": "..."}
+[ "$1 $2" = "item get" ] || { echo "unexpected op verb: $1 $2" >&2; exit 9; }
+echo "op item get" >>"$FX/calls.log"
+t="$3"; shift 3
+[ "$*" = "--vault QNSC --fields notesPlain --format json" ] || { echo "unexpected op args: $*" >&2; exit 9; }
+case "$t" in
+  "Entra mail cert – "*" – certificate") p=${t#Entra mail cert – }; p=${p%% – *}; f="$FX/op-${p//-/_}"
+    [ -f "$f" ] || { echo "[ERROR] item not found" >&2; exit 1; }; jq -Rs '{value:.}' "$f" ;;
+  *) echo "unexpected op item" >&2; exit 9 ;;
 esac
 STUB
 chmod +x "$BIN/az" "$BIN/op"
@@ -121,6 +126,7 @@ build; jq -c '.[0].keyCredentials+=[.[0].keyCredentials[0]]|.' "$FX/app-Rova-Dev
 build; mkcert other; cp "$T/other.crt" "$FX/op-opshub_dev"; expect_stop "wrong thumbprint" "mail cert opshub_dev thumbprint differs"
 build; cat "$T/opshub_dev.crt" "$T/opshub_dev.key" >"$FX/op-opshub_dev"; expect_stop "private key in cert" "mail cert opshub_dev carries a private key"
 build; echo garbage >"$FX/op-kb_dev"; expect_stop "not a certificate" "mail cert kb_dev is not a certificate"
+build; rm "$FX/op-kb_dev"; expect_stop "missing 1password item" "op lookup failed: mail cert kb_dev"
 build; mkcert other; cp "$T/other.crt" "$FX/op-rova_prod"; expect_stop "prod cert differs" "mail cert rova_prod thumbprint differs"
 build; cat "$T/rova_prod.crt" "$T/rova_prod.key" >"$FX/op-rova_prod"; expect_stop "prod private key" "mail cert rova_prod carries a private key"
 build; echo '{"value":[{"verifiedDomains":[{"name":"a","isDefault":false}]}]}' >"$FX/org"; expect_stop "no default domain" "lookup for TF_VAR_break_glass_upn_domain is empty"
@@ -144,5 +150,5 @@ rm "$T/stack/eso.tf"
 # 5. the kit only reads: no az verb other than show/list, no op verb other than read
 if grep -q 'keyvault' "$FX/calls.log"; then fail "the kit read Key Vault"; fi
 if grep -E '^az (.* )?(create|update|delete|set|reset|add|remove|assignment|grant|invite)( |$)' "$FX/calls.log"; then fail "a mutating az call was made"; fi
-grep -qv '^op read$' <(grep '^op' "$FX/calls.log") && fail "an op call other than read"
+grep -qv '^op item get$' <(grep '^op' "$FX/calls.log") && fail "an op call other than item get"
 echo "PASS: identity-env"
