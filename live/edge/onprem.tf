@@ -228,9 +228,11 @@ resource "cloudflare_zero_trust_access_policy" "dev_allow" {
   decision         = "allow"
   session_duration = "12h"
 
-  include = [{
+  # grp-qnsc-developers, plus grp-qnsc-dev-users (PQA, BA: the dev web hosts and nothing else; the MCP, hub and
+  # ArgoCD policies name grp-qnsc-developers only). Include = OR.
+  include = [for g in compact([var.grp_developers_id, var.grp_dev_users_id]) : {
     azure_ad = {
-      id                   = var.grp_developers_id
+      id                   = g
       identity_provider_id = cloudflare_zero_trust_access_identity_provider.entra.id
     }
   }]

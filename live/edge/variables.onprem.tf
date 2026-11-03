@@ -41,6 +41,12 @@ variable "grp_developers_id" {
   description = "Entra object id of grp-qnsc-developers. TF_VAR_grp_developers_id (repo variable)."
 }
 
+variable "grp_dev_users_id" {
+  type        = string
+  default     = ""
+  description = "Entra object id of grp-qnsc-dev-users (live/identity output grp_dev_users_id): dev web hosts only, no engineering tools. TF_VAR_grp_dev_users_id (repo variable ENTRA_GRP_DEV_USERS_ID). Empty = only grp-qnsc-developers is allowed."
+}
+
 variable "entra_tenant_id" {
   type        = string
   description = "Entra tenant id (not a secret; CI-fed for one source of truth). TF_VAR_entra_tenant_id."
