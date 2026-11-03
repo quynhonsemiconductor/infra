@@ -27,6 +27,8 @@ resource "proxmox_virtual_environment_role" "tofu_startup_order" {
 
 resource "proxmox_virtual_environment_user" "terraform" {
   user_id = "terraform@pve"
+  # Live value (pve01, 2026-11-03): an omitted comment plans its removal, so it is stated.
+  comment = "OpenTofu infra/live/onprem-vm"
   # No password: the account is an API identity, it never logs in to the UI. An import cannot read
   # one back, and setting one here would be a write.
 

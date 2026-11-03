@@ -26,13 +26,17 @@ resource "proxmox_hardware_mapping_pci" "gpu" {
 # ── Storage definitions the stack relies on ──────────────────────────────────
 # `local` holds ISOs, templates, backups and the cloud-init snippets of ai-01 (hence `snippets`,
 # which scripts/owner/pve-gpu-passthrough.sh enables); `local-zfs` is where every VM disk lives. Both
-# are the installer's definitions; the values below are its defaults, and the import shows if the host
-# differs (README). The PBS storage (`pbs-qnsc`) and the backup jobs are NOT here: backup.tf is their
+# are the installer's definitions; the values below are the live host's (pve01, checked 2026-11-03), not
+# the provider defaults, so the import plans no change. `nodes` is set to the empty set explicitly: the
+# live storages carry no `nodes` key (= every node), and leaving it unset makes the provider plan it as
+# known-after-apply. The PBS storage (`pbs-qnsc`) and the backup jobs are NOT here: backup.tf is their
 # only owner (one resource, one source of truth).
 resource "proxmox_storage_directory" "local" {
   id      = "local"
   path    = "/var/lib/vz"
-  content = ["backup", "iso", "snippets", "vztmpl"]
+  content = ["backup", "import", "iso", "snippets", "vztmpl"]
+  nodes   = []
+  shared  = false
 
   lifecycle {
     prevent_destroy = true
@@ -43,6 +47,8 @@ resource "proxmox_storage_zfspool" "local_zfs" {
   id             = var.datastore_id
   zfs_pool       = var.zfs_pool
   content        = ["images", "rootdir"]
+  blocksize      = "16k"
+  nodes          = []
   thin_provision = true
 
   lifecycle {
