@@ -130,13 +130,9 @@ for k in "${KEYS[@]}"; do
   kid=$(jq -r '.keyCredentials[0].keyId // empty' "$f"); need_guid "service $k keyId" "$kid"
   want=$(jq -r '.keyCredentials[0].customKeyIdentifier // empty' "$f" | base64 -d 2>/dev/null | xxd -p | tr -d '\n')
   [[ -n "$want" ]] || die "service $k has no customKeyIdentifier (thumbprint)"
-  if [[ "$k" == rova_prod ]]; then
-    # The CERTIFICATE object (public part only), never the Key Vault secret that also holds the private key.
-    pem=$(az keyvault certificate show --vault-name kv-qnsc-prod --name rova-prod-graph-cert --query cer -o tsv 2>/dev/null \
-      | base64 -d | openssl x509 -inform DER -outform PEM 2>/dev/null) || die "lookup failed: rova-prod-graph-cert"
-  else
-    pem=$(op read "op://$VAULT/Entra mail cert – ${k%_dev}-dev – certificate/$CERT_FIELD" 2>/dev/null) || die "op lookup failed: mail cert $k"
-  fi
+  # Every mail certificate (prod included) is read from 1Password as its PUBLIC part only. The rova-prod Key Vault
+  # entry is a plain secret holding the private key too, so the kit never reads Key Vault.
+  pem=$(op read "op://$VAULT/Entra mail cert – ${k//_/-} – certificate/$CERT_FIELD" 2>/dev/null) || die "op lookup failed: mail cert $k"
   [[ "$pem" == *"BEGIN CERTIFICATE"* ]] || die "mail cert $k is not a certificate"
   [[ "$pem" != *"PRIVATE KEY"* ]] || die "mail cert $k carries a private key: refusing"
   have=$(printf '%s\n' "$pem" | thumb_of_pem)
