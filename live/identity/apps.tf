@@ -68,7 +68,7 @@ locals {
         "https://rova.qnsc.vn/api/auth/callback/microsoft", # ADDED (v8 cutover)
       ]
       scopes          = ["openid", "profile", "email", "offline_access", "User_Read", "User_Invite_All"]
-      optional_claims = []
+      optional_claims = ["email", "upn"] # live idToken claims (added at the v8 prod cutover)
     }
     rova_dev = {
       display_name = "Rova Dev"
@@ -195,7 +195,7 @@ resource "azuread_application" "signin" {
   }
 
   # Live idToken optional claims (export): opshub email+acct, rova_dev
-  # email+upn+preferred_username; none on rova_prod/kb.
+  # email+upn+preferred_username, rova_prod email+upn; none on kb.
   dynamic "optional_claims" {
     for_each = length(each.value.optional_claims) > 0 ? [1] : []
     content {
