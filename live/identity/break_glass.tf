@@ -26,7 +26,7 @@
 
 variable "break_glass_upn_domain" {
   type        = string
-  description = "UPN domain for the break-glass accounts (the tenant's primary domain). TF_VAR_break_glass_upn_domain."
+  description = "UPN domain for the break-glass accounts: the tenant's INITIAL *.onmicrosoft.com domain, never a custom domain (it must work when the custom domain does not). TF_VAR_break_glass_upn_domain."
 }
 
 # Throwaway provisioning credential: the OWNER immediately resets the

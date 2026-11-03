@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Owner apply kit for live/identity: BUILDS every TF_VAR_* that has no default from read-only `az` / `op`
+# Owner apply kit for live/identity: BUILDS every TF_VAR_* that has no default from read-only `az`
 # lookups, so no value is typed, kept in a file or committed. Run it in the owner's own terminal (`az login`
 # done, `op` signed in: 1Password app integration only answers there, never in CI or an agent).
 #
@@ -14,17 +14,12 @@
 #   IDENTITY_SECOND_OWNER_UPN   UPN of the second company owner (the signed-in user is the owner operator)
 #   IDENTITY_PROXMOX_HOST       hostname of the Proxmox realm (admin door); the redirect URI is https://<host>/
 # Optional:
-#   IDENTITY_OP_VAULT (QNSC)    IDENTITY_OP_CERT_FIELD (notesPlain)   field of the dev mail-cert items in 1Password
-#   IDENTITY_ESO_CERT_DIR ($HOME/keys)   eso-{dev,prod,platform}-cert.pem; only read while live/identity still
-#                                        declares var.eso_certificates (until the certificate-removal PR, #254)
 #   IDENTITY_STACK_DIR (live/identity, relative to the repo root)
 set -euo pipefail
 
 STACK="${IDENTITY_STACK_DIR:-live/identity}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 [[ "$STACK" = /* ]] || STACK="$ROOT/$STACK"
-VAULT="${IDENTITY_OP_VAULT:-QNSC}"
-CERT_FIELD="${IDENTITY_OP_CERT_FIELD:-notesPlain}"
 
 die() { echo "STOP: $*" >&2; exit 1; }
 for c in az jq openssl xxd; do command -v "$c" >/dev/null || die "need $c"; done
@@ -62,7 +57,8 @@ put TF_VAR_budget_period_start "$(rfc3339 "$(jq -r '.[0].timePeriod.startDate //
 put TF_VAR_budget_period_end "$(rfc3339 "$(jq -r '.[0].timePeriod.endDate // empty' <<<"$BUDGET")")"
 
 ORG=$(az_json tenant-domains rest --method get --url https://graph.microsoft.com/v1.0/organization)
-put TF_VAR_break_glass_upn_domain "$(jq -r '[.value[0].verifiedDomains[]|select(.isDefault)|.name]|if length==1 then .[0] else empty end' <<<"$ORG")"
+# Break-glass accounts live on the INITIAL *.onmicrosoft.com domain (never a custom domain they could lose).
+put TF_VAR_break_glass_upn_domain "$(jq -r '[.value[0].verifiedDomains[]|select(.isInitial)|.name]|if length==1 then .[0] else empty end' <<<"$ORG")"
 
 grp_id() { local id; id=$(az_json "group $1" ad group show --group "$1" | jq -r '.id // empty'); need_guid "group $1" "$id"; printf '%s' "$id"; }
 put TF_VAR_platform_admins_object_id "$(grp_id grp-qnsc-platform-admins)"
@@ -123,38 +119,55 @@ put TF_VAR_opshub_dev_app_role_ids "$ROLES"
 
 # --- mail service certificates: public PEM per app, bound to the keyId and thumbprint Entra holds -----------
 thumb_of_pem() { openssl x509 -noout -fingerprint -sha1 2>/dev/null | sed 's/.*=//; s/://g' | tr 'A-F' 'a-f'; }
+# key_pem <base64 key> <out file>: Graph's keyCredentials[].key is base64 of whatever was uploaded: DER (portal, az)
+# or the PEM text itself (the azuread provider with encoding = "pem"). PEM is kept byte for byte (trailing newline
+# included) so the value equals the one in state; DER is converted. Public certificates only.
+key_pem() {
+  printf '%s' "$1" | base64 -d >"$2.raw" 2>/dev/null || return 1
+  if grep -q 'BEGIN CERTIFICATE' "$2.raw"; then mv "$2.raw" "$2"
+  else openssl x509 -inform DER -outform PEM -in "$2.raw" -out "$2" 2>/dev/null || return 1; rm -f "$2.raw"; fi
+  ! grep -q 'PRIVATE KEY' "$2" && openssl x509 -in "$2" -noout 2>/dev/null
+}
 KEYIDS='{}'; CERTS='{}'
 for k in "${KEYS[@]}"; do
   f="$APPS_DIR/service-$k.json"
   [[ "$(jq '.keyCredentials|length' "$f")" == "1" ]] || die "service app $k must carry exactly 1 key credential"
   kid=$(jq -r '.keyCredentials[0].keyId // empty' "$f"); need_guid "service $k keyId" "$kid"
-  want=$(jq -r '.keyCredentials[0].customKeyIdentifier // empty' "$f" | base64 -d 2>/dev/null | xxd -p | tr -d '\n')
+  # customKeyIdentifier is normally base64 of the SHA-1 bytes; a cert added with the HEX thumbprint where base64 was
+  # expected (rova-prod, by hand) comes back as those 40 hex characters. Accept both forms.
+  cki=$(jq -r '.keyCredentials[0].customKeyIdentifier // empty' "$f")
+  if [[ "$cki" =~ ^[0-9A-Fa-f]{40}$ ]]; then want=$(tr 'A-F' 'a-f' <<<"$cki")
+  else want=$(printf '%s' "$cki" | base64 -d 2>/dev/null | xxd -p | tr -d '\n'); fi
   [[ -n "$want" ]] || die "service $k has no customKeyIdentifier (thumbprint)"
-  if [[ "$k" == rova_prod ]]; then
-    # The CERTIFICATE object (public part only), never the Key Vault secret that also holds the private key.
-    pem=$(az keyvault certificate show --vault-name kv-qnsc-prod --name rova-prod-graph-cert --query cer -o tsv 2>/dev/null \
-      | base64 -d | openssl x509 -inform DER -outform PEM 2>/dev/null) || die "lookup failed: rova-prod-graph-cert"
-  else
-    pem=$(op read "op://$VAULT/Entra mail cert – ${k%_dev}-dev – certificate/$CERT_FIELD" 2>/dev/null) || die "op lookup failed: mail cert $k"
-  fi
-  [[ "$pem" == *"BEGIN CERTIFICATE"* ]] || die "mail cert $k is not a certificate"
-  [[ "$pem" != *"PRIVATE KEY"* ]] || die "mail cert $k carries a private key: refusing"
-  have=$(printf '%s\n' "$pem" | thumb_of_pem)
+  # The PUBLIC certificate comes from Entra itself: Graph returns keyCredentials[].key (base64 DER) only on a single-object
+  # GET with $select=keyCredentials. No Key Vault (the prod entry also holds the private key), no 1Password copy to drift.
+  oid=$(jq -r '.id // empty' "$f"); need_guid "service $k object id" "$oid"
+  key=$(az_json "mail cert $k" rest --method get --url "https://graph.microsoft.com/v1.0/applications/$oid?\$select=keyCredentials" \
+    | jq -r '.keyCredentials[0].key // empty')
+  if [[ -z "$key" ]] || ! key_pem "$key" "$APPS_DIR/mail-$k.pem"; then die "lookup failed: mail cert $k"; fi
+  have=$(thumb_of_pem <"$APPS_DIR/mail-$k.pem")
   [[ -n "$have" && "$have" == "$want" ]] || die "mail cert $k thumbprint differs from the certificate live on the app (a replace would be planned)"
   KEYIDS=$(jq -c --arg k "$k" --arg v "$kid" '.[$k]=$v' <<<"$KEYIDS")
-  CERTS=$(jq -c --arg k "$k" --arg v "$pem" '.[$k]=$v' <<<"$CERTS")
+  CERTS=$(jq -c --arg k "$k" --rawfile v "$APPS_DIR/mail-$k.pem" '.[$k]=$v' <<<"$CERTS")
 done
 put TF_VAR_mail_service_cert_key_ids "$KEYIDS"
 put TF_VAR_mail_service_certificates "$CERTS"
 
 # --- ESO certificates: only while the stack still declares the variable (removed by the #254 PR) -------------
+# The PUBLIC certificate live on each ESO app, from Graph like the mail certs: a file on disk can be stale (rotation)
+# and a stale value plans a REPLACE that takes the ClusterSecretStores' credential away.
 if grep -qs '^variable "eso_certificates"' "$STACK"/*.tf; then
-  d="${IDENTITY_ESO_CERT_DIR:-$HOME/keys}"; E='{}'
+  E='{}'
   for p in dev prod platform; do
-    [[ -r "$d/eso-$p-cert.pem" ]] || die "missing eso-$p-cert.pem in the ESO cert dir"
-    pem=$(<"$d/eso-$p-cert.pem")
-    [[ "$pem" == *"BEGIN CERTIFICATE"* && "$pem" != *"PRIVATE KEY"* ]] || die "eso-$p-cert.pem must be a public certificate only"
-    E=$(jq -c --arg k "$p" --arg v "$pem" '.[$k]=$v' <<<"$E")
+    n="QNSC ESO $(tr '[:lower:]' '[:upper:]' <<<"${p:0:1}")${p:1}"
+    a=$(az_json "eso app $p" ad app list --filter "displayName eq '$n'")
+    [[ "$(jq 'length' <<<"$a")" == "1" ]] || die "exactly one app named '$n' expected"
+    oid=$(jq -r '.[0].id // empty' <<<"$a"); need_guid "eso $p object id" "$oid"
+    kc=$(az_json "eso cert $p" rest --method get --url "https://graph.microsoft.com/v1.0/applications/$oid?\$select=keyCredentials")
+    [[ "$(jq '.keyCredentials|length' <<<"$kc")" == "1" ]] || die "eso app $p must carry exactly 1 key credential"
+    key=$(jq -r '.keyCredentials[0].key // empty' <<<"$kc")
+    if [[ -z "$key" ]] || ! key_pem "$key" "$APPS_DIR/eso-$p.pem"; then die "lookup failed: eso cert $p"; fi
+    E=$(jq -c --arg k "$p" --rawfile v "$APPS_DIR/eso-$p.pem" '.[$k]=$v' <<<"$E")
   done
   put TF_VAR_eso_certificates "$E"
 fi

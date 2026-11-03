@@ -13,8 +13,9 @@
 # registration additionally need the portal itself (local.mcp_portal_live, the rova-dev gate in
 # mcp_portal.tf), because the portal is one shared resource.
 #
-# POLICY GROUPS: grp-qnsc-developers and grp-qnsc-dev-users (PQA, BA), the same as rova-dev. Owner decision
-# 2026-11-03: PQA/BA use both rova MCP servers; rova's RBAC (the signed-in user) still applies per call.
+# POLICY GROUPS: grp-qnsc-staff (every employee; owner decision 2026-11-03: rova is an internal tool for the whole
+# company) plus grp-qnsc-developers and grp-qnsc-dev-users, kept so nobody loses access before staff is populated.
+# rova's RBAC (the signed-in user) still decides every call.
 #
 # ORDER: apply this stack FIRST; read the new app's AUD (output rova_prod_mcp_aud) into
 # kv-qnsc-prod/rova-prod-mcp-access-aud; ONLY THEN merge the gitops change that sets MCP_ENABLED=true
@@ -36,9 +37,9 @@ resource "cloudflare_zero_trust_access_policy" "rova_prod_mcp_allow" {
   decision         = "allow"
   session_duration = "24h"
 
-  # grp-qnsc-developers plus grp-qnsc-dev-users (PQA, BA): the rova tools act as the signed-in rova user, so rova's
+  # grp-qnsc-staff (everyone) + developers + dev-users: the rova tools act as the signed-in rova user, so rova's
   # own RBAC still decides what each person can read or change. Include = OR.
-  include = [for g in compact([var.grp_developers_id, var.grp_dev_users_id]) : {
+  include = [for g in compact([var.grp_developers_id, var.grp_dev_users_id, var.grp_staff_id]) : {
     azure_ad = {
       id                   = g
       identity_provider_id = cloudflare_zero_trust_access_identity_provider.entra.id
@@ -107,6 +108,14 @@ resource "cloudflare_zero_trust_access_ai_controls_mcp_server" "rova_prod" {
   auth_type   = "oauth"
   # Per-user OAuth redirects through the one Cloudflare-owned callback (allowed on the upstream app).
   is_shared_oauth_callback_enabled = true
+  # Cloudflare provider 5.28.1 bug: every plan shows this server "updated in-place" from computed fields only (tools,
+  # last_synced, authentication_status), and the apply then PUTs `updated_tools: null`, which the API refuses
+  # (400 "Expected array, received null", infra-apply run 41639588672). Nothing here is meant to drift, so the
+  # resource is frozen after create. To change hostname/auth on purpose: remove this block in the same PR (or
+  # `-replace`), and put it back once the provider is fixed.
+  lifecycle {
+    ignore_changes = all
+  }
 }
 
 resource "cloudflare_zero_trust_access_application" "rova_prod_mcp_via_portal" {

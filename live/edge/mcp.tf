@@ -11,8 +11,8 @@
 # the host until its move apply.
 #
 # Policy groups: `grp-qnsc-developers` and `grp-qnsc-dev-users` (PQA, BA), the same
-# two groups the dev web Access app allows. VLSI stays excluded at group
-# membership (MCP-PLAN §5 L1).
+# two groups the dev web Access app allows. Dev stays engineering + testing; the
+# whole company (grp-qnsc-staff) reaches the PROD server (mcp_rova_prod.tf).
 
 resource "cloudflare_zero_trust_access_application" "rova_dev_mcp" {
   count = contains(local.cutover_live, "rova-dev.qnsc.vn") ? 1 : 0
