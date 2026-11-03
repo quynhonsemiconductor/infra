@@ -1,0 +1,11 @@
+---
+# Host override of containerd's default container profile (docs/runbooks/apparmor-containerd-stacking.md).
+# TEMPORARY: remove this role (and /etc/apparmor.d/cri-containerd.apparmor.d plus the k3s drop-in on every node) once
+# the containerd bundled with the pinned k3s ships containerd PR #14487 (issue #14485) or an equivalent fix.
+
+# The k3s unit on this node: k3s on the server, k3s-agent on an agent. Each playbook sets it.
+apparmor_containerd_k3s_unit: k3s-agent
+
+# The verify step counts signal denials for the profile in the kernel log of the CURRENT boot. Default: report only;
+# true fails the run when the count is not 0 (denials logged before the fix in this boot also count: reboot first).
+apparmor_containerd_strict: false

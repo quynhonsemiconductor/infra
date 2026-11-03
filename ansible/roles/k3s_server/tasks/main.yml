@@ -1,0 +1,48 @@
+---
+- name: Issuer URL is set when the ESO OIDC issuer is enabled
+  ansible.builtin.assert:
+    that:
+      - not (k3s_server_oidc_issuer_enabled | bool) or (k3s_server_oidc_issuer | length > 0)
+    fail_msg: "k3s_server_oidc_issuer_enabled is true but k3s_server_oidc_issuer is empty: set it in the local inventory."
+    quiet: true
+
+- name: Kernel settings for k3s
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    sysctl_file: /etc/sysctl.d/90-qnsc-k3s.conf
+    sysctl_set: true
+    state: present
+    reload: true
+  loop: "{{ k3s_server_sysctl | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  tags: [k3s_server_sysctl]
+
+- name: Directory for the k3s configuration
+  ansible.builtin.file:
+    path: /etc/rancher/k3s
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  tags: [k3s_server_config]
+
+- name: Write the k3s server configuration
+  ansible.builtin.template:
+    src: config.yaml.j2
+    dest: /etc/rancher/k3s/config.yaml
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Restart k3s
+    - Report that k3s needs a restart
+  tags: [k3s_server_config]
+
+- name: Install the pinned k3s server
+  ansible.builtin.include_role:
+    name: k3s_install
+  vars:
+    k3s_install_role: server
+  tags: [k3s_server_install]

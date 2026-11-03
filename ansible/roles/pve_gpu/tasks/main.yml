@@ -1,0 +1,132 @@
+---
+- name: Assert the card ids are set
+  ansible.builtin.assert:
+    that: pve_gpu_ids | length > 0
+    fail_msg: "pve_gpu_ids is empty (group_vars/pve.yml)"
+    quiet: true
+
+# ── the host must not claim the card (file contents reproduce the retired owner script byte for byte) ──
+- name: Blacklist the host GPU drivers
+  ansible.builtin.copy:
+    dest: /etc/modprobe.d/blacklist-qnsc-gpu.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # ai-01 GPU passthrough (§9.1): the host never drives the RTX 5060 Ti.
+      blacklist nouveau
+      blacklist nvidia
+      blacklist nvidia_drm
+      blacklist nvidia_modeset
+      blacklist nvidia_uvm
+      blacklist nvidiafb
+  notify: Rebuild the initramfs
+  tags: [pve_gpu_modules]
+
+- name: Bind vfio-pci to every function of the card
+  ansible.builtin.copy:
+    dest: /etc/modprobe.d/vfio-qnsc-gpu.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # ai-01 GPU passthrough (§9.1): claim the card and its audio function for vfio.
+      options vfio-pci ids={{ pve_gpu_ids | join(',') }}
+      # vfio-pci must claim both functions before the host drivers do
+      softdep nouveau pre: vfio-pci
+      softdep snd_hda_intel pre: vfio-pci
+  notify: Rebuild the initramfs
+  tags: [pve_gpu_modules]
+
+- name: Load the vfio modules at boot
+  ansible.builtin.copy:
+    dest: /etc/modules-load.d/vfio-qnsc.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      vfio
+      vfio_iommu_type1
+      vfio_pci
+  notify: Rebuild the initramfs
+  tags: [pve_gpu_modules]
+
+# ── identity mappings for passthrough devices ───────────────────────────────
+- name: Find the kernel command line file
+  ansible.builtin.stat:
+    path: "{{ pve_gpu_cmdline_file }}"
+  register: pve_gpu_cmdline
+  tags: [pve_gpu_cmdline]
+
+- name: Refuse a host that is not systemd-boot + ZFS
+  ansible.builtin.assert:
+    that: pve_gpu_cmdline.stat.exists
+    fail_msg: "{{ pve_gpu_cmdline_file }} not found: this role handles proxmox-boot-tool hosts only (a GRUB host needs /etc/default/grub instead)"
+    quiet: true
+  tags: [pve_gpu_cmdline]
+
+- name: Set iommu=pt on the kernel command line
+  ansible.builtin.lineinfile:
+    path: "{{ pve_gpu_cmdline_file }}"
+    regexp: '^(?!.*\biommu=pt\b)(.*\S)\s*$'
+    line: '\1 iommu=pt'
+    backrefs: true
+    mode: "0644"
+  notify:
+    - Rebuild the initramfs
+    - Refresh the boot loader
+  tags: [pve_gpu_cmdline]
+
+# ── ZFS ARC ceiling ─────────────────────────────────────────────────────────
+- name: ZFS ARC maximum at boot
+  ansible.builtin.copy:
+    dest: /etc/modprobe.d/zfs.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      options zfs zfs_arc_max={{ pve_gpu_arc_max_bytes }}
+  notify: Rebuild the initramfs
+  tags: [pve_gpu_arc]
+
+- name: Read the live ZFS ARC maximum
+  ansible.builtin.command: cat /sys/module/zfs/parameters/zfs_arc_max
+  register: pve_gpu_arc_live
+  changed_when: false
+  check_mode: false
+  tags: [pve_gpu_arc]
+
+- name: Apply the ARC maximum to the running system
+  ansible.builtin.shell: "echo {{ pve_gpu_arc_max_bytes }} > /sys/module/zfs/parameters/zfs_arc_max"
+  when: pve_gpu_arc_live.stdout | trim != (pve_gpu_arc_max_bytes | string)
+  changed_when: true
+  tags: [pve_gpu_arc]
+
+# ── verify: is vfio-pci holding the card? (a host that has not rebooted since the change says no) ──
+- name: Read the kernel driver in use for each function
+  ansible.builtin.command: "lspci -nnk -d {{ item }}"
+  loop: "{{ pve_gpu_ids }}"
+  register: pve_gpu_lspci
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  tags: [pve_gpu_verify]
+
+- name: Report the driver state
+  ansible.builtin.debug:
+    msg: "{{ item.item }}: {{ 'vfio-pci bound' if 'Kernel driver in use: vfio-pci' in item.stdout else 'NOT bound to vfio-pci (reboot pending?)' }}"
+  loop: "{{ pve_gpu_lspci.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  tags: [pve_gpu_verify]
+
+- name: Fail when vfio-pci is not bound (strict mode)
+  ansible.builtin.assert:
+    that: "'Kernel driver in use: vfio-pci' in item.stdout"
+    fail_msg: "{{ item.item }} is not bound to vfio-pci"
+    quiet: true
+  loop: "{{ pve_gpu_lspci.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: pve_gpu_verify_strict | bool
+  tags: [pve_gpu_verify]

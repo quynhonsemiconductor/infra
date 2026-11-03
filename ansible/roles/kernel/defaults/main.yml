@@ -1,0 +1,15 @@
+---
+# Kernel policy of the k3s nodes: security updates are installed unattended, but a new kernel only becomes active at
+# a reboot in a maintenance window (no automatic reboot, ever).
+
+# TEMPORARY kernel pin (docs/runbooks/apparmor-containerd-stacking.md). Empty = no pin: GRUB_DEFAULT=0 and the kernel
+# meta packages are unheld. Set per host in the local inventory, e.g. "7.0.0-38": GRUB_DEFAULT=saved, the saved entry
+# points at that kernel and the meta packages are held so no newer kernel is installed.
+kernel_pin_version: ""
+
+# The meta packages that pull in new kernels (held while pinned; only those installed on the node are touched).
+kernel_hold_packages:
+  - linux-image-virtual
+  - linux-headers-virtual
+  - linux-virtual
+  - linux-headers-generic
