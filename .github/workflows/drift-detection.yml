@@ -279,11 +279,44 @@ jobs:
             exit 1
           fi
 
+  # The Worker in live/onprem-oidc is a trust root for Key Vault (whoever changes its JWKS can mint tokens Entra
+  # accepts for the ESO apps). This compares what is SERVED with the stack's non-secret outputs recorded in
+  # live/onprem-oidc/jwks-expected.txt. Public fetch only: no credential.
+  oidc-served:
+    name: Drift onprem-oidc-served
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Served JWKS equals the expected key set
+        run: |
+          set -euo pipefail
+          exp=live/onprem-oidc/jwks-expected.txt
+          want_kids=$(sed -n 's/^kids=//p' "$exp"); want_sha=$(sed -n 's/^sha256=//p' "$exp")
+          if [ "$want_kids" = "unset" ] || [ "$want_sha" = "unset" ]; then
+            echo "::notice::jwks-expected.txt is not set yet (stack not applied): skipping"; exit 0
+          fi
+          host=$(sed -n '/^variable "oidc_hostname"/,/^}/s/^[[:space:]]*default[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' live/onprem-oidc/variables.tf)
+          path=$(sed -n '/^variable "oidc_path"/,/^}/s/^[[:space:]]*default[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' live/onprem-oidc/variables.tf)
+          issuer="https://$host/$path"
+          disc=$(curl -fsS --max-time 20 "$issuer/.well-known/openid-configuration")
+          [ "$(jq -r .issuer <<<"$disc")" = "$issuer" ] || { echo "::error::served issuer differs from $issuer"; exit 1; }
+          jwks=$(curl -fsS --max-time 20 "$(jq -r .jwks_uri <<<"$disc")")
+          kids=$(jq -r '[.keys[].kid]|sort|join(",")' <<<"$jwks")
+          sha=$(jq -S -c . <<<"$jwks" | tr -d '\n' | sha256sum | cut -d' ' -f1)
+          [ "$kids" = "$want_kids" ] || { echo "::error::served kid set differs from the expected one"; exit 1; }
+          [ "$sha" = "$want_sha" ] || { echo "::error::served JWKS hash differs from the expected one"; exit 1; }
+          echo "served JWKS matches (${kids})"
+
   # Any stack that is not green, including "could not run", raises an alert that does not depend on someone watching Actions.
   alert:
     name: Alert on drift failure
-    needs: drift
-    if: ${{ always() && needs.drift.result != 'success' && needs.drift.result != 'skipped' }}
+    needs: [drift, oidc-served]
+    if: ${{ always() && ((needs.drift.result != 'success' && needs.drift.result != 'skipped') || needs.oidc-served.result == 'failure') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -357,8 +390,8 @@ jobs:
   # A green run closes the issue, so an open drift-detection issue always means "failing now".
   resolve:
     name: Close the drift issue
-    needs: drift
-    if: ${{ always() && needs.drift.result == 'success' }}
+    needs: [drift, oidc-served]
+    if: ${{ always() && needs.drift.result == 'success' && needs.oidc-served.result != 'failure' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
