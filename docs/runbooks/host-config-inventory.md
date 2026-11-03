@@ -11,7 +11,7 @@ the owner's git-ignored files.
 | First boot | **cloud-init** (a snippet from OpenTofu) | hostname, one operator key, qemu-guest-agent, time zone: nothing else |
 | In-cluster | **gitops** | everything Kubernetes |
 | Laptops | **Fleet** (later) | the owners' Macs: WARP, known_hosts, brew |
-| Secret VALUES | **manual** (1Password / Key Vault, through stdin) | never in Git, never in Ansible vars files, never in state |
+| Secret VALUES | **manual** (1Password / Key Vault, through stdin) | never in Git, never in Ansible vars files, never in state, except where a provider has no other input: the Entra IdP client secret (`live/edge`) and the PBS storage token (`live/onprem-vm/backup.tf`, DatastoreBackup on one datastore only); the state backend is private (Entra auth) and encrypted at rest |
 
 Priority: **P1** wave 1 (in `ansible/` now), **P2** wave 2 (next), **P3** later, **keep** = stays a manual/owner action on purpose.
 
@@ -45,7 +45,7 @@ Priority: **P1** wave 1 (in `ansible/` now), **P2** wave 2 (next), **P3** later,
 | HDD mirror pool `backup` | server-setup.md 4 | keep | keep | destroys disks: created once by hand, Ansible only creates the dataset on it |
 | UPS (NUT) | server-setup.md 5 | Ansible `pve_nut` | P2 | |
 | PBS install, datastore, prune/GC/verify, user and token | server-setup.md 11 | Ansible `pbs` | P1 | the PBS user token secret goes to 1Password through stdin, never to a log |
-| PVE side of PBS (storage, encryption key, nightly job) | server-setup.md 11.3 | OpenTofu `proxmox_storage_pbs` + `proxmox_backup_job` | P1 | the encryption key is created once and kept off the machine |
+| PVE side of PBS (storage, nightly job) | server-setup.md 11.3 | OpenTofu `proxmox_storage_pbs` + `proxmox_backup_job` (`live/onprem-vm/backup.tf`) | done | no client-side encryption while the datastore is on the same host; add it with the off-site copy (key created once, kept in 1Password) |
 | Backup restore test | server-setup.md 11.4 | keep (quarterly runbook) | keep | a human checks the VM boots |
 | k3s-01: k3s install and config | server-setup.md 10 | Ansible `k3s_server` | P1 | restart is gated by a variable (default: report, do not restart) |
 | Ubuntu base of the VMs (users, sshd, unattended upgrades) | server-setup.md 10, cloud-init | cloud-init stays minimal; the rest Ansible `vm_base` | P2 | |

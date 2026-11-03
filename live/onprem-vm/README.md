@@ -19,6 +19,15 @@ holds no Proxmox token, and the API endpoint is the admin door.
   should stand on the node, and the version pin. Applied **by hand** on the
   node; nothing here writes into a running VM.
 
+- `proxmox_storage_pbs.pbs_qnsc` + `proxmox_backup_job.nightly` (`backup.tf`) — PVE side of the
+  co-located Proxmox Backup Server: storage `pbs-qnsc` (token login, pinned certificate fingerprint)
+  and the nightly snapshot-mode backup of VMs 100, 101 and 102. Retention, GC and verify are PBS jobs
+  (Ansible role `pbs`). Needs `TF_VAR_pbs_token_secret` from 1Password and `pbs_fingerprint` in
+  site.tfvars:
+  ```sh
+  export TF_VAR_pbs_token_secret="$(op read 'op://QNSC/<item-id>/secret')"
+  ```
+
 ## Not managed, on purpose
 
 - `clone {}` — every field is ForceNew, and an import never sets it. Creating a

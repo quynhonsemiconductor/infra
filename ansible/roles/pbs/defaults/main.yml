@@ -25,9 +25,6 @@ pbs_pve_user: backup@pbs
 pbs_pve_token_name: pve
 pbs_pve_role: DatastoreBackup
 
-# The token secret exists once, at creation, and is handed to 1Password through stdin (never printed, never logged,
-# never stored by Ansible). `op` must be installed and signed in on the machine running Ansible; the role checks
-# BEFORE it creates anything, so a missing `op` cannot lose a secret. Set to false only to skip creating the token.
-pbs_token_to_onepassword: true
+# Where the owner stores the token secret (the role prints the command; it never handles the secret itself).
 pbs_onepassword_vault: QNSC
 pbs_onepassword_item_title: "PBS - pve backup - API token"

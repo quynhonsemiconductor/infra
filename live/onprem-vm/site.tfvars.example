@@ -50,3 +50,7 @@ vlsi01_ipv4_address = "192.0.2.22/24"
 ssh_public_keys = [
   "ssh-ed25519 AAAA... owner@laptop",
 ]
+
+# ── PBS (backup.tf) ─────────────────────────────────────────────────────────
+# Certificate fingerprint as `ansible-playbook pve-host.yml --tags pbs` prints it (not a secret).
+pbs_fingerprint = "00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff"
