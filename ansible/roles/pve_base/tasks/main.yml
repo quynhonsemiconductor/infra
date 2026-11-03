@@ -183,8 +183,9 @@
       ansible.builtin.command: pvesh get {{ pve_base_notify_api }} --output-format json
       register: pve_base_notify_current
       changed_when: false
-      # Absent is a 404 "does not exist"; any other error (auth, pveproxy down) must not look like "absent".
-      failed_when: pve_base_notify_current.rc != 0 and 'does not exist' not in pve_base_notify_current.stderr
+      # Absent is a 404 (pvesh get says "404 endpoint '<name>' not found"); any other error (auth, pveproxy down) must
+      # not look like "absent".
+      failed_when: pve_base_notify_current.rc != 0 and pve_base_notify_current.stderr is not match('^404 ')
       check_mode: false
 
     - name: Decide whether the secret is written (create or rotate)
