@@ -24,3 +24,22 @@ output "grp_dev_users_id" {
   description = "Object id for the repo variable ENTRA_GRP_DEV_USERS_ID (live/edge reads it)."
   value       = azuread_group.dev_users.object_id
 }
+
+# grp-qnsc-staff: EVERY employee (software, IC/VLSI, BA, PQA, accounting, management). It gates the PROD internal
+# tools (rova / opshub / kb, web and MCP); what a person can do inside an app is that app's own RBAC, because every
+# MCP call acts as the signed-in user. Engineering doors (ArgoCD, Proxmox, WARP, the MCP hub) stay on
+# grp-qnsc-developers / grp-qnsc-platform-admins. Onboarding adds a person here; offboarding removes them everywhere.
+resource "azuread_group" "staff" {
+  display_name     = "grp-qnsc-staff"
+  description      = "Every employee: prod internal tools (rova, opshub, kb: web + MCP). App RBAC decides the rest."
+  security_enabled = true
+
+  lifecycle {
+    ignore_changes = [members] # membership is managed in Entra, not in this stack
+  }
+}
+
+output "grp_staff_id" {
+  description = "Object id for the repo variable ENTRA_GRP_STAFF_ID (live/edge reads it)."
+  value       = azuread_group.staff.object_id
+}
