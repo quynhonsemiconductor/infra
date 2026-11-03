@@ -34,7 +34,7 @@ build() { # build the fixture set from scratch
     jq -n --arg id "$(g 20 $i)" --arg app "$(g 21 $i)" --arg kid "$(g 22 $i)" --arg th "$(b64thumb "$T/$k.crt")" \
       '{id:$id,appId:$app,keyCredentials:[{keyId:$kid,customKeyIdentifier:$th}]}' >"$FX/app-$(signin_name "$k" | tr " " -)-Service"
     jq -n --arg app "$(g 21 $i)" --arg sp "$(g 23 $i)" '[{id:$sp,appId:$app}]' >"$FX/sp-$(g 21 $i)"
-    cp "$T/$k.crt" "$FX/op-$k"
+    { echo "\"$(g 20 $i)\""; cat "$T/$k.crt"; } >"$FX/cert-$k"
   done
   roles='[]'; n=0
   for r in admin it-admin security hr manager helpdesk auditor; do n=$((n+1)); roles=$(jq -c --arg r "$r" --arg id "$(g 30 $n)" '.+[{value:$r,id:$id,isEnabled:true}]' <<<"$roles"); done
@@ -48,6 +48,9 @@ case "$a" in
   "account show"*) cat "$FX/account" ;;
   "consumption budget list"*) cat "$FX/budget" ;;
   "rest --method get --url https://graph.microsoft.com/v1.0/organization"*) cat "$FX/org" ;;
+  "rest --method get --url https://graph.microsoft.com/v1.0/applications/"*'?$select=keyCredentials'*) o=${a#*applications/}; o=${o%%\?*}
+    f=$(grep -l "\"$o\"" "$FX"/cert-* 2>/dev/null | head -1); [ -n "$f" ] || { echo '{"keyCredentials":[{"key":null}]}'; exit 0; }
+    jq -n --arg k "$(openssl x509 -in "$f" -outform DER | base64 | tr -d '\n')" '{keyCredentials:[{key:$k}]}' ;;
   "ad group show --group "*) g=${a#ad group show --group }; cat "$FX/group-${g%% *}" ;;
   "ad group member list"*) cat "$FX/members" ;;
   "ad signed-in-user show"*) cat "$FX/me" ;;
@@ -60,16 +63,7 @@ esac
 STUB
 cat >"$BIN/op" <<'STUB'
 #!/usr/bin/env bash
-# real op: `op item get <title> --vault QNSC --fields notesPlain --format json` -> {"value": "..."}
-[ "$1 $2" = "item get" ] || { echo "unexpected op verb: $1 $2" >&2; exit 9; }
-echo "op item get" >>"$FX/calls.log"
-t="$3"; shift 3
-[ "$*" = "--vault QNSC --fields notesPlain --format json" ] || { echo "unexpected op args: $*" >&2; exit 9; }
-case "$t" in
-  "Entra mail cert – "*" – certificate") p=${t#Entra mail cert – }; p=${p%% – *}; f="$FX/op-${p//-/_}"
-    [ -f "$f" ] || { echo "[ERROR] item not found" >&2; exit 1; }; jq -Rs '{value:.}' "$f" ;;
-  *) echo "unexpected op item" >&2; exit 9 ;;
-esac
+echo "op $*" >>"$FX/calls.log"; echo "the kit must not call op" >&2; exit 9
 STUB
 chmod +x "$BIN/az" "$BIN/op"
 echo 'variable "other" {}' >"$T/stack/v.tf"
@@ -123,12 +117,10 @@ build; jq -c '. + .' "$FX/app-Rova-Dev.list" >"$FX/x" && mv "$FX/x" "$FX/app-Rov
 build; echo '[{"id":"not-a-guid","appId":"x"}]' | jq -c '.' >"$FX/sp-$(g 11 1)"; expect_stop "bad SP id" "SP object id is not a GUID"
 build; jq -c '[.[0]|.appRoles|=map(select(.value!="hr"))]' "$FX/app-OpsHub-Dev.list" >"$FX/x" && mv "$FX/x" "$FX/app-OpsHub-Dev.list"; expect_stop "missing app role" "OpsHub Dev must carry exactly the 7 app roles"
 build; jq -c '.[0].keyCredentials+=[.[0].keyCredentials[0]]|.' "$FX/app-Rova-Dev-Service.list" >"$FX/x" && mv "$FX/x" "$FX/app-Rova-Dev-Service.list"; expect_stop "two key credentials" "service app rova_dev must carry exactly 1 key credential"
-build; mkcert other; cp "$T/other.crt" "$FX/op-opshub_dev"; expect_stop "wrong thumbprint" "mail cert opshub_dev thumbprint differs"
-build; cat "$T/opshub_dev.crt" "$T/opshub_dev.key" >"$FX/op-opshub_dev"; expect_stop "private key in cert" "mail cert opshub_dev carries a private key"
-build; echo garbage >"$FX/op-kb_dev"; expect_stop "not a certificate" "mail cert kb_dev is not a certificate"
-build; rm "$FX/op-kb_dev"; expect_stop "missing 1password item" "op lookup failed: mail cert kb_dev"
-build; mkcert other; cp "$T/other.crt" "$FX/op-rova_prod"; expect_stop "prod cert differs" "mail cert rova_prod thumbprint differs"
-build; cat "$T/rova_prod.crt" "$T/rova_prod.key" >"$FX/op-rova_prod"; expect_stop "prod private key" "mail cert rova_prod carries a private key"
+swapcert() { local f="$FX/cert-$1" id; id=$(head -1 "$f"); { echo "$id"; cat "$2"; } >"$f"; }
+build; mkcert other; swapcert opshub_dev "$T/other.crt"; expect_stop "wrong thumbprint" "mail cert opshub_dev thumbprint differs"
+build; rm "$FX/cert-kb_dev"; expect_stop "no key on the app" "lookup failed: mail cert kb_dev"
+build; mkcert other; swapcert rova_prod "$T/other.crt"; expect_stop "prod cert differs" "mail cert rova_prod thumbprint differs"
 build; echo '{"value":[{"verifiedDomains":[{"name":"a","isDefault":false}]}]}' >"$FX/org"; expect_stop "no default domain" "lookup for TF_VAR_break_glass_upn_domain is empty"
 build; echo '[{"@odata.type":"#microsoft.graph.group","id":"x"}]' >"$FX/members"; expect_stop "no admin users" "grp-qnsc-platform-admins has no user members"
 build; out="$T/out.noupn"; if PATH="$BIN:$PATH" FX="$FX" IDENTITY_STACK_DIR="$T/stack" IDENTITY_PROXMOX_HOST=h.test bash "$SCRIPT" >"$out" 2>&1; then fail "missing UPN did not stop"; fi
@@ -150,5 +142,5 @@ rm "$T/stack/eso.tf"
 # 5. the kit only reads: no az verb other than show/list, no op verb other than read
 if grep -q 'keyvault' "$FX/calls.log"; then fail "the kit read Key Vault"; fi
 if grep -E '^az (.* )?(create|update|delete|set|reset|add|remove|assignment|grant|invite)( |$)' "$FX/calls.log"; then fail "a mutating az call was made"; fi
-grep -qv '^op item get$' <(grep '^op' "$FX/calls.log") && fail "an op call other than item get"
+if grep -q '^op' "$FX/calls.log"; then fail "the kit called op"; fi
 echo "PASS: identity-env"

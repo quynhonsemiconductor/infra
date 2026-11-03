@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Owner apply kit for live/identity: BUILDS every TF_VAR_* that has no default from read-only `az` / `op`
+# Owner apply kit for live/identity: BUILDS every TF_VAR_* that has no default from read-only `az`
 # lookups, so no value is typed, kept in a file or committed. Run it in the owner's own terminal (`az login`
 # done, `op` signed in: 1Password app integration only answers there, never in CI or an agent).
 #
@@ -14,7 +14,6 @@
 #   IDENTITY_SECOND_OWNER_UPN   UPN of the second company owner (the signed-in user is the owner operator)
 #   IDENTITY_PROXMOX_HOST       hostname of the Proxmox realm (admin door); the redirect URI is https://<host>/
 # Optional:
-#   IDENTITY_OP_VAULT (QNSC)    IDENTITY_OP_CERT_FIELD (notesPlain)   field of the dev mail-cert items in 1Password
 #   IDENTITY_ESO_CERT_DIR ($HOME/keys)   eso-{dev,prod,platform}-cert.pem; only read while live/identity still
 #                                        declares var.eso_certificates (until the certificate-removal PR, #254)
 #   IDENTITY_STACK_DIR (live/identity, relative to the repo root)
@@ -23,8 +22,6 @@ set -euo pipefail
 STACK="${IDENTITY_STACK_DIR:-live/identity}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 [[ "$STACK" = /* ]] || STACK="$ROOT/$STACK"
-VAULT="${IDENTITY_OP_VAULT:-QNSC}"
-CERT_FIELD="${IDENTITY_OP_CERT_FIELD:-notesPlain}"
 
 die() { echo "STOP: $*" >&2; exit 1; }
 for c in az jq openssl xxd; do command -v "$c" >/dev/null || die "need $c"; done
@@ -130,12 +127,13 @@ for k in "${KEYS[@]}"; do
   kid=$(jq -r '.keyCredentials[0].keyId // empty' "$f"); need_guid "service $k keyId" "$kid"
   want=$(jq -r '.keyCredentials[0].customKeyIdentifier // empty' "$f" | base64 -d 2>/dev/null | xxd -p | tr -d '\n')
   [[ -n "$want" ]] || die "service $k has no customKeyIdentifier (thumbprint)"
-  # Every mail certificate (prod included) is read from 1Password as its PUBLIC part only. The rova-prod Key Vault
-  # entry is a plain secret holding the private key too, so the kit never reads Key Vault.
-  # `op read` refuses the en dash in these titles, so read the field by item title (any character allowed).
-  pem=$(op item get "Entra mail cert – ${k//_/-} – certificate" --vault "$VAULT" --fields "$CERT_FIELD" --format json 2>/dev/null \
-    | jq -r '.value // empty') || die "op lookup failed: mail cert $k"
-  [[ -n "$pem" ]] || die "op lookup failed: mail cert $k"
+  # The PUBLIC certificate comes from Entra itself: Graph returns keyCredentials[].key (base64 DER) only on a single-object
+  # GET with $select=keyCredentials. No Key Vault (the prod entry also holds the private key), no 1Password copy to drift.
+  oid=$(jq -r '.id // empty' "$f"); need_guid "service $k object id" "$oid"
+  pem=$(az_json "mail cert $k" rest --method get --url "https://graph.microsoft.com/v1.0/applications/$oid?\$select=keyCredentials" \
+    | jq -r '.keyCredentials[0].key // empty' | base64 -d 2>/dev/null | openssl x509 -inform DER -outform PEM 2>/dev/null) \
+    || die "lookup failed: mail cert $k"
+  [[ -n "$pem" ]] || die "lookup failed: mail cert $k"
   [[ "$pem" == *"BEGIN CERTIFICATE"* ]] || die "mail cert $k is not a certificate"
   [[ "$pem" != *"PRIVATE KEY"* ]] || die "mail cert $k carries a private key: refusing"
   have=$(printf '%s\n' "$pem" | thumb_of_pem)
