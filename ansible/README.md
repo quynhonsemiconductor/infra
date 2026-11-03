@@ -37,3 +37,22 @@ ansible-playbook ping.yml
   a variable per role allows the restart (default off).
 - **No disks, no pools.** Ansible never creates or destroys a pool or a partition.
 - **CI never touches a host.** `.github/workflows/ansible-lint.yml` runs ansible-lint and `--syntax-check` only.
+
+## PBS API token
+
+The `pbs` role never handles the token secret (and cannot run `op` itself: 1Password app integration only answers
+the owner's own terminal). When the token is missing, the role stops; run this from your terminal with `op` signed
+in, then re-run `pve-host.yml --tags pbs` (it grants the token ACL). The secret only exists in a shell variable.
+
+```zsh
+set -o pipefail; op whoami >/dev/null && \
+t=$(ssh root@<pve host> 'proxmox-backup-debug api create /access/users/backup@pbs/token/pve --output-format json') && \
+printf %s "$t" | jq -e '(.value|length>0) and (.tokenid=="backup@pbs!pve")' >/dev/null && \
+printf %s "$t" | jq '{title:"PBS - pve backup - API token",category:"API_CREDENTIAL",
+  fields:[{id:"credential",label:"secret",type:"CONCEALED",value:.value},
+          {id:"tokenid",label:"token id",type:"STRING",value:.tokenid}]}' \
+| op item create --vault QNSC >/dev/null && echo STORED; unset t
+```
+
+No `STORED`: do not re-run it blindly. Check `proxmox-backup-manager user list-tokens backup@pbs` on the host; a
+token without a stored secret is deleted with `proxmox-backup-manager user delete-token backup@pbs pve`.

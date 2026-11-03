@@ -190,17 +190,12 @@
     # The secret exists once, at creation. Ansible never creates it: `op` with 1Password app integration only works
     # in the owner's own terminal, not in a subprocess Ansible starts. The owner runs the printed pipe (PBS API ->
     # jq -> op item create, secret only in memory), then re-runs this role, which grants the ACL.
-    - name: Stop with the command that creates the token and stores it in 1Password
+    - name: Stop until the owner has created the token (ansible/README.md, "PBS API token")
       ansible.builtin.fail:
-        msg: |
-          API token {{ pbs_pve_user }}!{{ pbs_pve_token_name }} does not exist. Create it from your own terminal
-          (op signed in), then re-run this role:
-
-          set -o pipefail; op whoami >/dev/null && \
-          t=$(ssh {{ ansible_user | default('root') }}@{{ ansible_host }} 'proxmox-backup-debug api create /access/users/{{ pbs_pve_user }}/token/{{ pbs_pve_token_name }} --output-format json') && \
-          printf %s "$t" | jq -e '(.value|length>0) and (.tokenid=="{{ pbs_pve_user }}!{{ pbs_pve_token_name }}")' >/dev/null && \
-          printf %s "$t" | jq '{title:"{{ pbs_onepassword_item_title }}",category:"API_CREDENTIAL",fields:[{id:"credential",label:"secret",type:"CONCEALED",value:.value},{id:"tokenid",label:"token id",type:"STRING",value:.tokenid}]}' \
-          | op item create --vault {{ pbs_onepassword_vault }} >/dev/null && echo STORED; unset t
+        msg: >-
+          API token {{ pbs_pve_user }}!{{ pbs_pve_token_name }} does not exist. Create it from your own terminal with
+          the pipe in ansible/README.md ("PBS API token": PBS API, jq, op item create into vault
+          {{ pbs_onepassword_vault }} as "{{ pbs_onepassword_item_title }}"), then re-run this role.
       when:
         - pbs_token_missing | bool
         - not ansible_check_mode
