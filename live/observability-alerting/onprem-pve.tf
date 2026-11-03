@@ -283,8 +283,9 @@ resource "grafana_rule_group" "onprem_pve_guests" {
       model = jsonencode({
         refId      = "A"
         datasource = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
-        # `absent` on an equality matcher keeps `vmid` (and `name` only when the
-        # series existed before) in the result, so the summary can name the VM.
+        # `absent` on an equality matcher keeps `vmid` only: the absence branch
+        # has no series, so `node`/`name` are never present there (the flat
+        # branch does carry them, but the summary must render on both).
         expr = join(" or ", [
           "absent(proxmox_vm_uptime_seconds{vmid=\"100\"})",
           "absent(proxmox_vm_uptime_seconds{vmid=\"101\"})",
@@ -332,7 +333,7 @@ resource "grafana_rule_group" "onprem_pve_guests" {
     }
 
     annotations = {
-      summary = "VM {{ $labels.vmid }} ({{ $labels.name }}) on {{ $labels.node }} is down: its uptime series is absent or has been flat for 10 minutes. The estate's k3s node, AI node and VLSI node all live on this host."
+      summary = "VM {{ $labels.vmid }} is down: its uptime series is absent or has been flat for 5 minutes. The estate's k3s node, AI node and VLSI node all live on this host."
     }
   }
 }
