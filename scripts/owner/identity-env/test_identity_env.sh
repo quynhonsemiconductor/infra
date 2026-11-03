@@ -54,7 +54,8 @@ case "$a" in
   "ad user show --id "*) u=${a#ad user show --id }; cat "$FX/user-${u%% *}" ;;
   "ad app list --filter displayName eq '"*) n=${a#*\'}; n=${n%%\'*}; cat "$FX/app-${n// /-}.list" 2>/dev/null || echo '[]' ;;
   "ad sp list --filter appId eq '"*) n=${a#*\'}; n=${n%%\'*}; cat "$FX/sp-$n" ;;
-  "keyvault secret show"*) jq -n --rawfile v "$FX/kvvalue" '{value:$v}' ;;
+  "keyvault certificate show --vault-name kv-qnsc-prod --name rova-prod-graph-cert --query cer -o tsv"*) openssl x509 -in "$FX/kvvalue" -outform DER | base64 | tr -d '\n'; echo ;;
+  "keyvault secret"*) echo "FORBIDDEN: key vault secret read" >&2; exit 9 ;;
   *) echo "unexpected az call: $a" >&2; exit 9 ;;
 esac
 STUB
@@ -100,6 +101,15 @@ CH="$T/child.out"
 run bash "$SCRIPT" -- bash -c 'jq -e "(.dev|length)>0" >/dev/null 2>&1 <<<"{}" ; [[ "$TF_VAR_budget_period_start" == 2026-10-01T00:00:00Z && "$TF_VAR_budget_period_end" == 2028-09-30T00:00:00Z ]] && [[ "$TF_VAR_proxmox_redirect_uris" == "[\"https://pve.example.test/\"]" ]] && jq -e "length==2" <<<"$TF_VAR_proxmox_admin_object_ids" >/dev/null && jq -e "length==4" <<<"$TF_VAR_mail_service_certificates" >/dev/null && [[ "$TF_VAR_break_glass_upn_domain" == tenant.example ]] && jq -e ".admin and .auditor" <<<"$TF_VAR_opshub_dev_app_role_ids" >/dev/null && pwd' >"$CH" 2>&1 || { cat "$CH"; fail "child did not get the right env"; }
 [ "$(cat "$CH")" = "$T/stack" ] || fail "child cwd is not the stack dir"
 
+# 2b. no temp dir survives, in check mode or after a child run (the script must not exec away its cleanup trap)
+build; TD="$T/tmpd"; mkdir -p "$TD"
+TMPDIR="$TD" run bash "$SCRIPT" -- true || fail "child true failed"
+[ -z "$(ls -A "$TD")" ] || fail "temp dir left behind after -- true"
+TMPDIR="$TD" run bash "$SCRIPT" >/dev/null || fail "check failed"
+[ -z "$(ls -A "$TD")" ] || fail "temp dir left behind after check"
+TMPDIR="$TD" run bash "$SCRIPT" -- bash -c 'exit 7' && fail "child exit code swallowed" || [ "$?" = 7 ] || fail "child exit code not propagated"
+[ -z "$(ls -A "$TD")" ] || fail "temp dir left behind after a failing child"
+
 # 3. broken inputs stop the run
 build; : >"$FX/account"; expect_stop "empty subscription" "az lookup empty: subscription"
 build; echo '[{},{}]' >"$FX/budget"; expect_stop "two budgets" "expected exactly 1 budget"
@@ -132,6 +142,8 @@ cat "$T/eso-dev.crt" "$T/eso-dev.key" >"$T/eso/eso-dev-cert.pem"; expect_stop "e
 rm "$T/stack/eso.tf"
 
 # 5. the kit only reads: no az verb other than show/list, no op verb other than read
+if grep -q 'keyvault secret' "$FX/calls.log"; then fail "the Key Vault secret (private key) was read"; fi
+grep -q 'keyvault certificate show' "$FX/calls.log" || fail "the certificate object was not read"
 if grep -E '^az (.* )?(create|update|delete|set|reset|add|remove|assignment|grant|invite)( |$)' "$FX/calls.log"; then fail "a mutating az call was made"; fi
 grep -qv '^op read$' <(grep '^op' "$FX/calls.log") && fail "an op call other than read"
 echo "PASS: identity-env"

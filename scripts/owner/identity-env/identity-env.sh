@@ -87,7 +87,7 @@ put TF_VAR_proxmox_redirect_uris "$(jq -cn --arg h "$IDENTITY_PROXMOX_HOST" '["h
 # bash 3.2 (macOS /bin/bash) has no associative arrays: slot -> display name by function.
 signin_name() { case "$1" in rova_prod) echo "Rova Prod";; rova_dev) echo "Rova Dev";; opshub_dev) echo "OpsHub Dev";; kb_dev) echo "KB Dev";; esac; }
 KEYS=(rova_prod rova_dev opshub_dev kb_dev)
-APPS_DIR=$(mktemp -d); trap 'rm -rf "$APPS_DIR"' EXIT   # public ids only (no secrets), removed on exit
+APPS_DIR=$(mktemp -d "${TMPDIR:-/tmp}/identity-env.XXXXXX"); trap 'rm -rf "$APPS_DIR"' EXIT   # public ids only (no secrets), removed on exit
 
 fetch_app() { # fetch_app <slot> <display name> <file prefix>: exactly one app; its SP; ids validated
   local slot="$1" name="$2" pfx="$3" apps appid sp
@@ -131,8 +131,9 @@ for k in "${KEYS[@]}"; do
   want=$(jq -r '.keyCredentials[0].customKeyIdentifier // empty' "$f" | base64 -d 2>/dev/null | xxd -p | tr -d '\n')
   [[ -n "$want" ]] || die "service $k has no customKeyIdentifier (thumbprint)"
   if [[ "$k" == rova_prod ]]; then
-    pem=$(az keyvault secret show --vault-name kv-qnsc-prod --name rova-prod-graph-cert -o json 2>/dev/null \
-      | jq -r '.value // empty' | openssl x509 -outform PEM 2>/dev/null) || die "lookup failed: rova-prod-graph-cert"
+    # The CERTIFICATE object (public part only), never the Key Vault secret that also holds the private key.
+    pem=$(az keyvault certificate show --vault-name kv-qnsc-prod --name rova-prod-graph-cert --query cer -o tsv 2>/dev/null \
+      | base64 -d | openssl x509 -inform DER -outform PEM 2>/dev/null) || die "lookup failed: rova-prod-graph-cert"
   else
     pem=$(op read "op://$VAULT/Entra mail cert – ${k%_dev}-dev – certificate/$CERT_FIELD" 2>/dev/null) || die "op lookup failed: mail cert $k"
   fi
@@ -164,4 +165,8 @@ if [[ "$MODE" == check ]]; then
   exit 0
 fi
 cd "$STACK"
-exec "$@"
+# No exec: the EXIT trap must still remove the temp dir after the child ends.
+set +e
+"$@"
+rc=$?
+exit "$rc"
