@@ -104,3 +104,13 @@ output "rova_dev_mcp_aud" {
   description = "AUD tag of the rova-dev /mcp Access app — the audience the app's Access-JWT verifier pins. Consumed at cutover (agent C)."
   value       = one(cloudflare_zero_trust_access_application.rova_dev_mcp[*].aud)
 }
+
+# /mcp must reach the tunnel (API), not the SPA Worker that owns rova-dev.qnsc.vn/*. Same no-Worker route as
+# rova prod (mcp_rova_prod.tf); the tunnel's /mcp ingress rule is in live/onprem/tunnels.tf.
+resource "cloudflare_workers_route" "rova_dev_mcp" {
+  for_each = contains(local.cutover_live, "rova-dev.qnsc.vn") ? toset(["/mcp", "/mcp/*"]) : toset([])
+
+  zone_id = var.cloudflare_zone_id
+  pattern = "rova-dev.qnsc.vn${each.value}"
+  script  = null
+}
