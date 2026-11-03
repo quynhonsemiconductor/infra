@@ -170,12 +170,14 @@
   when: pve_base_notify_teams | bool
   tags: [pve_base_notify]
   vars:
-    # Proxmox renders the URL template with the endpoint secret "url"; !unsafe keeps Ansible off the braces.
-    pve_base_notify_url_template: !unsafe "{{ secrets.url }}"
+    # PVE requires the url to be a literal http(s) URL, so the host is plain and the rest (path + query, which holds
+    # the Workflows signature) is the endpoint secret "path". !unsafe keeps Ansible off the Handlebars braces.
+    pve_base_notify_secret_ref: !unsafe "{{ secrets.path }}"
     # base64 is what the API takes, and it keeps the Handlebars braces away from Jinja.
     pve_base_notify_body_b64: "{{ lookup('ansible.builtin.file', 'teams-webhook-body.json') | trim | b64encode }}"
     pve_base_notify_header: "name=Content-Type,value={{ 'application/json' | b64encode }}"
     pve_base_notify_api: /cluster/notifications/endpoints/webhook/{{ pve_base_notify_teams_endpoint }}
+    pve_base_notify_url_pattern: '^https://([^/?#\s]+)/\S+$'
   block:
     - name: Read the Teams webhook endpoint
       ansible.builtin.command: pvesh get {{ pve_base_notify_api }} --output-format json
@@ -184,54 +186,100 @@
       failed_when: false
       check_mode: false
 
-    - name: Decide what the endpoint needs
+    - name: Decide whether the secret is written (create or rotate)
       ansible.builtin.set_fact:
         pve_base_notify_exists: "{{ pve_base_notify_current.rc == 0 }}"
+        pve_base_notify_write_secret: "{{ pve_base_notify_current.rc != 0 or pve_base_notify_teams_rotate | bool }}"
+
+    - name: Refuse to store a webhook URL that is missing or not https://<host>/<path>
+      ansible.builtin.assert:
+        that: pve_base_notify_teams_webhook_url is match(pve_base_notify_url_pattern)
+        fail_msg: >-
+          TEAMS_WEBHOOK_URL is missing or not an https://<host>/<path> URL: run under op run (see defaults/main.yml),
+          or set pve_base_notify_teams=false
+        quiet: true
+      no_log: true
+      when: pve_base_notify_write_secret | bool
+
+    # The host comes from the new URL on create/rotate, otherwise from the stored endpoint (the run needs no secret).
+    - name: Work out the endpoint URL (host plain, path from the secret)
+      ansible.builtin.set_fact:
+        pve_base_notify_url: >-
+          https://{{ (pve_base_notify_teams_webhook_url if pve_base_notify_write_secret | bool
+                      else (pve_base_notify_current.stdout | from_json).url | default(''))
+                     | regex_replace('^https://([^/?#]+)/.*$', '\1') }}/{{ pve_base_notify_secret_ref }}
+      no_log: true
+
+    - name: Did the endpoint drift
+      ansible.builtin.set_fact:
         pve_base_notify_drift: >-
-          {{ pve_base_notify_current.rc == 0 and (
-               (pve_base_notify_current.stdout | from_json).url | default('') != pve_base_notify_url_template
+          {{ pve_base_notify_exists | bool and (
+               (pve_base_notify_current.stdout | from_json).url | default('') != pve_base_notify_url | trim
             or (pve_base_notify_current.stdout | from_json).method | default('') != 'post'
             or (pve_base_notify_current.stdout | from_json).body | default('') != pve_base_notify_body_b64
             or (pve_base_notify_current.stdout | from_json).header | default([]) != [pve_base_notify_header]
             or (pve_base_notify_current.stdout | from_json).disable | default(0) | bool) }}
 
-    - name: Refuse to store a webhook URL that is missing or not https
+    - name: Drift fix of the stored URL needs the secret (rotate)
       ansible.builtin.assert:
-        that: pve_base_notify_teams_webhook_url is match('^https://[^\s]+$')
-        fail_msg: >-
-          TEAMS_WEBHOOK_URL is missing or not an https URL: run under op run (see defaults/main.yml),
-          or set pve_base_notify_teams=false
+        that: pve_base_notify_write_secret | bool or
+              (pve_base_notify_current.stdout | from_json).url | default('') is match('^https://[^/?#]+/' ~ (pve_base_notify_secret_ref | regex_escape) ~ '$')
+        fail_msg: "The stored URL is not https://<host>/{{ '{{' }} secrets.path }}: re-run with -e pve_base_notify_teams_rotate=true under op run"
         quiet: true
-      no_log: true
-      when: not pve_base_notify_exists | bool or pve_base_notify_teams_rotate | bool
+      when: pve_base_notify_exists | bool
 
-    # The URL goes in through stdin, so it is not in this task's command line (it is in the module arguments Ansible
+    - name: Report the endpoint change (check mode does not run pvesh)
+      ansible.builtin.debug:
+        msg: "would {{ 'update' if pve_base_notify_exists | bool else 'create' }} webhook endpoint {{ pve_base_notify_teams_endpoint }}"
+      changed_when: true
+      when:
+        - ansible_check_mode
+        - pve_base_notify_write_secret | bool or pve_base_notify_drift | bool
+
+    # The secret goes in through stdin, so it is not in this task's command line (it is in the module arguments Ansible
     # copies to the host's remote temp dir for the task, removed afterwards). pvesh only takes it as an argument, so it is
     # in the host's process list (/proc/<pid>/cmdline) for the moment the call runs; pve01 has no other local users.
-    - name: Create the Teams webhook endpoint, or update it (and the secret only on rotate)
+    - name: Create the Teams webhook endpoint, or update it (and the secret only on create/rotate)
       ansible.builtin.command:
         argv:
           - sh
           - -c
           - >-
             set -e; IFS= read -r u || u=;
-            set -- --url "$URL_TEMPLATE" --method post --header "$HEADER" --body "$BODY"
+            set -- --url "$URL" --method post --header "$HEADER" --body "$BODY"
             --comment "$COMMENT" --disable 0;
-            if [ -n "$u" ]; then set -- "$@" --secret "name=url,value=$(printf %s "$u" | base64 -w0)"; fi;
+            if [ -n "$u" ]; then p=${u#https://*/};
+            set -- "$@" --secret "name=path,value=$(printf %s "$p" | base64 -w0)"; fi;
             if [ "$MODE" = create ]; then exec pvesh create /cluster/notifications/endpoints/webhook --name "$NAME" "$@";
             else exec pvesh set "$API" "$@"; fi
-        stdin: "{{ pve_base_notify_teams_webhook_url if (not pve_base_notify_exists | bool or pve_base_notify_teams_rotate | bool) else '' }}"
+        stdin: "{{ pve_base_notify_teams_webhook_url if pve_base_notify_write_secret | bool else '' }}"
       environment:
         MODE: "{{ 'set' if pve_base_notify_exists | bool else 'create' }}"
         NAME: "{{ pve_base_notify_teams_endpoint }}"
         API: "{{ pve_base_notify_api }}"
-        URL_TEMPLATE: "{{ pve_base_notify_url_template }}"
+        URL: "{{ pve_base_notify_url | trim }}"
         HEADER: "{{ pve_base_notify_header }}"
         BODY: "{{ pve_base_notify_body_b64 }}"
         COMMENT: "{{ pve_base_managed_comment }}"
+      register: pve_base_notify_write
       no_log: true
       changed_when: true
-      when: not pve_base_notify_exists | bool or pve_base_notify_drift | bool or pve_base_notify_teams_rotate | bool
+      failed_when: false
+      when: pve_base_notify_write_secret | bool or pve_base_notify_drift | bool
+
+    # The result above is hidden (no_log); show pvesh's error with any base64 value cut out.
+    - name: Fail with the pvesh error (secret values redacted)
+      ansible.builtin.fail:
+        msg: "pvesh failed (rc {{ pve_base_notify_write.rc }}): {{ pve_base_notify_error }}"
+      vars:
+        pve_base_notify_error: >-
+          {{ pve_base_notify_write.stderr | default('')
+             | regex_replace('value=[A-Za-z0-9+/=]+', 'value=<redacted>')
+             | regex_replace('https://[^\s"]+', 'https://<redacted>')
+             | regex_replace('sig=[^&\s"]+', 'sig=<redacted>') }}
+      when:
+        - pve_base_notify_write is not skipped
+        - pve_base_notify_write.rc | default(0) != 0
 
     - name: Read the Teams matcher
       ansible.builtin.command: pvesh get /cluster/notifications/matchers/{{ pve_base_notify_teams_matcher }} --output-format json
