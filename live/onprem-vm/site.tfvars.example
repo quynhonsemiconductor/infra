@@ -77,3 +77,7 @@ pve_acls = {
 # ── PBS (backup.tf) ─────────────────────────────────────────────────────────
 # Certificate fingerprint as `ansible-playbook pve-host.yml --tags pbs` prints it (not a secret).
 pbs_fingerprint = "00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff"
+
+# ── PVE metrics (metrics.tf) ────────────────────────────────────────────────
+# A k3s node address that serves the Alloy OTLP NodePort; "" = no metric server.
+pve_metrics_otlp_server = "192.0.2.20"
