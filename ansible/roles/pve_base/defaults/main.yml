@@ -28,3 +28,18 @@ pve_base_zfs_properties:
 
 # Header comment of the files this role writes (group_vars/all.yml sets qnsc_ansible_managed).
 pve_base_managed_comment: "{{ qnsc_ansible_managed | default('Managed by infra/ansible. Do not edit by hand.') }}"
+
+# Notifications: warnings and errors (failed backup jobs, replication, fencing, ...) go to the platform Teams
+# channel through a Teams *Workflows* webhook, which posts only an Adaptive Card message (files/teams-webhook-body.json,
+# Proxmox Handlebars template). The webhook URL is the secret: it is stored as a PVE endpoint secret (root-only
+# /etc/pve/priv) and never read back. It comes from the environment of the run, only when the endpoint is created
+# or rotated:
+#   op run --env-file=<local template> -- ansible-playbook pve-host.yml --tags pve_base_notify
+# The built-in default-matcher (mail-to-root) is left as it is.
+pve_base_notify_teams: true
+pve_base_notify_teams_endpoint: teams
+pve_base_notify_teams_matcher: teams-warnings-errors
+pve_base_notify_teams_severities: [warning, error]
+pve_base_notify_teams_webhook_url: "{{ lookup('ansible.builtin.env', 'TEAMS_WEBHOOK_URL') }}"
+# Set true (-e pve_base_notify_teams_rotate=true) to replace the stored URL with the one from the environment.
+pve_base_notify_teams_rotate: false
