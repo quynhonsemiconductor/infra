@@ -24,7 +24,7 @@
 # issuer URL must be public HTTPS because Entra fetches
 # <issuer>/.well-known/openid-configuration and the JWKS from it at token
 # exchange. live/onprem-oidc publishes those two documents; the k3s server
-# config that sets the issuer is live/onprem-vm/files/k3s/config.yaml. All
+# config that sets the issuer is the k3s_server Ansible role (`k3s_server_oidc_issuer`). All
 # three carry the SAME string, and tests/static.sh fails when they drift.
 
 locals {
@@ -46,12 +46,12 @@ locals {
 
 # The cluster's public OIDC issuer. ONE value, three files: this variable,
 # live/onprem-oidc (the published discovery document + JWKS) and
-# live/onprem-vm/files/k3s/config.yaml (what k3s mints tokens with).
+# the k3s_server Ansible role (`k3s_server_oidc_issuer`) (what k3s mints tokens with).
 # tests/static.sh fails when they differ.
 variable "eso_oidc_issuer" {
   type        = string
   default     = "https://oidc.qnsc.vn/k3s-onprem"
-  description = "Issuer URL of the on-prem k3s cluster (no trailing slash). Must equal service-account-issuer in live/onprem-vm/files/k3s/config.yaml and the issuer published by live/onprem-oidc."
+  description = "Issuer URL of the on-prem k3s cluster (no trailing slash). Must equal service-account-issuer in the k3s_server Ansible role (`k3s_server_oidc_issuer`) and the issuer published by live/onprem-oidc."
 
   validation {
     condition     = can(regex("^https://[a-z0-9.-]+/[a-z0-9-]+$", var.eso_oidc_issuer))

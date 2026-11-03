@@ -84,7 +84,7 @@ resource "cloudflare_workers_custom_domain" "oidc" {
 }
 
 output "issuer" {
-  description = "The issuer URL. MUST equal var.eso_oidc_issuer in live/identity and service-account-issuer in live/onprem-vm/files/k3s/config.yaml."
+  description = "The issuer URL. MUST equal var.eso_oidc_issuer in live/identity and service-account-issuer in the k3s_server Ansible role (`k3s_server_oidc_issuer`)."
   value       = local.issuer
 }
 

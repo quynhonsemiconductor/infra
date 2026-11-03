@@ -119,13 +119,12 @@ PUBLISHED_ISSUER="https://$(default_of "$OIDC_DIR/variables.tf" oidc_hostname)/$
 [ "$PUBLISHED_ISSUER" = "$IDENTITY_ISSUER" ] ||
 	fail "published issuer ($PUBLISHED_ISSUER) != trusted issuer ($IDENTITY_ISSUER)"
 
-K3S_CONFIG=../onprem-vm/files/k3s/config.yaml
-if [ -f "$K3S_CONFIG" ]; then
-	# The config carries the new issuer FIRST — the one k3s signs with — and
-	# the old default SECOND, which is only accepted. Check the first only.
-	K3S_ISSUER=$(sed -n 's/^[[:space:]]*-[[:space:]]*service-account-issuer=\([^[:space:]]*\)$/\1/p' "$K3S_CONFIG" | head -1)
-	[ "$K3S_ISSUER" = "$IDENTITY_ISSUER" ] ||
-		fail "k3s service-account-issuer ($K3S_ISSUER) != trusted issuer ($IDENTITY_ISSUER)"
-fi
+# The k3s side is the ansible role: the site issuer is a variable (public repo, no hostname in the role), so the
+# guard checks the order that matters: the new issuer is listed FIRST (k3s signs with it), the old default second.
+K3S_TPL=../../ansible/roles/k3s_server/templates/config.yaml.j2
+NEW_LN=$(grep -n 'service-account-issuer={{ k3s_server_oidc_issuer }}' "$K3S_TPL" | head -1 | cut -d: -f1)
+OLD_LN=$(grep -n 'service-account-issuer={{ k3s_server_oidc_issuer_old }}' "$K3S_TPL" | head -1 | cut -d: -f1)
+[ -n "$NEW_LN" ] && [ -n "$OLD_LN" ] && [ "$NEW_LN" -lt "$OLD_LN" ] ||
+	fail "k3s_server template must list the new issuer BEFORE the old default (k3s signs with the first)"
 
 echo "PASS: static guard"

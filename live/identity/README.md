@@ -217,7 +217,7 @@ exchanges it for a Key Vault token. Nothing to store, nothing to leak.
 
 Three files carry the issuer and must agree (the static guard fails on drift):
 this variable, `live/onprem-oidc` (the published OIDC documents) and
-`live/onprem-vm/files/k3s/config.yaml` (what k3s signs tokens with).
+the `k3s_server_oidc_issuer` variable of the `k3s_server` Ansible role (what k3s signs tokens with).
 
 ### Ordering — this PR does NOT cut over by itself
 
@@ -234,17 +234,17 @@ is never edited by that side):
 3. **This stack, first apply (owner, local).** Adds 3 federated identity
    credentials. The certificates stay. Expected plan: 3 to add, 0 to change,
    0 to destroy.
-4. **k3s issuer (owner, on the node).** The two `service-account-issuer`
-   lines are in `live/onprem-vm/files/k3s/config.yaml` (the new URL FIRST,
-   which is the one k3s signs with, and the old default SECOND, accepted,
-   never issued). First check the node's file differs from the repo's by
-   exactly those lines (`scp` + `sudo diff -u`, see `live/onprem-vm/README.md`),
-   and read the live audiences BEFORE the restart:
+4. **k3s issuer (owner, Ansible; downtime accepted).** The `k3s_server` role
+   (`ansible/roles/k3s_server`) writes the two `service-account-issuer` lines: the new URL FIRST (k3s signs with
+   it), the old default SECOND (accepted, never issued). In the git-ignored local inventory set
+   `k3s_server_oidc_issuer_enabled: true` and `k3s_server_oidc_issuer: <the issuer above>`.
+   Dry run: `ansible-playbook k3s-server.yml --tags k3s_server_config --check --diff` must show only those
+   two lines. Read the live audiences BEFORE the restart:
    `ps -o args= -C k3s | tr ' ' '\n' | grep -E 'api-audiences|service-account-issuer'`
    (k3s sets `--api-audiences` itself, so existing tokens keep a valid
    audience; if it prints no `api-audiences`, STOP: the default audience
    would follow the new first issuer and break every pre-restart token).
-   Install the file, then `systemctl restart k3s`. Verify with a token from an
+   Apply with `-e k3s_server_allow_restart=true` (the config change restarts k3s). Verify with a token from an
    EXISTING service account (the ESO SAs do not exist until step 5):
 
    ```sh
@@ -265,8 +265,7 @@ is never edited by that side):
    the removal PR: `azuread_application_certificate.eso`,
    `var.eso_certificates` and the openssl steps go. Expected plan: 3 to
    destroy, 0 to add. Only now is the secret gone.
-7. **`live/onprem-vm`** is already merged (#281): `tofu plan` there must still
-   say **No changes** after step 4 (the k3s config file is not a VM resource).
+7. **`live/onprem-vm`**: `tofu plan` there must still say **No changes** after step 4 (the k3s config is Ansible's, not a VM resource).
 
 Until step 6 runs, both credentials exist and either authenticates — which is
 what makes each step separately revertible.
