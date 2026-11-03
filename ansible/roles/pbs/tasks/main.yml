@@ -174,17 +174,6 @@
         | selectattr('roleid', 'equalto', pbs_pve_role) | list | length) == 0
       changed_when: true
 
-    - name: Grant DatastoreBackup on the datastore to the token
-      ansible.builtin.command: >-
-        proxmox-backup-manager acl update /datastore/{{ pbs_datastore_name }} {{ pbs_pve_role }}
-        --auth-id {{ pbs_pve_user }}!{{ pbs_pve_token_name }}
-      when: >-
-        (pbs_acls.stdout | from_json
-        | selectattr('path', 'equalto', '/datastore/' ~ pbs_datastore_name)
-        | selectattr('ugid', 'equalto', pbs_pve_user ~ '!' ~ pbs_pve_token_name)
-        | selectattr('roleid', 'equalto', pbs_pve_role) | list | length) == 0
-      changed_when: true
-
     - name: Read the tokens of the user
       ansible.builtin.command: "proxmox-backup-manager user list-tokens {{ pbs_pve_user }} --output-format json"
       register: pbs_tokens
@@ -244,6 +233,20 @@
         - name: Stop
           ansible.builtin.fail:
             msg: "The token could not be stored in 1Password; it was deleted again. Fix `op` and re-run."
+
+    - name: Grant DatastoreBackup on the datastore to the token
+      ansible.builtin.command: >-
+        proxmox-backup-manager acl update /datastore/{{ pbs_datastore_name }} {{ pbs_pve_role }}
+        --auth-id {{ pbs_pve_user }}!{{ pbs_pve_token_name }}
+      # After the token exists: PBS refuses an ACL for a token it does not know ("no such API token").
+      when:
+        - (not (pbs_token_missing | bool)) or (pbs_token_created is changed)
+        - >-
+          (pbs_acls.stdout | from_json
+            | selectattr('path', 'equalto', '/datastore/' ~ pbs_datastore_name)
+            | selectattr('ugid', 'equalto', pbs_pve_user ~ '!' ~ pbs_pve_token_name)
+            | selectattr('roleid', 'equalto', pbs_pve_role) | list | length) == 0
+      changed_when: true
 
     - name: Report that a token is still missing (check mode or 1Password disabled)
       ansible.builtin.debug:
