@@ -1,0 +1,13 @@
+---
+- name: Update apt cache
+  ansible.builtin.apt:
+    update_cache: true
+
+- name: Reload chrony sources
+  ansible.builtin.command: chronyc reload sources
+  changed_when: true
+
+- name: Reload ssh
+  ansible.builtin.service:
+    name: ssh
+    state: reloaded

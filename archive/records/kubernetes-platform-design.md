@@ -1,5 +1,7 @@
 # Platform design for seven products: EKS, ArgoCD, and one chart
 
+> **ARCHIVED 2026-11-02.** Describes the AWS/EKS/RDS estate, which no longer exists (AWS exit, `docs/runbooks/aws-exit.md`). Kept as a record of past decisions; do not follow it. The live layout is `live/` and the on-prem platform docs in product-docs.
+
 > **ARCHIVED 2026-10-18. Do not implement from this document.** The EKS spike was torn down on 2026-10-12 and
 > AWS IAM Identity Center was retired on 2026-08-18. The Entra → Identity Center → EKS access path described
 > below no longer exists. The current platform is ECS Fargate; see `PLATFORM_ARCHITECTURE.md` in the org's

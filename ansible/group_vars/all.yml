@@ -1,0 +1,4 @@
+---
+# Values common to every host. NO site values here (addresses, hostnames, user names, tokens):
+# those live in the local inventory. Nothing in this file is secret.
+qnsc_ansible_managed: "Managed by infra/ansible. Do not edit by hand; changes are overwritten."

@@ -1,0 +1,11 @@
+write-kubeconfig-mode: "0640"
+disable: [traefik, servicelb]
+secrets-encryption: true
+{% if k3s_server_oidc_issuer_enabled | bool %}
+kube-apiserver-arg:
+  # ESO workload identity (live/identity/eso.tf, live/onprem-oidc): k3s SIGNS with the first issuer, the URL Entra
+  # trusts and live/onprem-oidc publishes; the second is the old default, accepted and never issued, so tokens minted
+  # before the restart keep working. Both must stay listed until every pod has restarted or its token has rotated.
+  - service-account-issuer={{ k3s_server_oidc_issuer }}
+  - service-account-issuer={{ k3s_server_oidc_issuer_old }}
+{% endif %}

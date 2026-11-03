@@ -69,12 +69,12 @@ variable "vm_cores" {
 
 variable "vm_memory_mb" {
   type = number
-  # 36 GiB, down from the live 50 GiB (51200 MB): ai-01 needs 20 GiB and the
-  # host has ~60 GB usable. This is an IN-PLACE change that needs a VM
-  # restart; the stack keeps reboot_after_update = false, so the owner restarts
-  # VM 100 in the same window as the host reboot.
-  default     = 36864
-  description = "Dedicated memory in MiB (36 GiB after ai-01; live was 50 GiB). Ballooning stays off (floating = 0)."
+  # 24 GiB (24576 MiB), down from 36 GiB (36864): Phase 3 gives vlsi-01 20 GiB and ai-01 keeps
+  # 12 GiB, and the host has ~60 GB usable. This is an IN-PLACE change that needs the guest
+  # restarted to take effect; the stack keeps reboot_after_update = false, so nothing power-cycles
+  # VM 100 behind your back. Do it in the window (docs/runbooks/phase3-window.md).
+  default     = 24576
+  description = "Dedicated memory in MiB (24 GiB after Phase 3; was 36 GiB). Ballooning stays off (floating = 0)."
 }
 
 variable "os_disk_gb" {
@@ -176,20 +176,4 @@ variable "zfs_pool" {
   type        = string
   default     = "rpool/data"
   description = "ZFS dataset behind the `local-zfs` storage (the Proxmox installer's default)."
-}
-
-variable "vzdump_jobs" {
-  type = map(object({
-    schedule       = string
-    storage        = string
-    vmid           = optional(list(string))
-    mode           = optional(string)
-    compress       = optional(string)
-    enabled        = optional(bool)
-    node           = optional(string)
-    notes_template = optional(string)
-    prune_backups  = optional(map(string))
-  }))
-  default     = {}
-  description = "vzdump jobs (`pvesh get /cluster/backup`), keyed by the job id. Site values: git-ignored site.tfvars."
 }

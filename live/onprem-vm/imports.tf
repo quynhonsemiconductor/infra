@@ -51,9 +51,3 @@ import {
   to = proxmox_storage_zfspool.local_zfs
   id = var.datastore_id
 }
-
-import {
-  for_each = var.vzdump_jobs
-  to       = proxmox_backup_job.managed[each.key]
-  id       = each.key
-}

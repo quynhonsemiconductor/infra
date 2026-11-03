@@ -77,12 +77,11 @@ jobs:
         # (bootstrap, security-baseline, runtime-dev, runtime-prod, organization) were retired on
         # 2026-11-02 (AWS exit; state archived): they are not planned any more.
         #
-        # `observability` is EXCLUDED, with a reason: it cannot be planned. Its state holds grafana_* objects created
-        # under a provider alias that the 2026-09-20 split removed, so every plan fails with 'Provider configuration not
-        # present ... (orphan)' (re-tested 2026-10-12 on infra#161; the same exclusion is in infra-plan.yml). Before that
-        # it also errored for want of its variables. Left in, it would be a permanent red and the alert would fire every
-        # night, which is how a real failure goes unread. Put it back, with TF_VAR_grafana_cloud_api_key and
-        # TF_VAR_teams_webhook_url, in the same change that migrates its state.
+        # `observability` is EXCLUDED, with a reason: drift detection means a full refresh, and the read-only
+        # token cannot do one. Grafana Cloud has no stack-service-accounts:read scope (only :write), so refreshing
+        # grafana_cloud_stack_service_account.alerting returns 403 for any read-only key, and the write key must
+        # not reach a scheduled read job. Its PR plan therefore runs with -refresh=false (infra-plan.yml) and the
+        # real refresh happens in the production apply job. Left in, this entry would be a permanent red every night.
         stack:
           - edge
           - storage-dev
@@ -95,6 +94,9 @@ jobs:
           # the S3 one — the ARM_* env blocks below carry it. Talks to Cloudflare, so the read-only
           # token check applies (contains lists updated with it).
           - onprem
+          # github is NOT here: the read app cannot see repository bypass actors or merge settings, so a
+          # nightly read-only refresh would be red every night. It has its own monthly job in
+          # environment production (.github/workflows/github-drift.yml), planned with the apply app.
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -144,8 +146,15 @@ jobs:
           # "required variable not set"). Secrets where the value is sensitive.
           TF_VAR_admin_hostnames:        ${{ contains(fromJSON('["edge","onprem"]'), matrix.stack) && secrets.ADMIN_HOSTNAMES || '' }}
           TF_VAR_tunnels_exist:          ${{ matrix.stack == 'edge' && vars.TUNNELS_EXIST || '' }}
+          # MCP hub (live/edge/variables.mcp_hub.tf): flag and ids only; no client secret in drift (read-only run). `|| 'false'`: empty breaks the bool.
+          TF_VAR_mcp_hub_enabled:                    ${{ matrix.stack == 'edge' && (vars.MCP_HUB_ENABLED || 'false') || 'false' }}
+          TF_VAR_mcp_github_oauth_client_id:         ${{ matrix.stack == 'edge' && vars.MCP_GITHUB_OAUTH_CLIENT_ID || '' }}
+          TF_VAR_mcp_grafana_oauth_client_id:        ${{ matrix.stack == 'edge' && vars.MCP_GRAFANA_OAUTH_CLIENT_ID || '' }}
+          TF_VAR_mcp_grafana_authorization_endpoint: ${{ matrix.stack == 'edge' && vars.MCP_GRAFANA_AUTHORIZATION_ENDPOINT || '' }}
+          TF_VAR_mcp_grafana_token_endpoint:         ${{ matrix.stack == 'edge' && vars.MCP_GRAFANA_TOKEN_ENDPOINT || '' }}
           TF_VAR_grp_platform_admins_id: ${{ matrix.stack == 'edge' && vars.ENTRA_GRP_PLATFORM_ADMINS_ID || '' }}
           TF_VAR_grp_developers_id:      ${{ matrix.stack == 'edge' && vars.ENTRA_GRP_DEVELOPERS_ID || '' }}
+          TF_VAR_grp_dev_users_id:     ${{ matrix.stack == 'edge' && vars.ENTRA_GRP_DEV_USERS_ID || '' }}
           TF_VAR_entra_tenant_id:        ${{ matrix.stack == 'edge' && vars.ENTRA_TENANT_ID || '' }}
           TF_VAR_entra_idp_client_id:    ${{ matrix.stack == 'edge' && vars.ENTRA_IDP_CLIENT_ID || '' }}
           TF_VAR_entra_idp_client_secret: ${{ matrix.stack == 'edge' && secrets.ENTRA_IDP_CLIENT_SECRET || '' }}
@@ -181,8 +190,15 @@ jobs:
           # "required variable not set"). Secrets where the value is sensitive.
           TF_VAR_admin_hostnames:        ${{ contains(fromJSON('["edge","onprem"]'), matrix.stack) && secrets.ADMIN_HOSTNAMES || '' }}
           TF_VAR_tunnels_exist:          ${{ matrix.stack == 'edge' && vars.TUNNELS_EXIST || '' }}
+          # MCP hub (live/edge/variables.mcp_hub.tf): flag and ids only; no client secret in drift (read-only run). `|| 'false'`: empty breaks the bool.
+          TF_VAR_mcp_hub_enabled:                    ${{ matrix.stack == 'edge' && (vars.MCP_HUB_ENABLED || 'false') || 'false' }}
+          TF_VAR_mcp_github_oauth_client_id:         ${{ matrix.stack == 'edge' && vars.MCP_GITHUB_OAUTH_CLIENT_ID || '' }}
+          TF_VAR_mcp_grafana_oauth_client_id:        ${{ matrix.stack == 'edge' && vars.MCP_GRAFANA_OAUTH_CLIENT_ID || '' }}
+          TF_VAR_mcp_grafana_authorization_endpoint: ${{ matrix.stack == 'edge' && vars.MCP_GRAFANA_AUTHORIZATION_ENDPOINT || '' }}
+          TF_VAR_mcp_grafana_token_endpoint:         ${{ matrix.stack == 'edge' && vars.MCP_GRAFANA_TOKEN_ENDPOINT || '' }}
           TF_VAR_grp_platform_admins_id: ${{ matrix.stack == 'edge' && vars.ENTRA_GRP_PLATFORM_ADMINS_ID || '' }}
           TF_VAR_grp_developers_id:      ${{ matrix.stack == 'edge' && vars.ENTRA_GRP_DEVELOPERS_ID || '' }}
+          TF_VAR_grp_dev_users_id:     ${{ matrix.stack == 'edge' && vars.ENTRA_GRP_DEV_USERS_ID || '' }}
           TF_VAR_entra_tenant_id:        ${{ matrix.stack == 'edge' && vars.ENTRA_TENANT_ID || '' }}
           TF_VAR_entra_idp_client_id:    ${{ matrix.stack == 'edge' && vars.ENTRA_IDP_CLIENT_ID || '' }}
           TF_VAR_entra_idp_client_secret: ${{ matrix.stack == 'edge' && secrets.ENTRA_IDP_CLIENT_SECRET || '' }}

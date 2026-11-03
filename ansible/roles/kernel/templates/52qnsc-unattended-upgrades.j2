@@ -1,0 +1,5 @@
+// {{ qnsc_ansible_managed }}
+// Security updates keep being installed by unattended-upgrades (the origins of 50unattended-upgrades are unchanged).
+// A new kernel only becomes active at a reboot in a maintenance window: never reboot automatically.
+Unattended-Upgrade::Automatic-Reboot "false";
+Unattended-Upgrade::Automatic-Reboot-WithUsers "false";

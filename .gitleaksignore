@@ -1,0 +1,4 @@
+# Fake JWTs in the offline test fixture of the first commit of the kubeconfig script PR
+# (later built at runtime so no literal remains). They are not credentials.
+f5a264f7a0b75527a9f339cb4aa3fff327c87b8e:scripts/owner/test_kubeconfig_ro.sh:jwt:19
+f5a264f7a0b75527a9f339cb4aa3fff327c87b8e:scripts/owner/test_kubeconfig_ro.sh:jwt:20

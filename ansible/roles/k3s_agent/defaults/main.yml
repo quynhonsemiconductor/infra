@@ -1,0 +1,15 @@
+---
+# A plain (no GPU) k3s agent. Where it joins: a SITE value, set in the local inventory (https://<k3s-01 address>:6443).
+k3s_agent_server_url: ""
+
+# The pool decides the node label and taint: only workloads that tolerate the taint land on the node.
+k3s_agent_pool: vlsi
+k3s_agent_node_label: "qnsc.vn/pool={{ k3s_agent_pool }}"
+k3s_agent_node_taint: "qnsc.vn/pool={{ k3s_agent_pool }}:NoSchedule"
+
+# The join token comes from the environment of the run (op run ...), never from a vars file. It is read only when
+# the node has no token yet; an existing token in config.yaml is kept.
+k3s_agent_token_env: QNSC_K3S_TOKEN
+
+# A config change needs an agent restart (the node drops out of the cluster for a moment). Default: report only.
+k3s_agent_allow_restart: false

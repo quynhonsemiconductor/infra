@@ -1,0 +1,128 @@
+---
+- name: Assert the join target is set
+  ansible.builtin.assert:
+    that: k3s_agent_gpu_server_url is match('^https://')
+    fail_msg: "k3s_agent_gpu_server_url must be https://<server>:6443 (local inventory)"
+    quiet: true
+
+# ── the node must see the card ──────────────────────────────────────────────
+- name: The GPU is visible in this VM
+  ansible.builtin.command: "lspci -nn -d {{ k3s_agent_gpu_pci_id }}"
+  register: k3s_agent_gpu_lspci
+  changed_when: false
+  failed_when: k3s_agent_gpu_lspci.stdout | length == 0
+  check_mode: false
+  tags: [k3s_agent_gpu_driver]
+
+# ── NVIDIA driver and container toolkit ─────────────────────────────────────
+- name: Is the toolkit signing key already installed?
+  ansible.builtin.stat:
+    path: /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+  register: k3s_agent_gpu_keyring
+  tags: [k3s_agent_gpu_driver]
+
+- name: Download the NVIDIA container toolkit signing key
+  ansible.builtin.get_url:
+    url: https://nvidia.github.io/libnvidia-container/gpgkey
+    dest: /var/tmp/nvidia-container-toolkit.gpgkey
+    owner: root
+    group: root
+    mode: "0644"
+  when: not k3s_agent_gpu_keyring.stat.exists
+  tags: [k3s_agent_gpu_driver]
+
+- name: Dearmor the signing key into the apt keyring
+  ansible.builtin.command:
+    cmd: gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg /var/tmp/nvidia-container-toolkit.gpgkey
+    creates: /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+  when: not k3s_agent_gpu_keyring.stat.exists
+  tags: [k3s_agent_gpu_driver]
+
+- name: NVIDIA container toolkit repository
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/nvidia-container-toolkit.list
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://nvidia.github.io/libnvidia-container/stable/deb/$(ARCH) /
+      #deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://nvidia.github.io/libnvidia-container/experimental/deb/$(ARCH) /
+  notify: Update apt cache for the NVIDIA repository
+  tags: [k3s_agent_gpu_driver]
+
+- name: Refresh the apt cache before installing
+  ansible.builtin.meta: flush_handlers
+  tags: [k3s_agent_gpu_driver]
+
+- name: Install the driver and the container toolkit
+  ansible.builtin.apt:
+    name:
+      - "{{ k3s_agent_gpu_driver_package }}"
+      - nvidia-container-toolkit
+    state: present
+  tags: [k3s_agent_gpu_driver]
+
+# k3s detects nvidia-container-runtime on the PATH and adds the `nvidia` runtime to its own generated containerd
+# config. A hand-written config.toml.tmpl REPLACES that and the node loses its CNI ("cni plugin not initialized"):
+# never write one, and remove a stale one.
+- name: No containerd config template (it would replace k3s's own)
+  ansible.builtin.file:
+    path: /var/lib/rancher/k3s/agent/etc/containerd/config.toml.tmpl
+    state: absent
+  tags: [k3s_agent_gpu_config]
+
+# ── the agent config (the token never appears in a diff or a log) ───────────
+- name: Read the existing agent config, if any
+  ansible.builtin.slurp:
+    src: /etc/rancher/k3s/config.yaml
+  register: k3s_agent_gpu_existing
+  failed_when: false
+  no_log: true
+  tags: [k3s_agent_gpu_config]
+
+- name: Decide the join token from the run environment or the existing file
+  ansible.builtin.set_fact:
+    k3s_agent_gpu_token: >-
+      {{ lookup('ansible.builtin.env', k3s_agent_gpu_token_env)
+         | default(((k3s_agent_gpu_existing.content | default('') | b64decode) | regex_search('(?m)^token: "([^"]+)"', '\1') | first) | default(''), true) }}
+  no_log: true
+  tags: [k3s_agent_gpu_config]
+
+- name: Refuse to continue without a token
+  ansible.builtin.assert:
+    that: k3s_agent_gpu_token | length > 0
+    fail_msg: >-
+      No join token: export {{ k3s_agent_gpu_token_env }} for this run (op run --env-file=<local template> -- ansible-playbook ...)
+      or keep the existing /etc/rancher/k3s/config.yaml.
+    quiet: true
+  no_log: true
+  tags: [k3s_agent_gpu_config]
+
+- name: Directory for the k3s configuration
+  ansible.builtin.file:
+    path: /etc/rancher/k3s
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  tags: [k3s_agent_gpu_config]
+
+- name: Write the k3s agent configuration (root only, it carries the token)
+  ansible.builtin.template:
+    src: config.yaml.j2
+    dest: /etc/rancher/k3s/config.yaml
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  notify:
+    - Restart the k3s agent
+    - Report that the k3s agent needs a restart
+  tags: [k3s_agent_gpu_config]
+
+- name: Install the pinned k3s agent
+  ansible.builtin.include_role:
+    name: k3s_install
+  vars:
+    k3s_install_role: agent
+  tags: [k3s_agent_gpu_install]

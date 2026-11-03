@@ -1,0 +1,17 @@
+---
+- name: Update apt cache for the NVIDIA repository
+  ansible.builtin.apt:
+    update_cache: true
+
+- name: Restart the k3s agent
+  ansible.builtin.service:
+    name: k3s-agent
+    state: restarted
+  when: k3s_agent_gpu_allow_restart | bool
+
+- name: Report that the k3s agent needs a restart
+  ansible.builtin.debug:
+    msg: >-
+      /etc/rancher/k3s/config.yaml changed. The agent was NOT restarted. Restart it in a window, or re-run with
+      -e k3s_agent_gpu_allow_restart=true.
+  when: not (k3s_agent_gpu_allow_restart | bool)

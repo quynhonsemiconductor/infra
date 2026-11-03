@@ -1,0 +1,84 @@
+---
+# containerd loads its own cri-containerd.apparmor.d profile only when no profile of that name is loaded yet. This role
+# installs the fixed profile under that name in /etc/apparmor.d, so apparmor.service loads it at boot, and orders k3s
+# after apparmor.service, so containerd always finds the fixed one loaded. Nothing here restarts k3s.
+- name: Assert the k3s unit name
+  ansible.builtin.assert:
+    that: apparmor_containerd_k3s_unit in ['k3s', 'k3s-agent']
+    fail_msg: "apparmor_containerd_k3s_unit must be k3s (server) or k3s-agent (agent)"
+    quiet: true
+
+- name: AppArmor userspace tools are installed
+  ansible.builtin.apt:
+    name: apparmor
+    state: present
+
+- name: Install the containerd profile override (parsed by apparmor_parser before it is written)
+  ansible.builtin.template:
+    src: cri-containerd.apparmor.d.j2
+    dest: /etc/apparmor.d/cri-containerd.apparmor.d
+    owner: root
+    group: root
+    mode: "0644"
+    validate: apparmor_parser -QT %s
+  notify: Reload the containerd AppArmor profile
+
+- name: Directory for the k3s unit drop-in
+  ansible.builtin.file:
+    path: "/etc/systemd/system/{{ apparmor_containerd_k3s_unit }}.service.d"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# Wants= (not Requires=): a restart of apparmor.service (e.g. a package upgrade) must never restart k3s. With After=
+# it still orders k3s after the profiles are loaded at boot.
+- name: Start k3s only after AppArmor has loaded the profiles
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/{{ apparmor_containerd_k3s_unit }}.service.d/10-apparmor.conf"
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # {{ qnsc_ansible_managed }}
+      # The fixed cri-containerd.apparmor.d profile must be loaded before containerd starts (apparmor_containerd role).
+      [Unit]
+      After=apparmor.service
+      Wants=apparmor.service
+  notify: Reload systemd units
+
+- name: Apply the profile and the drop-in now
+  ansible.builtin.meta: flush_handlers
+
+# ── verify ──────────────────────────────────────────────────────────────────
+- name: Read the kernel log of this boot
+  ansible.builtin.command: journalctl -k -b --no-pager -o cat
+  register: apparmor_containerd_klog
+  changed_when: false
+  check_mode: false
+  tags: [apparmor_containerd_verify]
+
+- name: Count signal denials for the containerd profile
+  ansible.builtin.set_fact:
+    apparmor_containerd_denials: >-
+      {{ apparmor_containerd_klog.stdout_lines
+         | select('search', 'apparmor="DENIED" operation="signal"')
+         | select('search', 'cri-containerd\.apparmor\.d')
+         | list | length }}
+  tags: [apparmor_containerd_verify]
+
+- name: Report the signal denials
+  ansible.builtin.debug:
+    msg: >-
+      {{ apparmor_containerd_denials }} AppArmor signal denial(s) for cri-containerd.apparmor.d in this boot.
+      {{ 'OK.' if apparmor_containerd_denials | int == 0 else
+         'Denials logged before the fix was loaded also count: check the timestamps (journalctl -k -b | grep DENIED).' }}
+  tags: [apparmor_containerd_verify]
+
+- name: Fail on denials in strict mode
+  ansible.builtin.assert:
+    that: apparmor_containerd_denials | int == 0
+    fail_msg: "{{ apparmor_containerd_denials }} signal denial(s) for cri-containerd.apparmor.d in this boot (strict mode)."
+    quiet: true
+  when: apparmor_containerd_strict | bool
+  tags: [apparmor_containerd_verify]

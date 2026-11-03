@@ -1,4 +1,4 @@
-# ── Proxmox API objects of the host: PCI mapping, storage, backup jobs ───────
+# ── Proxmox API objects of the host: PCI mapping, storage ────────────────────
 #
 # IaC covers what the Proxmox API owns. Everything below the API (kernel cmdline, vfio and
 # nouveau modprobe files, initramfs, ZFS ARC limit, the host's /etc files, the template build)
@@ -27,8 +27,8 @@ resource "proxmox_hardware_mapping_pci" "gpu" {
 # `local` holds ISOs, templates, backups and the cloud-init snippets of ai-01 (hence `snippets`,
 # which scripts/owner/pve-gpu-passthrough.sh enables); `local-zfs` is where every VM disk lives. Both
 # are the installer's definitions; the values below are its defaults, and the import shows if the host
-# differs (README). A PBS storage is deliberately not here: its password cannot be imported, and an
-# apply would try to write it.
+# differs (README). The PBS storage (`pbs-qnsc`) and the backup jobs are NOT here: backup.tf is their
+# only owner (one resource, one source of truth).
 resource "proxmox_storage_directory" "local" {
   id      = "local"
   path    = "/var/lib/vz"
@@ -44,27 +44,6 @@ resource "proxmox_storage_zfspool" "local_zfs" {
   zfs_pool       = var.zfs_pool
   content        = ["images", "rootdir"]
   thin_provision = true
-
-  lifecycle {
-    prevent_destroy = true
-  }
-}
-
-# ── vzdump backup jobs (cluster-wide /cluster/backup) ────────────────────────
-# One map entry per job `pvesh get /cluster/backup` lists (site values, local tfvars).
-resource "proxmox_backup_job" "managed" {
-  for_each = var.vzdump_jobs
-
-  id             = each.key
-  schedule       = each.value.schedule
-  storage        = each.value.storage
-  vmid           = each.value.vmid
-  mode           = each.value.mode
-  compress       = each.value.compress
-  enabled        = each.value.enabled
-  node           = each.value.node
-  notes_template = each.value.notes_template
-  prune_backups  = each.value.prune_backups
 
   lifecycle {
     prevent_destroy = true

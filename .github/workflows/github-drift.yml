@@ -1,0 +1,142 @@
+# =============================================================================
+# GitHub drift — monthly (and on demand) comparison of live/github with the real
+# organisation. OWNER-APPROVED: the job runs in environment `production`, so it
+# waits for the reviewer on the run page, and it plans with the APPLY GitHub App.
+#
+# WHY NOT THE NIGHTLY DRIFT JOB. The READ app (`qnsc-iac-read`, Administration
+# read) cannot see two things GitHub returns only to admin/push callers:
+# ruleset `bypass_actors` and the repository merge settings. A refreshed plan
+# with the read app therefore shows a phantom change on every repo and ruleset.
+# So the nightly drift matrix excludes `github` (drift-detection.yml), PR plans of
+# this stack run with -refresh=false (config vs state, infra-plan.yml), and the
+# only refreshing plans are this job and the apply job, both with the apply app.
+# The read app never gets a write scope to fix that.
+#
+# This job only PLANS (-detailed-exitcode, no apply, no -out artifact). It never
+# changes the organisation. On a diff it opens (or updates) one issue labelled
+# `github-drift`; on a clean run it closes that issue. A separate label from
+# `drift-detection`, because the nightly job closes every open `drift-detection`
+# issue on a green run.
+# =============================================================================
+name: GitHub drift
+
+on:
+  schedule:
+    # 1st of each month, 03:00 UTC (10:00 Asia/Ho_Chi_Minh): approve it when you are at the desk.
+    - cron: '0 3 1 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-drift
+  cancel-in-progress: false
+
+env:
+  TOFU_VERSION: "1.9.1"
+
+jobs:
+  drift:
+    name: github drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production   # the owner approves the run; holds the apply app credentials
+    permissions:
+      contents: read
+      id-token: write     # Azure OIDC (apply identity federates environment:production)
+      issues: write       # open / update / close the github-drift issue
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: quynhonsemiconductor/ci/actions/iac-lint@ea2c56bd9b03fb4d52e8fb9fe98dca95fd278638 # v1.24.5
+        with:
+          tofu-version: ${{ env.TOFU_VERSION }}
+          fmt: 'false'   # install only
+
+      - name: Mint the apply GitHub App token
+        id: gh-apply
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510  # v3.3.0
+        with:
+          app-id: ${{ vars.IAC_APPLY_APP_ID }}
+          private-key: ${{ secrets.IAC_APPLY_APP_KEY }}
+          owner: quynhonsemiconductor
+          permission-administration: write
+          permission-environments: write
+
+      - name: tofu init
+        working-directory: live/github
+        run: tofu init -input=false
+        env:
+          ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
+          ARM_USE_OIDC:        'true'
+
+      # Full plan WITH refresh (the point of this job): reality vs state vs config in one pass.
+      # Plan only: never `apply`. Exit 0 = clean, 2 = differences, 1 = error.
+      - name: tofu plan (refresh on)
+        id: plan
+        working-directory: live/github
+        run: |
+          set +e
+          tofu plan -input=false -lock=false -no-color -detailed-exitcode 2>&1 | tee plan.txt
+          echo "exitcode=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+        env:
+          ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
+          ARM_USE_OIDC:        'true'
+          TF_VAR_github_token: ${{ steps.gh-apply.outputs.token }}
+
+      - name: Summary
+        if: always()
+        env:
+          EC: ${{ steps.plan.outputs.exitcode }}
+        run: |
+          {
+            echo "### github drift: exit code ${EC:-unknown} (0 clean, 2 differences, 1 error)"
+            echo '```'
+            grep -E '^Plan:|^No changes|^Error|will be (updated|created|destroyed|replaced)' live/github/plan.txt | head -60 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open, update or close the github-drift issue
+        if: always() && steps.plan.outputs.exitcode != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EC: ${{ steps.plan.outputs.exitcode }}
+        run: |
+          set -euo pipefail
+          gh label create github-drift -R "$REPO" --color B60205 --description "live/github differs from the organisation" 2>/dev/null || true
+          n="$(gh issue list -R "$REPO" --label github-drift --state open --json number --jq '.[0].number // empty')"
+          if [ "$EC" = "0" ]; then
+            if [ -n "$n" ]; then
+              gh issue close "$n" -R "$REPO" --comment "Clean in ${RUN_URL}. Closing; it reopens as a new issue if drift returns."
+            fi
+            exit 0
+          fi
+          if [ "$EC" = "2" ]; then what="live/github differs from the organisation (a setting, ruleset or environment was changed outside the stack, or main was not applied)."
+          else what="the plan errored (exit ${EC}); the stack could not be compared."; fi
+          detail="$(grep -E '^Plan:|will be (updated|created|destroyed|replaced)|^Error' live/github/plan.txt | head -40 || true)"
+          body="GitHub drift: ${what} Run: ${RUN_URL}. Review the plan in the run summary, then either change the organisation back or update live/github to match, in a PR. Nothing was applied by this job.
+
+          \`\`\`
+          ${detail}
+          \`\`\`"
+          if [ -n "$n" ]; then
+            gh issue comment "$n" -R "$REPO" --body "$body"
+          else
+            gh issue create -R "$REPO" --title "GitHub drift: live/github differs" --label github-drift --body "$body"
+          fi
+
+      - name: Fail the run on an error or a diff
+        if: steps.plan.outputs.exitcode != '0'
+        env:
+          EC: ${{ steps.plan.outputs.exitcode }}
+        run: |
+          echo "::error title=github drift::plan exit code ${EC:-unknown} (2 = differences, 1 = error). See the run summary and the github-drift issue."
+          exit 1

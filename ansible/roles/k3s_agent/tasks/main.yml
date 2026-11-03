@@ -1,0 +1,62 @@
+---
+- name: Assert the join target is set
+  ansible.builtin.assert:
+    that: k3s_agent_server_url is match('^https://')
+    fail_msg: "k3s_agent_server_url must be https://<server>:6443 (local inventory)"
+    quiet: true
+
+# ── the agent config (the token never appears in a diff or a log) ───────────
+- name: Read the existing agent config, if any
+  ansible.builtin.slurp:
+    src: /etc/rancher/k3s/config.yaml
+  register: k3s_agent_existing
+  failed_when: false
+  no_log: true
+  tags: [k3s_agent_config]
+
+- name: Decide the join token from the run environment or the existing file
+  ansible.builtin.set_fact:
+    k3s_agent_token: >-
+      {{ lookup('ansible.builtin.env', k3s_agent_token_env)
+         | default(((k3s_agent_existing.content | default('') | b64decode) | regex_search('(?m)^token: "([^"]+)"', '\1') | first) | default(''), true) }}
+  no_log: true
+  tags: [k3s_agent_config]
+
+- name: Refuse to continue without a token
+  ansible.builtin.assert:
+    that: k3s_agent_token | length > 0
+    fail_msg: >-
+      No join token: export {{ k3s_agent_token_env }} for this run (op run --env-file=<local template> -- ansible-playbook ...)
+      or keep the existing /etc/rancher/k3s/config.yaml.
+    quiet: true
+  no_log: true
+  tags: [k3s_agent_config]
+
+- name: Directory for the k3s configuration
+  ansible.builtin.file:
+    path: /etc/rancher/k3s
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  tags: [k3s_agent_config]
+
+- name: Write the k3s agent configuration (root only, it carries the token)
+  ansible.builtin.template:
+    src: config.yaml.j2
+    dest: /etc/rancher/k3s/config.yaml
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  notify:
+    - Restart the k3s agent
+    - Report that the k3s agent needs a restart
+  tags: [k3s_agent_config]
+
+- name: Install the pinned k3s agent
+  ansible.builtin.include_role:
+    name: k3s_install
+  vars:
+    k3s_install_role: agent
+  tags: [k3s_agent_install]

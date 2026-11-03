@@ -23,7 +23,8 @@
 # The Stage-D flip procedure assumed a human reads the probe id out of the SM
 # UI and hard-codes it. The fast track does not have a human in the loop: the
 # probes data source reads the SM API with the same token the resources use and
-# pins the name "Singapore" in git. One probe for the whole estate (§12).
+# pins the name "Singapore" in git. One probe for the dev checks (§12); rova prod
+# also runs from Frankfurt since 2026-11-03 (rova-prod.tf).
 #
 # ── GATE ────────────────────────────────────────────────────────────────────
 # `uptime_checks_enabled` defaults true: the PR is the review, and the merge is

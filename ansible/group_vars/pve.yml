@@ -1,0 +1,6 @@
+---
+# Proxmox host values that are properties of the hardware model, not of the site.
+# The NVIDIA RTX 5060 Ti (GB206) VGA function and its HDMI/DP audio function (public PCI ids).
+pve_gpu_ids:
+  - "10de:2d04"
+  - "10de:22eb"
