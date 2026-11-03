@@ -119,6 +119,15 @@ put TF_VAR_opshub_dev_app_role_ids "$ROLES"
 
 # --- mail service certificates: public PEM per app, bound to the keyId and thumbprint Entra holds -----------
 thumb_of_pem() { openssl x509 -noout -fingerprint -sha1 2>/dev/null | sed 's/.*=//; s/://g' | tr 'A-F' 'a-f'; }
+# key_pem <base64 key> <out file>: Graph's keyCredentials[].key is base64 of whatever was uploaded: DER (portal, az)
+# or the PEM text itself (the azuread provider with encoding = "pem"). PEM is kept byte for byte (trailing newline
+# included) so the value equals the one in state; DER is converted. Public certificates only.
+key_pem() {
+  printf '%s' "$1" | base64 -d >"$2.raw" 2>/dev/null || return 1
+  if grep -q 'BEGIN CERTIFICATE' "$2.raw"; then mv "$2.raw" "$2"
+  else openssl x509 -inform DER -outform PEM -in "$2.raw" -out "$2" 2>/dev/null || return 1; rm -f "$2.raw"; fi
+  ! grep -q 'PRIVATE KEY' "$2" && openssl x509 -in "$2" -noout 2>/dev/null
+}
 KEYIDS='{}'; CERTS='{}'
 for k in "${KEYS[@]}"; do
   f="$APPS_DIR/service-$k.json"
@@ -133,16 +142,13 @@ for k in "${KEYS[@]}"; do
   # The PUBLIC certificate comes from Entra itself: Graph returns keyCredentials[].key (base64 DER) only on a single-object
   # GET with $select=keyCredentials. No Key Vault (the prod entry also holds the private key), no 1Password copy to drift.
   oid=$(jq -r '.id // empty' "$f"); need_guid "service $k object id" "$oid"
-  pem=$(az_json "mail cert $k" rest --method get --url "https://graph.microsoft.com/v1.0/applications/$oid?\$select=keyCredentials" \
-    | jq -r '.keyCredentials[0].key // empty' | base64 -d 2>/dev/null | openssl x509 -inform DER -outform PEM 2>/dev/null) \
-    || die "lookup failed: mail cert $k"
-  [[ -n "$pem" ]] || die "lookup failed: mail cert $k"
-  [[ "$pem" == *"BEGIN CERTIFICATE"* ]] || die "mail cert $k is not a certificate"
-  [[ "$pem" != *"PRIVATE KEY"* ]] || die "mail cert $k carries a private key: refusing"
-  have=$(printf '%s\n' "$pem" | thumb_of_pem)
+  key=$(az_json "mail cert $k" rest --method get --url "https://graph.microsoft.com/v1.0/applications/$oid?\$select=keyCredentials" \
+    | jq -r '.keyCredentials[0].key // empty')
+  if [[ -z "$key" ]] || ! key_pem "$key" "$APPS_DIR/mail-$k.pem"; then die "lookup failed: mail cert $k"; fi
+  have=$(thumb_of_pem <"$APPS_DIR/mail-$k.pem")
   [[ -n "$have" && "$have" == "$want" ]] || die "mail cert $k thumbprint differs from the certificate live on the app (a replace would be planned)"
   KEYIDS=$(jq -c --arg k "$k" --arg v "$kid" '.[$k]=$v' <<<"$KEYIDS")
-  CERTS=$(jq -c --arg k "$k" --arg v "$pem" '.[$k]=$v' <<<"$CERTS")
+  CERTS=$(jq -c --arg k "$k" --rawfile v "$APPS_DIR/mail-$k.pem" '.[$k]=$v' <<<"$CERTS")
 done
 put TF_VAR_mail_service_cert_key_ids "$KEYIDS"
 put TF_VAR_mail_service_certificates "$CERTS"
@@ -159,10 +165,9 @@ if grep -qs '^variable "eso_certificates"' "$STACK"/*.tf; then
     oid=$(jq -r '.[0].id // empty' <<<"$a"); need_guid "eso $p object id" "$oid"
     kc=$(az_json "eso cert $p" rest --method get --url "https://graph.microsoft.com/v1.0/applications/$oid?\$select=keyCredentials")
     [[ "$(jq '.keyCredentials|length' <<<"$kc")" == "1" ]] || die "eso app $p must carry exactly 1 key credential"
-    pem=$(jq -r '.keyCredentials[0].key // empty' <<<"$kc" | base64 -d 2>/dev/null | openssl x509 -inform DER -outform PEM 2>/dev/null) \
-      || die "lookup failed: eso cert $p"
-    [[ "$pem" == *"BEGIN CERTIFICATE"* ]] || die "lookup failed: eso cert $p"
-    E=$(jq -c --arg k "$p" --arg v "$pem" '.[$k]=$v' <<<"$E")
+    key=$(jq -r '.keyCredentials[0].key // empty' <<<"$kc")
+    if [[ -z "$key" ]] || ! key_pem "$key" "$APPS_DIR/eso-$p.pem"; then die "lookup failed: eso cert $p"; fi
+    E=$(jq -c --arg k "$p" --rawfile v "$APPS_DIR/eso-$p.pem" '.[$k]=$v' <<<"$E")
   done
   put TF_VAR_eso_certificates "$E"
 fi

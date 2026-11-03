@@ -50,7 +50,9 @@ case "$a" in
   "rest --method get --url https://graph.microsoft.com/v1.0/organization"*) cat "$FX/org" ;;
   "rest --method get --url https://graph.microsoft.com/v1.0/applications/"*'?$select=keyCredentials'*) o=${a#*applications/}; o=${o%%\?*}
     f=$(grep -l "\"$o\"" "$FX"/cert-* 2>/dev/null | head -1); [ -n "$f" ] || { echo '{"keyCredentials":[{"key":null}]}'; exit 0; }
-    jq -n --arg k "$(openssl x509 -in "$f" -outform DER | base64 | tr -d '\n')" '{keyCredentials:[{key:$k}]}' ;;
+    case "$f" in *cert-eso-*) k=$(sed 1d "$f" | base64 | tr -d '\n') ;;   # provider upload: the PEM text itself
+      *) k=$(openssl x509 -in "$f" -outform DER | base64 | tr -d '\n') ;; esac
+    jq -n --arg k "$k" '{keyCredentials:[{key:$k}]}' ;;
   "ad group show --group "*) g=${a#ad group show --group }; cat "$FX/group-${g%% *}" ;;
   "ad group member list"*) cat "$FX/members" ;;
   "ad signed-in-user show"*) cat "$FX/me" ;;
@@ -147,6 +149,10 @@ build; esofix; OUT="$T/out.eso"; run bash "$SCRIPT" >"$OUT" 2>&1 || { cat "$OUT"
 grep -q 'identity env OK: 19 variables' "$OUT" || fail "eso variable count"
 grep -qE 'TF_VAR_eso_certificates +[0-9]+$' "$OUT" || fail "eso variable not built"
 leak_scan "$OUT" "eso happy path"
+# the PEM text uploaded by the provider reaches the child byte for byte (trailing newline included): no replace planned
+build; esofix; run bash "$SCRIPT" -- sh -c 'printf "%s" "$TF_VAR_eso_certificates" | jq -j .dev' >"$T/eso-dev.child" 2>/dev/null \
+  || fail "eso run mode"
+cmp -s "$T/eso-dev.child" "$T/eso-dev.crt" || fail "eso dev PEM not passed byte for byte"
 build; esofix; rm "$FX/cert-eso-prod"; expect_stop "eso app without key" "lookup failed: eso cert prod"
 build; esofix; jq -c '.+.' "$FX/app-QNSC-ESO-Platform.list" >"$FX/x" && mv "$FX/x" "$FX/app-QNSC-ESO-Platform.list"; expect_stop "duplicate eso app" "exactly one app named 'QNSC ESO Platform' expected"
 rm "$T/stack/eso.tf"
