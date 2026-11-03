@@ -20,9 +20,7 @@
 # kv-qnsc-prod/rova-prod-mcp-access-aud; ONLY THEN merge the gitops change that sets MCP_ENABLED=true
 # (the API refuses to boot with MCP on and no audience).
 #
-# OWNER CLICK-STEPS (Managed OAuth, not in IaC; identical to mcp.tf): after the apply, in Zero Trust,
-# Access, Applications, "rova-prod MCP server": Managed OAuth ON; redirect URIs
-# https://claude.ai/api/mcp/auth_callback and loopback http://localhost:*; access token lifetime 15 min;
+# OWNER CLICK-STEP: authenticate the server once in the MCP portal (see mcp.tf); Managed OAuth is IaC.
 # IdP = Entra only.
 
 locals {
@@ -52,12 +50,41 @@ resource "cloudflare_zero_trust_access_policy" "rova_prod_mcp_allow" {
 resource "cloudflare_zero_trust_access_application" "rova_prod_mcp" {
   count = local.rova_prod_mcp_live ? 1 : 0
 
-  account_id       = var.cloudflare_account_id
-  name             = "rova-prod MCP server"
-  domain           = "rova.qnsc.vn/mcp"
-  type             = "self_hosted"
+  account_id = var.cloudflare_account_id
+  name       = "rova-prod MCP server"
+  domain     = "rova.qnsc.vn/mcp"
+  type       = "self_hosted"
+
+  # Access serves the OAuth metadata at <host>/.well-known/oauth-authorization-server (Managed OAuth). That
+  # path must belong to this app, or the SPA Worker / the web app answers it with HTML and an MCP client
+  # (the portal's server registration included) cannot discover the authorization server.
+  destinations = [
+    { type = "public", uri = "rova.qnsc.vn/mcp" },
+    { type = "public", uri = "rova.qnsc.vn/.well-known/oauth-authorization-server" },
+  ]
   session_duration = "24h" # the OAuth GRANT session (MCP-PLAN §5)
   allowed_idps     = [cloudflare_zero_trust_access_identity_provider.entra.id]
+
+  # Managed OAuth (was a dashboard click-step): Access is the OAuth server for this app. Redirect URIs a
+  # dynamically registered client may use: claude.ai, the MCP portal's admin authorization (dashboard
+  # callback, per account and server) and the shared Cloudflare callback the portal uses per user
+  # (is_shared_oauth_callback_enabled on the server). Localhost/loopback for Claude Code.
+  oauth_configuration = {
+    enabled = true
+    dynamic_client_registration = {
+      enabled                = true
+      allow_any_on_localhost = true
+      allow_any_on_loopback  = true
+      allowed_uris = [
+        "https://claude.ai/api/mcp/auth_callback",
+        "https://dash.cloudflare.com/${var.cloudflare_account_id}/one/access-controls/ai-controls/mcp-server/oauth-callback/rova-prod",
+        "https://oauth-callbacks.cloudflareaccess.com/cdn-cgi/access/outbound-oauth-callback",
+      ]
+    }
+    grant = {
+      access_token_lifetime = "15m"
+    }
+  }
 
   policies = [{
     id         = cloudflare_zero_trust_access_policy.rova_prod_mcp_allow[0].id
@@ -76,6 +103,8 @@ resource "cloudflare_zero_trust_access_ai_controls_mcp_server" "rova_prod" {
   description = "rova prod MCP server (per-user OAuth)"
   hostname    = "https://rova.qnsc.vn/mcp"
   auth_type   = "oauth"
+  # Per-user OAuth redirects through the one Cloudflare-owned callback (allowed on the upstream app).
+  is_shared_oauth_callback_enabled = true
 }
 
 resource "cloudflare_zero_trust_access_application" "rova_prod_mcp_via_portal" {

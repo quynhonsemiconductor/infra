@@ -31,6 +31,8 @@ resource "cloudflare_zero_trust_access_ai_controls_mcp_server" "rova_dev" {
   description = "rova dev MCP server (per-user OAuth)"
   hostname    = "https://rova-dev.qnsc.vn/mcp"
   auth_type   = "oauth"
+  # Per-user OAuth redirects through the one Cloudflare-owned callback (allowed on the upstream app).
+  is_shared_oauth_callback_enabled = true
 }
 
 # Access app that secures the server when it is reached THROUGH the portal
