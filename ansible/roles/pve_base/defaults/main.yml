@@ -31,8 +31,9 @@ pve_base_managed_comment: "{{ qnsc_ansible_managed | default('Managed by infra/a
 
 # Notifications: warnings and errors (failed backup jobs, replication, fencing, ...) go to the platform Teams
 # channel through a Teams *Workflows* webhook, which posts only an Adaptive Card message (files/teams-webhook-body.json,
-# Proxmox Handlebars template). The webhook URL is the secret: it is stored as a PVE endpoint secret (root-only
-# /etc/pve/priv) and never read back. It comes from the environment of the run, only when the endpoint is created
+# Proxmox Handlebars template). PVE only accepts a literal https URL, so the endpoint keeps the host in plain text and
+# the rest of the webhook URL (path and query, with the signature) as the endpoint secret "path" (root-only /etc/pve/priv),
+# never read back. It comes from the environment of the run, only when the endpoint is created
 # or rotated:
 #   op run --env-file=<local template> -- ansible-playbook pve-host.yml --tags pve_base_notify
 # The built-in default-matcher (mail-to-root) is left as it is.
