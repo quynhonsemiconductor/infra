@@ -215,9 +215,12 @@ exchanges it for a Key Vault token. Nothing to store, nothing to leak.
 | subject | `system:serviceaccount:external-secrets:eso-<env>` |
 | audience | `api://AzureADTokenExchange` (the fixed exchange audience) |
 
-Three files carry the issuer and must agree (the static guard fails on drift):
-this variable, `live/onprem-oidc` (the published OIDC documents) and
-the `k3s_server_oidc_issuer` variable of the `k3s_server` Ansible role (what k3s signs tokens with).
+Three places carry the issuer and must agree: this variable, `live/onprem-oidc`
+(the published OIDC documents) and the `k3s_server_oidc_issuer` variable of the
+`k3s_server` Ansible role (what k3s signs tokens with). The static guard fails
+when the first two drift. The third is a site value in the git-ignored Ansible
+inventory (public repo), so CI cannot see it: step 4's `iss` check below is the
+only gate for it.
 
 ### Ordering — this PR does NOT cut over by itself
 
@@ -248,11 +251,19 @@ is never edited by that side):
    EXISTING service account (the ESO SAs do not exist until step 5):
 
    ```sh
-   kubectl -n external-secrets create token default --audience api://AzureADTokenExchange \
-     | cut -d. -f2 | base64 -d 2>/dev/null | jq -r '.iss, .sub, .aud'
-   # must print https://oidc.qnsc.vn/k3s-onprem,
-   # system:serviceaccount:external-secrets:default and the audience
+   tok=$(kubectl -n external-secrets create token default --audience api://AzureADTokenExchange)
+   p=$(printf %s "$tok" | cut -d. -f2 | tr '_-' '/+')
+   while [ $(( ${#p} % 4 )) -ne 0 ]; do p="$p="; done
+   want='https://oidc.qnsc.vn/k3s-onprem
+   system:serviceaccount:external-secrets:default
+   api://AzureADTokenExchange'
+   got=$(printf %s "$p" | base64 -d | jq -r '.iss, .sub, .aud[0]')
+   [ "$got" = "$want" ] && echo MATCH || echo MISMATCH
    ```
+
+   (A JWT payload is base64url, hence the alphabet swap and the padding;
+   only `MATCH` passes: the three lines must be exactly the new issuer, the
+   service account and the exchange audience.)
 
    Then confirm ArgoCD and the CNPG clusters are healthy — tokens minted
    before the restart carry the OLD issuer and are accepted only because the
@@ -298,15 +309,21 @@ Nothing in k3s watches the file.
 So the published JWKS stays valid until someone rotates deliberately. When
 that happens, in this order:
 
-1. Rotate so `service.key` holds the NEW key **after** the old one (k3s
-   accepts several; the API server publishes all of them in its JWKS).
-2. `kubectl get --raw /openid/v1/jwks` — the response now lists both keys.
-3. `TF_VAR_k3s_jwks=... tofu apply` in `live/onprem-oidc`. Old and new tokens
-   both validate; nothing breaks.
-4. After the longest token lifetime has passed, drop the old key from
-   `service.key`, restart k3s, re-publish (steps 2–3 again).
+1. **Stage the new key (old stays the signer).** Append the new key to
+   `service.key` after the old one (`service.current.key` unchanged), restart
+   k3s: the API server now lists both keys in its JWKS.
+2. **Publish first.** `kubectl get --raw /openid/v1/jwks` (both keys), then
+   `TF_VAR_k3s_jwks=... tofu apply` in `live/onprem-oidc`; curl the served
+   JWKS and confirm both `kid`s; copy the new `jwks_sha256` output into
+   `live/onprem-oidc/jwks-expected.txt` (the drift detector compares to it).
+   Entra now trusts both keys.
+3. **Switch the signing key second.** Point `service.current.key` at the new
+   key, restart k3s. New tokens are signed with it; Entra already knows it.
+4. **Drop the old key last,** after the longest token lifetime: remove it from
+   `service.key`, restart k3s, re-publish (steps 2 again, JWKS with the new key
+   only) and update `jwks-expected.txt`.
 
-Publishing both keys in step 3 is what makes the rotation uninterrupted; a
+Publishing both keys in step 2 is what makes the rotation uninterrupted; a
 JWKS that carried only the new key would reject every token minted before the
 rotation.
 

@@ -17,6 +17,11 @@
 # Terraform values, so refreshing the JWKS is `TF_VAR_k3s_jwks=… tofu apply`
 # and nothing else.
 #
+# TRUST ROOT: what this Worker serves decides which tokens Entra accepts for the ESO apps, so
+# Cloudflare account admins and the Workers API token are part of the trust chain to Key Vault
+# (README "Trust chain"). The drift-detection job `Drift onprem-oidc-served` compares the served
+# kid set and key hash with jwks-expected.txt.
+#
 # WHAT IS SERVED IS PUBLIC. The JWKS is the public half of the service-account
 # signing key; static tests and review treat it as public data, not a secret.
 #
@@ -28,7 +33,7 @@ locals {
   jwks   = jsondecode(var.k3s_jwks)
 
   # Shape of the document the k3s API server serves itself (verified against
-  # /openid/v1/jwks + /.well-known/openid-configuration on k3s-01). The issuer
+  # /openid/v1/jwks + /.well-known/openid-configuration on the server node). The issuer
   # is overridden to the public URL; the oidc discovery spec puts the
   # well-known segment AFTER the path for an issuer that has one.
   discovery = {
@@ -81,6 +86,16 @@ resource "cloudflare_workers_custom_domain" "oidc" {
   zone_id    = var.cloudflare_zone_id
   hostname   = var.oidc_hostname
   service    = cloudflare_workers_script.oidc.script_name
+}
+
+output "jwks_kids" {
+  description = "kid of every served key, sorted: the non-secret value the drift detector compares."
+  value       = join(",", sort([for k in local.jwks.keys : k.kid]))
+}
+
+output "jwks_sha256" {
+  description = "sha256 of the served JWKS document (compact JSON, keys sorted): the drift detector's expected value."
+  value       = sha256(jsonencode(local.jwks))
 }
 
 output "issuer" {

@@ -7,9 +7,24 @@ The on-prem cluster's **public OIDC issuer**: a Cloudflare Worker serving
 This is the half of ESO workload identity that lives outside Azure. The other
 half — the federated identity credential that trusts this issuer — is in
 [live/identity/eso.tf](../identity/eso.tf); the issuer that k3s actually mints
-tokens with is in
-[../onprem-vm/files/k3s/config.yaml](../onprem-vm/files/k3s/config.yaml). The
-static guard in `live/identity/tests/static.sh` fails when the three drift.
+tokens with is the `k3s_server_oidc_issuer` variable of the `k3s_server` Ansible
+role (a site value in the git-ignored inventory). The static guard in
+`live/identity/tests/static.sh` fails when this stack and `eso.tf` drift; the
+k3s side is checked at rollout (the `iss` of a fresh token, identity README step 4).
+
+## Trust chain (this Worker is a trust root for Key Vault)
+
+Whoever can change what `<issuer>/openid/v1/jwks` serves can mint tokens that
+Entra accepts for the ESO apps, hence read Key Vault secrets. The chain is:
+Cloudflare account admins, the Workers API token used here, the owner who
+applies this stack, and the cluster signing key. Keep the token scoped to
+Workers Scripts:Edit on this one account (plus Zone:Workers Routes:Edit on the
+one zone the custom domain needs), stored in 1Password only, and keep the
+Cloudflare account admin list minimal with MFA. Detection: the `Drift
+onprem-oidc-served` job of `drift-detection.yml` fetches the served documents
+and fails when the `kid` set or the key hash differs from
+`jwks-expected.txt` (the non-secret outputs `jwks_kids` / `jwks_sha256`; update
+that file in the same PR as every rotation).
 
 ## Owns
 

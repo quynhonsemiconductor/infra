@@ -6,7 +6,7 @@ variable "cloudflare_account_id" {
 variable "cloudflare_api_token" {
   type        = string
   default     = ""
-  description = "Operator token with Workers Scripts:Edit and Zone:Workers Routes:Edit. Empty lets the provider fall back to CLOUDFLARE_API_TOKEN."
+  description = "Operator token scoped to Workers Scripts:Edit on this one account (plus Zone:Workers Routes:Edit on the one zone for the custom domain), nothing wider; part of the trust chain (README). Empty lets the provider fall back to CLOUDFLARE_API_TOKEN."
   sensitive   = true
 }
 
@@ -62,9 +62,17 @@ variable "k3s_jwks" {
   EOT
 
   validation {
-    condition = can(length(jsondecode(var.k3s_jwks).keys) > 0 && alltrue([
-      for k in jsondecode(var.k3s_jwks).keys : k.kty == "RSA" && k.alg == "RS256"
-    ]))
-    error_message = "k3s_jwks must be a JWKS document ({\"keys\":[…]}) whose keys are RSA / RS256 — the output of `kubectl get --raw /openid/v1/jwks`."
+    condition = try(length(jsondecode(var.k3s_jwks).keys) > 0 && alltrue([
+      for k in jsondecode(var.k3s_jwks).keys : k.kty == "RSA" && k.alg == "RS256" && can(k.kid)
+    ]), false)
+    error_message = "k3s_jwks must be a JWKS document ({\"keys\":[…]}) whose keys are RSA / RS256 with a kid — the output of `kubectl get --raw /openid/v1/jwks`."
+  }
+
+  validation {
+    condition = try(alltrue([
+      for k in jsondecode(var.k3s_jwks).keys :
+      alltrue([for m in ["d", "p", "q", "dp", "dq", "qi"] : !contains(keys(k), m)])
+    ]), false)
+    error_message = "k3s_jwks carries a PRIVATE key member (d, p, q, dp, dq or qi): only the public half may be published."
   }
 }
