@@ -121,6 +121,13 @@ swapcert() { local f="$FX/cert-$1" id; id=$(head -1 "$f"); { echo "$id"; cat "$2
 build; mkcert other; swapcert opshub_dev "$T/other.crt"; expect_stop "wrong thumbprint" "mail cert opshub_dev thumbprint differs"
 build; rm "$FX/cert-kb_dev"; expect_stop "no key on the app" "lookup failed: mail cert kb_dev"
 build; mkcert other; swapcert rova_prod "$T/other.crt"; expect_stop "prod cert differs" "mail cert rova_prod thumbprint differs"
+# a hex-text customKeyIdentifier (how rova-prod was added by hand) is accepted when it matches, and stops when it does not
+hexcki() { openssl x509 -in "$T/$1.crt" -noout -fingerprint -sha1 | sed 's/.*=//; s/://g'; }
+build; jq -c --arg h "$(hexcki rova_prod)" '.[0].keyCredentials[0].customKeyIdentifier=$h' "$FX/app-Rova-Prod-Service.list" >"$FX/x" && mv "$FX/x" "$FX/app-Rova-Prod-Service.list"
+run bash "$SCRIPT" >"$T/out.hex" 2>&1 || { cat "$T/out.hex"; fail "hex customKeyIdentifier rejected"; }
+mkcert other; jq -c --arg h "$(hexcki other)" '.[0].keyCredentials[0].customKeyIdentifier=$h' "$FX/app-Rova-Prod-Service.list" >"$FX/x" && mv "$FX/x" "$FX/app-Rova-Prod-Service.list"
+out="$T/out.hexbad"; if run bash "$SCRIPT" >"$out" 2>&1; then fail "wrong hex customKeyIdentifier accepted"; fi
+grep -q "mail cert rova_prod thumbprint differs" "$out" || fail "wrong hex customKeyIdentifier reason"
 build; echo '{"value":[{"verifiedDomains":[{"name":"a","isDefault":false}]}]}' >"$FX/org"; expect_stop "no default domain" "lookup for TF_VAR_break_glass_upn_domain is empty"
 build; echo '[{"@odata.type":"#microsoft.graph.group","id":"x"}]' >"$FX/members"; expect_stop "no admin users" "grp-qnsc-platform-admins has no user members"
 build; out="$T/out.noupn"; if PATH="$BIN:$PATH" FX="$FX" IDENTITY_STACK_DIR="$T/stack" IDENTITY_PROXMOX_HOST=h.test bash "$SCRIPT" >"$out" 2>&1; then fail "missing UPN did not stop"; fi

@@ -125,7 +125,11 @@ for k in "${KEYS[@]}"; do
   f="$APPS_DIR/service-$k.json"
   [[ "$(jq '.keyCredentials|length' "$f")" == "1" ]] || die "service app $k must carry exactly 1 key credential"
   kid=$(jq -r '.keyCredentials[0].keyId // empty' "$f"); need_guid "service $k keyId" "$kid"
-  want=$(jq -r '.keyCredentials[0].customKeyIdentifier // empty' "$f" | base64 -d 2>/dev/null | xxd -p | tr -d '\n')
+  # customKeyIdentifier is normally base64 of the SHA-1 bytes; a cert added with the HEX thumbprint where base64 was
+  # expected (rova-prod, by hand) comes back as those 40 hex characters. Accept both forms.
+  cki=$(jq -r '.keyCredentials[0].customKeyIdentifier // empty' "$f")
+  if [[ "$cki" =~ ^[0-9A-Fa-f]{40}$ ]]; then want=$(tr 'A-F' 'a-f' <<<"$cki")
+  else want=$(printf '%s' "$cki" | base64 -d 2>/dev/null | xxd -p | tr -d '\n'); fi
   [[ -n "$want" ]] || die "service $k has no customKeyIdentifier (thumbprint)"
   # The PUBLIC certificate comes from Entra itself: Graph returns keyCredentials[].key (base64 DER) only on a single-object
   # GET with $select=keyCredentials. No Key Vault (the prod entry also holds the private key), no 1Password copy to drift.
