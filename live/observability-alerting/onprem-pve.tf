@@ -53,7 +53,11 @@ resource "grafana_rule_group" "onprem_pve_host" {
         datasource = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
         # The window IS the requirement (absent for more than 10 minutes); `for`
         # adds one evaluation so a single missing push does not page.
-        expr          = "absent_over_time(proxmox_node_uptime_seconds[10m])"
+        # ONE PVE node feeds this metric today; a second node gets its own rule
+        # (or a node matcher) rather than changing what this one means. The
+        # matcher pins the source to the PVE exporter (job = service.name) and
+        # deliberately names no host — Tier 1 in a public repo.
+        expr          = "absent_over_time(proxmox_node_uptime_seconds{job=\"proxmox-ve\"}[10m])"
         instant       = true
         range         = false
         intervalMs    = 1000
@@ -100,19 +104,21 @@ resource "grafana_rule_group" "onprem_pve_host" {
   }
 }
 
-# STORAGE CAPACITY — used/total above 85% for 15 minutes, per store. All three
-# stores the host reports are watched. A store reporting total=0
+# STORAGE CAPACITY — the SAME 80/90 tiers as the k3s filesystem rules
+# (onprem-k3s.tf; the server-setup runbook's host tiers), so host storage and
+# the VM filesystem page at the same levels instead of a second scale. Per
+# store: every store the host reports is watched. A store reporting total=0
 # (inactive/misconfigured) is skipped instead of dividing by zero into +Inf.
 resource "grafana_rule_group" "onprem_pve_storage" {
   count            = local.onprem_live ? 1 : 0
   name             = "onprem (pve — storage)"
   folder_uid       = grafana_folder.alerts.uid
-  interval_seconds = 60
+  interval_seconds = 300
 
   rule {
-    name           = "pve-storage-over-85-percent"
+    name           = "pve-storage-over-80-percent"
     condition      = "B"
-    for            = "15m"
+    for            = "10m"
     no_data_state  = "OK"
     exec_err_state = "KeepLast"
 
@@ -122,18 +128,19 @@ resource "grafana_rule_group" "onprem_pve_storage" {
       datasource_uid = data.grafana_data_source.prometheus.uid
 
       relative_time_range {
-        from = 900
+        from = 600
         to   = 0
       }
 
       model = jsonencode({
-        refId         = "A"
-        datasource    = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
-        expr          = "(proxmox_storage_used_bytes / proxmox_storage_total_bytes > 0.85) and proxmox_storage_total_bytes > 0"
-        instant       = true
-        range         = false
-        intervalMs    = 1000
-        maxDataPoints = 43200
+        refId      = "A"
+        datasource = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
+        # `on(...)`: the ratio is the same vector's labels, joined explicitly on
+        # the three labels PVE sets. The `and` keeps a zero-total store out.
+        expr       = "proxmox_storage_used_bytes / on(job, node, storage) proxmox_storage_total_bytes and on(job, node, storage) (proxmox_storage_total_bytes > 0)"
+        instant    = true
+        range      = false
+        intervalMs = 1000
       })
     }
 
@@ -155,7 +162,7 @@ resource "grafana_rule_group" "onprem_pve_storage" {
           {
             evaluator = {
               type   = "gt"
-              params = [0]
+              params = [0.8]
             }
           }
         ]
@@ -171,7 +178,72 @@ resource "grafana_rule_group" "onprem_pve_storage" {
     }
 
     annotations = {
-      summary = "Storage {{ $labels.storage }} on {{ $labels.node }} has been over 85% used for 15 minutes. ZFS and the PBS datastore do not shrink themselves — free space or grow the pool."
+      summary = "Storage {{ $labels.storage }} on {{ $labels.node }} is over 80% used (§12 host tiers). Free space or grow the pool before the 90% critical fires."
+    }
+  }
+
+  rule {
+    name           = "pve-storage-over-90-percent"
+    condition      = "B"
+    for            = "10m"
+    no_data_state  = "OK"
+    exec_err_state = "KeepLast"
+
+    data {
+      ref_id         = "A"
+      query_type     = "instant"
+      datasource_uid = data.grafana_data_source.prometheus.uid
+
+      relative_time_range {
+        from = 600
+        to   = 0
+      }
+
+      model = jsonencode({
+        refId      = "A"
+        datasource = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
+        expr       = "proxmox_storage_used_bytes / on(job, node, storage) proxmox_storage_total_bytes and on(job, node, storage) (proxmox_storage_total_bytes > 0)"
+        instant    = true
+        range      = false
+        intervalMs = 1000
+      })
+    }
+
+    data {
+      ref_id         = "B"
+      datasource_uid = "__expr__"
+
+      relative_time_range {
+        from = 0
+        to   = 0
+      }
+
+      model = jsonencode({
+        refId      = "B"
+        type       = "threshold"
+        datasource = { type = "__expr__", uid = "__expr__" }
+        expression = "A"
+        conditions = [
+          {
+            evaluator = {
+              type   = "gt"
+              params = [0.9]
+            }
+          }
+        ]
+        intervalMs    = 1000
+        maxDataPoints = 43200
+      })
+    }
+
+    labels = {
+      product  = "platform"
+      env      = "production"
+      severity = "critical"
+    }
+
+    annotations = {
+      summary = "Storage {{ $labels.storage }} on {{ $labels.node }} is over 90% used (§12 host tiers). At 100% the store stops accepting writes and the VMs on it fail."
     }
   }
 }
@@ -179,7 +251,7 @@ resource "grafana_rule_group" "onprem_pve_storage" {
 # GUEST DOWN — the three estate VMs by name (template 9000 is excluded by the
 # vmid matcher, so its flat uptime cannot page): either the uptime series is
 # absent (VM stopped / guest agent gone) or it stopped increasing (wedged).
-# The `changes` case needs 10 minutes of a flat gauge, which a running qemu
+# The `changes` case needs 5 minutes of a flat gauge, which a running qemu
 # cannot produce (uptime moves every scrape); the absence case uses `for`.
 resource "grafana_rule_group" "onprem_pve_guests" {
   count            = local.onprem_live ? 1 : 0
@@ -188,8 +260,10 @@ resource "grafana_rule_group" "onprem_pve_guests" {
   interval_seconds = 60
 
   rule {
-    # Both branches turn the failure into DATA (absent() = 1, changes() = 0);
-    # an empty evaluation is the healthy case. OK, not Alerting.
+    # Both branches turn the failure into DATA, never into an empty result:
+    # absent() = 1, and `== bool 0` turns a flat series into 1 (a plain `== 0`
+    # would filter the 0 away and the `gt 0` threshold could never fire). An
+    # empty evaluation is therefore the healthy case: OK, not Alerting.
     name           = "pve-vm-down"
     condition      = "B"
     for            = "5m"
@@ -215,7 +289,7 @@ resource "grafana_rule_group" "onprem_pve_guests" {
           "absent(proxmox_vm_uptime_seconds{vmid=\"100\"})",
           "absent(proxmox_vm_uptime_seconds{vmid=\"101\"})",
           "absent(proxmox_vm_uptime_seconds{vmid=\"102\"})",
-          "changes(proxmox_vm_uptime_seconds{vmid=~\"100|101|102\"}[10m]) == 0",
+          "changes(proxmox_vm_uptime_seconds{vmid=~\"100|101|102\"}[5m]) == bool 0",
         ])
         instant       = true
         range         = false
