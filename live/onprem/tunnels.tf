@@ -32,6 +32,8 @@ locals {
     { hostname = "rova.qnsc.vn", path = "^/api/auth/", service = "http://api.rova-prod.svc:3000" },
     { hostname = "rova.qnsc.vn", path = "^/v1/", service = "http://api.rova-prod.svc:3000" },
     { hostname = "rova.qnsc.vn", path = "^/readyz$", service = "http://api.rova-prod.svc:3000" },
+    # /mcp: the rova-prod MCP Access app (Managed OAuth) is in front; cloudflared checks ITS JWT.
+    { hostname = "rova.qnsc.vn", path = "^/mcp(/|$)", service = "http://api.rova-prod.svc:3000", access_app = "rova-prod MCP server" },
 
     # rova dev — one Access app on the host (live/edge); the webhook bypass
     # lives in live/edge too, this file only routes what reaches the origin
@@ -41,6 +43,7 @@ locals {
     { hostname = "rova-dev.qnsc.vn", path = "^/v1/scm/webhook/", service = "http://api.rova-dev.svc:3000", bypass = true },
     { hostname = "rova-dev.qnsc.vn", path = "^/v1/", service = "http://api.rova-dev.svc:3000" },
     { hostname = "rova-dev.qnsc.vn", path = "^/readyz$", service = "http://api.rova-dev.svc:3000", bypass = true },
+    { hostname = "rova-dev.qnsc.vn", path = "^/mcp(/|$)", service = "http://api.rova-dev.svc:3000", access_app = "rova-dev MCP server" },
 
     # opshub dev
     # The door terminal rule is before ^/v1/ for the same reason (bearer token
@@ -76,6 +79,9 @@ locals {
 # unchecked silently.
 locals {
   access_jwt_hosts = toset(["rova-dev.qnsc.vn", "opshub-dev.qnsc.vn"])
+  # A rule may name a different Access app than its host's (`access_app`): /mcp is behind the MCP server
+  # apps (live/edge mcp.tf, mcp_rova_prod.tf), whose JWT carries THEIR aud, not the host web app's.
+  access_jwt_apps = setunion(local.access_jwt_hosts, toset(compact([for r in local.qnsc_apps_ingress : try(r.access_app, "")])))
 }
 
 data "cloudflare_zero_trust_organization" "this" {
@@ -83,7 +89,7 @@ data "cloudflare_zero_trust_organization" "this" {
 }
 
 data "cloudflare_zero_trust_access_application" "dev" {
-  for_each = local.access_jwt_hosts
+  for_each = local.access_jwt_apps
 
   account_id = var.cloudflare_account_id
   filter = {
@@ -143,10 +149,10 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "qnsc_apps" {
         path     = r.path
         service  = r.service
         origin_request = {
-          access = contains(local.access_jwt_hosts, r.hostname) && !try(r.bypass, false) ? {
+          access = (contains(local.access_jwt_hosts, r.hostname) || try(r.access_app, "") != "") && !try(r.bypass, false) ? {
             required  = true
             team_name = local.access_team_name
-            aud_tag   = [data.cloudflare_zero_trust_access_application.dev[r.hostname].aud]
+            aud_tag   = [data.cloudflare_zero_trust_access_application.dev[try(r.access_app, r.hostname)].aud]
           } : null
         }
       }],
