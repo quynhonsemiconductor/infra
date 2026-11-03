@@ -129,3 +129,51 @@ variable "proxmox_ssh_address" {
   type        = string
   description = "Address the provider SSHes to (as root, via the owner's ssh-agent) to upload snippets. Site value, git-ignored tfvars only."
 }
+
+# ── Proxmox API objects (proxmox_iam.tf, proxmox_host.tf) ───────────────────
+
+variable "proxmox_token_privilege_separation" {
+  type        = bool
+  default     = true
+  description = "privsep of the `tofu` API token (`pveum user token list terraform@pve`). true = the token has its own ACLs (pve_acls entries with token_id); false = it inherits the user's."
+}
+
+variable "pve_acls" {
+  type = map(object({
+    path      = string
+    role_id   = string
+    user_id   = optional(string)
+    token_id  = optional(string)
+    propagate = optional(bool, true)
+  }))
+  default     = {}
+  description = "ACL entries of terraform@pve / its token, keyed by any stable label. Exactly one of user_id (`terraform@pve`) or token_id (`terraform@pve!tofu`) per entry. Copy them from `pveum acl list` into the git-ignored site.tfvars."
+
+  validation {
+    condition     = alltrue([for k, a in var.pve_acls : (a.user_id == null) != (a.token_id == null)])
+    error_message = "each pve_acls entry needs exactly one of user_id or token_id."
+  }
+}
+
+variable "gpu_pci_mapping" {
+  type = object({
+    name    = string
+    comment = optional(string)
+    map = list(object({
+      id           = string
+      node         = string
+      path         = string
+      iommu_group  = optional(number)
+      subsystem_id = optional(string)
+      comment      = optional(string)
+    }))
+  })
+  default     = null
+  description = "The cluster PCI mapping ai-01 passes through (null = this site has none). Site values (PCI paths, IOMMU groups, subsystem ids): git-ignored site.tfvars; `scripts/owner/pve-gpu-passthrough.sh --check` prints the snippet."
+}
+
+variable "zfs_pool" {
+  type        = string
+  default     = "rpool/data"
+  description = "ZFS dataset behind the `local-zfs` storage (the Proxmox installer's default)."
+}
