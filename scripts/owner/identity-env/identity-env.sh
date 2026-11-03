@@ -14,8 +14,6 @@
 #   IDENTITY_SECOND_OWNER_UPN   UPN of the second company owner (the signed-in user is the owner operator)
 #   IDENTITY_PROXMOX_HOST       hostname of the Proxmox realm (admin door); the redirect URI is https://<host>/
 # Optional:
-#   IDENTITY_ESO_CERT_DIR ($HOME/keys)   eso-{dev,prod,platform}-cert.pem; only read while live/identity still
-#                                        declares var.eso_certificates (until the certificate-removal PR, #254)
 #   IDENTITY_STACK_DIR (live/identity, relative to the repo root)
 set -euo pipefail
 
@@ -59,7 +57,8 @@ put TF_VAR_budget_period_start "$(rfc3339 "$(jq -r '.[0].timePeriod.startDate //
 put TF_VAR_budget_period_end "$(rfc3339 "$(jq -r '.[0].timePeriod.endDate // empty' <<<"$BUDGET")")"
 
 ORG=$(az_json tenant-domains rest --method get --url https://graph.microsoft.com/v1.0/organization)
-put TF_VAR_break_glass_upn_domain "$(jq -r '[.value[0].verifiedDomains[]|select(.isDefault)|.name]|if length==1 then .[0] else empty end' <<<"$ORG")"
+# Break-glass accounts live on the INITIAL *.onmicrosoft.com domain (never a custom domain they could lose).
+put TF_VAR_break_glass_upn_domain "$(jq -r '[.value[0].verifiedDomains[]|select(.isInitial)|.name]|if length==1 then .[0] else empty end' <<<"$ORG")"
 
 grp_id() { local id; id=$(az_json "group $1" ad group show --group "$1" | jq -r '.id // empty'); need_guid "group $1" "$id"; printf '%s' "$id"; }
 put TF_VAR_platform_admins_object_id "$(grp_id grp-qnsc-platform-admins)"
@@ -149,12 +148,20 @@ put TF_VAR_mail_service_cert_key_ids "$KEYIDS"
 put TF_VAR_mail_service_certificates "$CERTS"
 
 # --- ESO certificates: only while the stack still declares the variable (removed by the #254 PR) -------------
+# The PUBLIC certificate live on each ESO app, from Graph like the mail certs: a file on disk can be stale (rotation)
+# and a stale value plans a REPLACE that takes the ClusterSecretStores' credential away.
 if grep -qs '^variable "eso_certificates"' "$STACK"/*.tf; then
-  d="${IDENTITY_ESO_CERT_DIR:-$HOME/keys}"; E='{}'
+  E='{}'
   for p in dev prod platform; do
-    [[ -r "$d/eso-$p-cert.pem" ]] || die "missing eso-$p-cert.pem in the ESO cert dir"
-    pem=$(<"$d/eso-$p-cert.pem")
-    [[ "$pem" == *"BEGIN CERTIFICATE"* && "$pem" != *"PRIVATE KEY"* ]] || die "eso-$p-cert.pem must be a public certificate only"
+    n="QNSC ESO $(tr '[:lower:]' '[:upper:]' <<<"${p:0:1}")${p:1}"
+    a=$(az_json "eso app $p" ad app list --filter "displayName eq '$n'")
+    [[ "$(jq 'length' <<<"$a")" == "1" ]] || die "exactly one app named '$n' expected"
+    oid=$(jq -r '.[0].id // empty' <<<"$a"); need_guid "eso $p object id" "$oid"
+    kc=$(az_json "eso cert $p" rest --method get --url "https://graph.microsoft.com/v1.0/applications/$oid?\$select=keyCredentials")
+    [[ "$(jq '.keyCredentials|length' <<<"$kc")" == "1" ]] || die "eso app $p must carry exactly 1 key credential"
+    pem=$(jq -r '.keyCredentials[0].key // empty' <<<"$kc" | base64 -d 2>/dev/null | openssl x509 -inform DER -outform PEM 2>/dev/null) \
+      || die "lookup failed: eso cert $p"
+    [[ "$pem" == *"BEGIN CERTIFICATE"* ]] || die "lookup failed: eso cert $p"
     E=$(jq -c --arg k "$p" --arg v "$pem" '.[$k]=$v' <<<"$E")
   done
   put TF_VAR_eso_certificates "$E"
