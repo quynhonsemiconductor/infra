@@ -6,19 +6,6 @@
     fail_msg: "k3s_server_oidc_issuer_enabled is true but k3s_server_oidc_issuer is empty: set it in the local inventory."
     quiet: true
 
-- name: Kernel settings for k3s
-  ansible.posix.sysctl:
-    name: "{{ item.key }}"
-    value: "{{ item.value }}"
-    sysctl_file: /etc/sysctl.d/90-qnsc-k3s.conf
-    sysctl_set: true
-    state: present
-    reload: true
-  loop: "{{ k3s_server_sysctl | dict2items }}"
-  loop_control:
-    label: "{{ item.key }}"
-  tags: [k3s_server_sysctl]
-
 - name: Directory for the k3s configuration
   ansible.builtin.file:
     path: /etc/rancher/k3s

@@ -1,10 +1,4 @@
 ---
-# The kernel settings k3s needs. The owner confirms the live values: a first --check may show a diff here.
-k3s_server_sysctl:
-  net.ipv4.ip_forward: 1
-  fs.inotify.max_user_watches: 524288
-  fs.inotify.max_user_instances: 8192
-
 # ESO workload identity (infra#252): k3s signs service-account tokens with the FIRST issuer, the old default is
 # listed second so tokens minted before the change stay valid. OFF until the rollout of live/identity step 4.
 k3s_server_oidc_issuer_enabled: false
