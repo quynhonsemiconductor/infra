@@ -10,8 +10,8 @@
 # Gate: local.cutover, same as every rova-dev resource — nothing exists for
 # the host until its move apply.
 #
-# Policy group: `grp-qnsc-developers` — the SAME Entra group the web dev
-# Access app allows (the rova users group). VLSI stays excluded at group
+# Policy groups: `grp-qnsc-developers` and `grp-qnsc-dev-users` (PQA, BA), the same
+# two groups the dev web Access app allows. VLSI stays excluded at group
 # membership (MCP-PLAN §5 L1).
 
 resource "cloudflare_zero_trust_access_application" "rova_dev_mcp" {
@@ -70,9 +70,11 @@ resource "cloudflare_zero_trust_access_policy" "rova_dev_mcp_allow" {
   decision         = "allow"
   session_duration = "24h"
 
-  include = [{
+  # grp-qnsc-developers plus grp-qnsc-dev-users (PQA, BA): the rova tools act as the signed-in rova user, so rova's
+  # own RBAC still decides what each person can read or change. Include = OR.
+  include = [for g in compact([var.grp_developers_id, var.grp_dev_users_id]) : {
     azure_ad = {
-      id                   = var.grp_developers_id
+      id                   = g
       identity_provider_id = cloudflare_zero_trust_access_identity_provider.entra.id
     }
   }]

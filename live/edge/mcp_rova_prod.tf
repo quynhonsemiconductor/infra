@@ -13,8 +13,8 @@
 # registration additionally need the portal itself (local.mcp_portal_live, the rova-dev gate in
 # mcp_portal.tf), because the portal is one shared resource.
 #
-# POLICY GROUP: grp-qnsc-developers, the same Entra group as rova-dev (the rova users group). Narrow it
-# here (a second group in the `include`) if prod MCP should reach fewer people than dev.
+# POLICY GROUPS: grp-qnsc-developers and grp-qnsc-dev-users (PQA, BA), the same as rova-dev. Owner decision
+# 2026-11-03: PQA/BA use both rova MCP servers; rova's RBAC (the signed-in user) still applies per call.
 #
 # ORDER: apply this stack FIRST; read the new app's AUD (output rova_prod_mcp_aud) into
 # kv-qnsc-prod/rova-prod-mcp-access-aud; ONLY THEN merge the gitops change that sets MCP_ENABLED=true
@@ -36,9 +36,11 @@ resource "cloudflare_zero_trust_access_policy" "rova_prod_mcp_allow" {
   decision         = "allow"
   session_duration = "24h"
 
-  include = [{
+  # grp-qnsc-developers plus grp-qnsc-dev-users (PQA, BA): the rova tools act as the signed-in rova user, so rova's
+  # own RBAC still decides what each person can read or change. Include = OR.
+  include = [for g in compact([var.grp_developers_id, var.grp_dev_users_id]) : {
     azure_ad = {
-      id                   = var.grp_developers_id
+      id                   = g
       identity_provider_id = cloudflare_zero_trust_access_identity_provider.entra.id
     }
   }]
