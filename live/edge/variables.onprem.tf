@@ -47,6 +47,12 @@ variable "grp_dev_users_id" {
   description = "Entra object id of grp-qnsc-dev-users (live/identity output grp_dev_users_id): the dev web hosts and the two rova MCP servers, no other engineering tools. TF_VAR_grp_dev_users_id (repo variable ENTRA_GRP_DEV_USERS_ID). Empty = only grp-qnsc-developers is allowed."
 }
 
+variable "grp_staff_id" {
+  type        = string
+  default     = ""
+  description = "Entra object id of grp-qnsc-staff (live/identity output grp_staff_id): every employee, the PROD internal tools (rova/opshub/kb web + MCP). TF_VAR_grp_staff_id (repo variable ENTRA_GRP_STAFF_ID). Empty = prod MCP stays on developers + dev-users."
+}
+
 variable "entra_tenant_id" {
   type        = string
   description = "Entra tenant id (not a secret; CI-fed for one source of truth). TF_VAR_entra_tenant_id."
