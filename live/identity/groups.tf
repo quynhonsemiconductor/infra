@@ -5,6 +5,11 @@
 # grp-qnsc-dev-users is the narrow one: the dev web hosts only (rova-dev, opshub-dev, kb-dev) for people who
 # test or specify the product (PQA, BA) and need none of the engineering tools. What they may do inside an app
 # stays the app's own RBAC. Membership is managed in Entra (admin center), not here.
+variable "grp_dev_users_object_id" {
+  type        = string
+  description = "Object id of the hand-created grp-qnsc-dev-users, for its import (imports.tf). Same value as the infra repo variable ENTRA_GRP_DEV_USERS_ID: TF_VAR_grp_dev_users_object_id=\"$(gh variable get ENTRA_GRP_DEV_USERS_ID -R quynhonsemiconductor/infra)\"."
+}
+
 resource "azuread_group" "dev_users" {
   display_name     = "grp-qnsc-dev-users"
   description      = "Dev web hosts only (Cloudflare Access on rova-dev, opshub-dev, kb-dev). No engineering tools."
