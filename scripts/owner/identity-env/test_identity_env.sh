@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+# Offline tests for identity-env.sh. Stub `az` and `op` on PATH answer from fixtures shaped like the real CLI
+# JSON (no live call, no credential). Checks: the happy path exports every variable, prints ONLY names and
+# lengths (no id, host, UPN or PEM ever reaches stdout/stderr), run mode hands the env to the child, and every
+# broken input (empty lookup, duplicate app, wrong thumbprint, private key, missing input) stops the run.
+# A PASS here must fail on broken input.
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT="$HERE/identity-env.sh"
+T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
+FX="$T/fx"; BIN="$T/bin"; mkdir -p "$FX" "$BIN" "$T/stack" "$T/eso"
+for c in jq openssl xxd; do command -v "$c" >/dev/null || { echo "need $c"; exit 2; }; done
+
+g() { printf '%08x-0000-4000-8000-%012x' "$1" "$2"; }   # deterministic GUIDs: g <n> <m>
+mkcert() { openssl req -x509 -newkey rsa:2048 -nodes -keyout "$T/$1.key" -out "$T/$1.crt" -subj "/CN=stub-$1" -days 2 >/dev/null 2>&1; }
+b64thumb() { openssl x509 -in "$1" -noout -fingerprint -sha1 | sed 's/.*=//; s/://g' | tr 'A-F' 'a-f' | xxd -r -p | base64 | tr -d '\n'; }
+
+KEYS=(rova_prod rova_dev opshub_dev kb_dev); i=0
+signin_name() { case "$1" in rova_prod) echo "Rova Prod";; rova_dev) echo "Rova Dev";; opshub_dev) echo "OpsHub Dev";; kb_dev) echo "KB Dev";; esac; }
+build() { # build the fixture set from scratch
+  rm -rf "$FX"; mkdir -p "$FX"; i=0
+  echo "{\"id\":\"$(g 1 1)\"}" >"$FX/account"
+  echo '[{"name":"b","timePeriod":{"startDate":"2026-10-01T00:00:00+00:00","endDate":"2028-09-30T00:00:00Z"}}]' >"$FX/budget"
+  echo '{"value":[{"verifiedDomains":[{"name":"other.example","isDefault":false},{"name":"tenant.example","isDefault":true}]}]}' >"$FX/org"
+  echo "{\"id\":\"$(g 2 1)\"}" >"$FX/group-grp-qnsc-platform-admins"
+  echo "{\"id\":\"$(g 2 2)\"}" >"$FX/group-grp-qnsc-dev-users"
+  echo "{\"id\":\"$(g 3 1)\"}" >"$FX/me"
+  echo "{\"id\":\"$(g 3 2)\"}" >"$FX/user-second@tenant.example"
+  echo "[{\"@odata.type\":\"#microsoft.graph.user\",\"id\":\"$(g 3 1)\"},{\"@odata.type\":\"#microsoft.graph.group\",\"id\":\"$(g 9 9)\"},{\"@odata.type\":\"#microsoft.graph.user\",\"id\":\"$(g 3 2)\"}]" >"$FX/members"
+  for k in "${KEYS[@]}"; do
+    i=$((i+1)); mkcert "$k"
+    jq -n --arg id "$(g 10 $i)" --arg app "$(g 11 $i)" '{id:$id,appId:$app,appRoles:[]}' >"$FX/app-$(signin_name "$k" | tr " " -)"
+    jq -n --arg app "$(g 11 $i)" --arg sp "$(g 12 $i)" '[{id:$sp,appId:$app}]' >"$FX/sp-$(g 11 $i)"
+    jq -n --arg id "$(g 20 $i)" --arg app "$(g 21 $i)" --arg kid "$(g 22 $i)" --arg th "$(b64thumb "$T/$k.crt")" \
+      '{id:$id,appId:$app,keyCredentials:[{keyId:$kid,customKeyIdentifier:$th}]}' >"$FX/app-$(signin_name "$k" | tr " " -)-Service"
+    jq -n --arg app "$(g 21 $i)" --arg sp "$(g 23 $i)" '[{id:$sp,appId:$app}]' >"$FX/sp-$(g 21 $i)"
+    if [ "$k" = rova_prod ]; then cat "$T/$k.crt" "$T/$k.key" >"$FX/kvvalue"; else cp "$T/$k.crt" "$FX/op-$k"; fi
+  done
+  roles='[]'; n=0
+  for r in admin it-admin security hr manager helpdesk auditor; do n=$((n+1)); roles=$(jq -c --arg r "$r" --arg id "$(g 30 $n)" '.+[{value:$r,id:$id,isEnabled:true}]' <<<"$roles"); done
+  jq --argjson r "$roles" '.appRoles=$r' "$FX/app-OpsHub-Dev" >"$FX/x" && mv "$FX/x" "$FX/app-OpsHub-Dev"
+  for k in "${KEYS[@]}"; do for f in app-$(signin_name "$k" | tr " " -) app-$(signin_name "$k" | tr " " -)-Service; do jq -c '[.]' "$FX/$f" >"$FX/$f.list"; done; done
+}
+cat >"$BIN/az" <<'STUB'
+#!/usr/bin/env bash
+a="$*"; echo "az $a" >>"$FX/calls.log"
+case "$a" in
+  "account show"*) cat "$FX/account" ;;
+  "consumption budget list"*) cat "$FX/budget" ;;
+  "rest --method get --url https://graph.microsoft.com/v1.0/organization"*) cat "$FX/org" ;;
+  "ad group show --group "*) g=${a#ad group show --group }; cat "$FX/group-${g%% *}" ;;
+  "ad group member list"*) cat "$FX/members" ;;
+  "ad signed-in-user show"*) cat "$FX/me" ;;
+  "ad user show --id "*) u=${a#ad user show --id }; cat "$FX/user-${u%% *}" ;;
+  "ad app list --filter displayName eq '"*) n=${a#*\'}; n=${n%%\'*}; cat "$FX/app-${n// /-}.list" 2>/dev/null || echo '[]' ;;
+  "ad sp list --filter appId eq '"*) n=${a#*\'}; n=${n%%\'*}; cat "$FX/sp-$n" ;;
+  "keyvault certificate show --vault-name kv-qnsc-prod --name rova-prod-graph-cert --query cer -o tsv"*) openssl x509 -in "$FX/kvvalue" -outform DER | base64 | tr -d '\n'; echo ;;
+  "keyvault secret"*) echo "FORBIDDEN: key vault secret read" >&2; exit 9 ;;
+  *) echo "unexpected az call: $a" >&2; exit 9 ;;
+esac
+STUB
+cat >"$BIN/op" <<'STUB'
+#!/usr/bin/env bash
+ref="$2"; echo "op read" >>"$FX/calls.log"
+case "$ref" in
+  "op://QNSC/Entra mail cert – "*"-dev – certificate/notesPlain") p=${ref#*cert – }; p=${p%%-dev*}; cat "$FX/op-${p}_dev" ;;
+  *) echo "unexpected op ref" >&2; exit 9 ;;
+esac
+STUB
+chmod +x "$BIN/az" "$BIN/op"
+echo 'variable "other" {}' >"$T/stack/v.tf"
+
+run() { PATH="$BIN:$PATH" FX="$FX" IDENTITY_STACK_DIR="$T/stack" IDENTITY_ESO_CERT_DIR="$T/eso" \
+  IDENTITY_SECOND_OWNER_UPN="second@tenant.example" IDENTITY_PROXMOX_HOST="pve.example.test" "$@"; }
+fail() { echo "FAIL: $*"; exit 1; }
+leak_scan() { # no fixture identifier or PEM may appear in the captured output
+  grep -qE '[0-9a-f]{8}-0000-4000-8000|BEGIN|PRIVATE|pve\.example|tenant\.example|second@' "$1" && fail "$2: a value reached the output" || true
+}
+expect_stop() { # expect_stop <label> <expected fragment>
+  local out="$T/out.$RANDOM"
+  if run bash "$SCRIPT" >"$out" 2>&1; then fail "$1: broken input did not stop the run"; fi
+  grep -q "STOP: .*$2" "$out" || { cat "$out"; fail "$1: wrong stop reason (wanted '$2')"; }
+  leak_scan "$out" "$1"
+}
+
+# 1. happy path: names + lengths, 18 variables, no value anywhere
+build
+OUT="$T/out.happy"; run bash "$SCRIPT" >"$OUT" 2>&1 || { cat "$OUT"; fail "happy path exited non-zero"; }
+grep -q 'identity env OK: 18 variables' "$OUT" || { cat "$OUT"; fail "variable count"; }
+for v in subscription_id budget_period_start budget_period_end break_glass_upn_domain platform_admins_object_id grp_dev_users_object_id \
+  owner_operator_object_id second_owner_object_id proxmox_admin_object_ids proxmox_redirect_uris existing_object_ids existing_sp_object_ids \
+  mail_service_object_ids mail_service_sp_object_ids opshub_dev_app_role_ids mail_service_cert_key_ids mail_service_certificates; do
+  grep -qE "TF_VAR_$v +[0-9]+$" "$OUT" || fail "missing TF_VAR_$v in the report"
+done
+grep -qE 'ARM_SUBSCRIPTION_ID +36$' "$OUT" || fail "ARM_SUBSCRIPTION_ID not exported with length 36"
+leak_scan "$OUT" happy
+[ "$(grep -c "2026-10-01T00:00:00Z" "$OUT")" = 0 ] || fail "a value was printed"
+
+# 2. run mode: the child sees the values (checked by shape, nothing printed), cwd is the stack dir
+CH="$T/child.out"
+run bash "$SCRIPT" -- bash -c 'jq -e "(.dev|length)>0" >/dev/null 2>&1 <<<"{}" ; [[ "$TF_VAR_budget_period_start" == 2026-10-01T00:00:00Z && "$TF_VAR_budget_period_end" == 2028-09-30T00:00:00Z ]] && [[ "$TF_VAR_proxmox_redirect_uris" == "[\"https://pve.example.test/\"]" ]] && jq -e "length==2" <<<"$TF_VAR_proxmox_admin_object_ids" >/dev/null && jq -e "length==4" <<<"$TF_VAR_mail_service_certificates" >/dev/null && [[ "$TF_VAR_break_glass_upn_domain" == tenant.example ]] && jq -e ".admin and .auditor" <<<"$TF_VAR_opshub_dev_app_role_ids" >/dev/null && pwd' >"$CH" 2>&1 || { cat "$CH"; fail "child did not get the right env"; }
+[ "$(cat "$CH")" = "$T/stack" ] || fail "child cwd is not the stack dir"
+
+# 2b. no temp dir survives, in check mode or after a child run (the script must not exec away its cleanup trap)
+build; TD="$T/tmpd"; mkdir -p "$TD"
+TMPDIR="$TD" run bash "$SCRIPT" -- true || fail "child true failed"
+[ -z "$(ls -A "$TD")" ] || fail "temp dir left behind after -- true"
+TMPDIR="$TD" run bash "$SCRIPT" >/dev/null || fail "check failed"
+[ -z "$(ls -A "$TD")" ] || fail "temp dir left behind after check"
+TMPDIR="$TD" run bash "$SCRIPT" -- bash -c 'exit 7' && fail "child exit code swallowed" || [ "$?" = 7 ] || fail "child exit code not propagated"
+[ -z "$(ls -A "$TD")" ] || fail "temp dir left behind after a failing child"
+
+# 3. broken inputs stop the run
+build; : >"$FX/account"; expect_stop "empty subscription" "az lookup empty: subscription"
+build; echo '[{},{}]' >"$FX/budget"; expect_stop "two budgets" "expected exactly 1 budget"
+build; echo '[{"timePeriod":{"startDate":"2026-10-01","endDate":"2028-09-30T00:00:00Z"}}]' >"$FX/budget"; expect_stop "bare-date budget" "budget timestamp is not RFC3339"
+build; rm "$FX/app-KB-Dev.list"; expect_stop "app missing" "az lookup empty: app KB Dev"
+build; jq -c '. + .' "$FX/app-Rova-Dev.list" >"$FX/x" && mv "$FX/x" "$FX/app-Rova-Dev.list"; expect_stop "duplicate app" "expected exactly 1 app named 'Rova Dev'"
+build; echo '[{"id":"not-a-guid","appId":"x"}]' | jq -c '.' >"$FX/sp-$(g 11 1)"; expect_stop "bad SP id" "SP object id is not a GUID"
+build; jq -c '[.[0]|.appRoles|=map(select(.value!="hr"))]' "$FX/app-OpsHub-Dev.list" >"$FX/x" && mv "$FX/x" "$FX/app-OpsHub-Dev.list"; expect_stop "missing app role" "OpsHub Dev must carry exactly the 7 app roles"
+build; jq -c '.[0].keyCredentials+=[.[0].keyCredentials[0]]|.' "$FX/app-Rova-Dev-Service.list" >"$FX/x" && mv "$FX/x" "$FX/app-Rova-Dev-Service.list"; expect_stop "two key credentials" "service app rova_dev must carry exactly 1 key credential"
+build; mkcert other; cp "$T/other.crt" "$FX/op-opshub_dev"; expect_stop "wrong thumbprint" "mail cert opshub_dev thumbprint differs"
+build; cat "$T/opshub_dev.crt" "$T/opshub_dev.key" >"$FX/op-opshub_dev"; expect_stop "private key in cert" "mail cert opshub_dev carries a private key"
+build; echo garbage >"$FX/op-kb_dev"; expect_stop "not a certificate" "mail cert kb_dev is not a certificate"
+build; mkcert other; cat "$T/other.crt" "$T/other.key" >"$FX/kvvalue"; expect_stop "prod cert from vault differs" "mail cert rova_prod thumbprint differs"
+build; echo '{"value":[{"verifiedDomains":[{"name":"a","isDefault":false}]}]}' >"$FX/org"; expect_stop "no default domain" "lookup for TF_VAR_break_glass_upn_domain is empty"
+build; echo '[{"@odata.type":"#microsoft.graph.group","id":"x"}]' >"$FX/members"; expect_stop "no admin users" "grp-qnsc-platform-admins has no user members"
+build; out="$T/out.noupn"; if PATH="$BIN:$PATH" FX="$FX" IDENTITY_STACK_DIR="$T/stack" IDENTITY_PROXMOX_HOST=h.test bash "$SCRIPT" >"$out" 2>&1; then fail "missing UPN did not stop"; fi
+grep -q 'STOP: set IDENTITY_SECOND_OWNER_UPN' "$out" || fail "missing UPN reason"
+build; out="$T/out.nohost"; if PATH="$BIN:$PATH" FX="$FX" IDENTITY_STACK_DIR="$T/stack" IDENTITY_SECOND_OWNER_UPN=second@tenant.example bash "$SCRIPT" >"$out" 2>&1; then fail "missing host did not stop"; fi
+grep -q 'STOP: set IDENTITY_PROXMOX_HOST' "$out" || fail "missing host reason"
+build; if run bash "$SCRIPT" -- 2>/dev/null; then fail "empty command after -- accepted"; fi
+
+# 4. eso_certificates: required while the stack declares it, absent once it does not
+build; echo 'variable "eso_certificates" {}' >"$T/stack/eso.tf"
+expect_stop "eso certs missing" "missing eso-dev-cert.pem"
+for p in dev prod platform; do mkcert "eso-$p"; cp "$T/eso-$p.crt" "$T/eso/eso-$p-cert.pem"; done
+OUT="$T/out.eso"; run bash "$SCRIPT" >"$OUT" 2>&1 || { cat "$OUT"; fail "eso happy path"; }
+grep -q 'identity env OK: 19 variables' "$OUT" || fail "eso variable count"
+grep -qE 'TF_VAR_eso_certificates +[0-9]+$' "$OUT" || fail "eso variable not built"
+cat "$T/eso-dev.crt" "$T/eso-dev.key" >"$T/eso/eso-dev-cert.pem"; expect_stop "eso private key" "eso-dev-cert.pem must be a public certificate only"
+rm "$T/stack/eso.tf"
+
+# 5. the kit only reads: no az verb other than show/list, no op verb other than read
+if grep -q 'keyvault secret' "$FX/calls.log"; then fail "the Key Vault secret (private key) was read"; fi
+grep -q 'keyvault certificate show' "$FX/calls.log" || fail "the certificate object was not read"
+if grep -E '^az (.* )?(create|update|delete|set|reset|add|remove|assignment|grant|invite)( |$)' "$FX/calls.log"; then fail "a mutating az call was made"; fi
+grep -qv '^op read$' <(grep '^op' "$FX/calls.log") && fail "an op call other than read"
+echo "PASS: identity-env"

@@ -228,6 +228,11 @@ jobs:
       - name: live/identity static guard
         run: sh live/identity/tests/static.sh
 
+      # The owner apply kit builds live/identity's TF_VAR_* from read-only az/op lookups. This runs it against
+      # stub az/op and captured-shape fixtures: no credential, no live call; every broken input must stop it.
+      - name: identity apply kit (offline test)
+        run: bash scripts/owner/identity-env/test_identity_env.sh
+
   # ───────────────────────────────────────────────────────────────────────
   # tflint — NOT a required check yet, deliberately.
   #
