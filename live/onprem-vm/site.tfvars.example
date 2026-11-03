@@ -51,6 +51,29 @@ ssh_public_keys = [
   "ssh-ed25519 AAAA... owner@laptop",
 ]
 
+# ── Proxmox API objects (proxmox_iam.tf, proxmox_host.tf) ─────────────────
+# Copy each from the host (README "Proxmox API objects"); privsep of the `tofu` token
+# (this site: 0, so the token inherits the user's ACLs and the entries carry user_id).
+proxmox_token_privilege_separation = false
+
+# One entry per row of `pveum acl list` for terraform@pve; exactly one of user_id / token_id.
+# The paths and roles below are PLACEHOLDERS (documentation shapes): use your host's.
+pve_acls = {
+  # tofu_admin        = { path = "/",                          role_id = "PVEAdmin",       user_id = "terraform@pve" }
+  # tofu_startup      = { path = "/",                          role_id = "TofuStartupOrder", user_id = "terraform@pve" }
+  # tofu_gpu_mapping  = { path = "/mapping/pci/gpu-rtx5060ti", role_id = "PVEMappingUser", user_id = "terraform@pve" }
+}
+
+# `scripts/owner/pve-gpu-passthrough.sh --check` prints this block from sysfs.
+# gpu_pci_mapping = {
+#   name    = "gpu-rtx5060ti"
+#   comment = "RTX 5060 Ti (ai-01)"
+#   map = [
+#     { id = "10de:2d04", node = "pve01", path = "0000:01:00.0", iommu_group = 14, subsystem_id = "xxxx:yyyy" },
+#     { id = "10de:22eb", node = "pve01", path = "0000:01:00.1", iommu_group = 14, subsystem_id = "xxxx:yyyy" },
+#   ]
+# }
+
 # ── PBS (backup.tf) ─────────────────────────────────────────────────────────
 # Certificate fingerprint as `ansible-playbook pve-host.yml --tags pbs` prints it (not a secret).
 pbs_fingerprint = "00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff"
