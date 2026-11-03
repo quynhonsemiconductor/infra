@@ -187,52 +187,23 @@
           {{ (pbs_tokens.rc != 0) or
              ((pbs_tokens.stdout | from_json | selectattr('tokenid', 'equalto', pbs_pve_user ~ '!' ~ pbs_pve_token_name) | list | length) == 0) }}
 
-    - name: Check that 1Password is reachable BEFORE a secret is created
-      ansible.builtin.command: op whoami
-      delegate_to: localhost
-      become: false
-      changed_when: false
-      check_mode: false
-      no_log: true
-      when:
-        - pbs_token_missing | bool
-        - pbs_token_to_onepassword | bool
+    # The secret exists once, at creation. Ansible never creates it: `op` with 1Password app integration only works
+    # in the owner's own terminal, not in a subprocess Ansible starts. The owner runs the printed pipe (PBS API ->
+    # jq -> op item create, secret only in memory), then re-runs this role, which grants the ACL.
+    - name: Stop with the command that creates the token and stores it in 1Password
+      ansible.builtin.fail:
+        msg: |
+          API token {{ pbs_pve_user }}!{{ pbs_pve_token_name }} does not exist. Create it from your own terminal
+          (op signed in), then re-run this role:
 
-    - name: Create the token and hand the secret to 1Password through stdin
+          set -o pipefail; op whoami >/dev/null && \
+          t=$(ssh {{ ansible_user | default('root') }}@{{ ansible_host }} 'proxmox-backup-debug api create /access/users/{{ pbs_pve_user }}/token/{{ pbs_pve_token_name }} --output-format json') && \
+          printf %s "$t" | jq -e '(.value|length>0) and (.tokenid=="{{ pbs_pve_user }}!{{ pbs_pve_token_name }}")' >/dev/null && \
+          printf %s "$t" | jq '{title:"{{ pbs_onepassword_item_title }}",category:"API_CREDENTIAL",fields:[{id:"credential",label:"secret",type:"CONCEALED",value:.value},{id:"tokenid",label:"token id",type:"STRING",value:.tokenid}]}' \
+          | op item create --vault {{ pbs_onepassword_vault }} >/dev/null && echo STORED; unset t
       when:
         - pbs_token_missing | bool
-        - pbs_token_to_onepassword | bool
         - not ansible_check_mode
-      block:
-        - name: Generate the API token (the secret is returned once)
-          ansible.builtin.command: >-
-            proxmox-backup-manager user generate-token {{ pbs_pve_user }} {{ pbs_pve_token_name }} --output-format json
-          register: pbs_token_created
-          changed_when: true
-          no_log: true
-
-        - name: Store it in 1Password (stdin, never argv)
-          ansible.builtin.command:
-            cmd: "op item create --vault {{ pbs_onepassword_vault | quote }}"
-            stdin: >-
-              {{ {'title': pbs_onepassword_item_title, 'category': 'API_CREDENTIAL',
-                  'fields': [
-                    {'id': 'credential', 'label': 'secret', 'type': 'CONCEALED', 'value': (pbs_token_created.stdout | from_json).value},
-                    {'id': 'tokenid', 'label': 'token id', 'type': 'STRING', 'value': (pbs_token_created.stdout | from_json).tokenid}
-                  ]} | to_json }}
-          delegate_to: localhost
-          become: false
-          changed_when: true
-          no_log: true
-      rescue:
-        - name: Roll the token back (its secret was not stored)
-          ansible.builtin.command: "proxmox-backup-manager user delete-token {{ pbs_pve_user }} {{ pbs_pve_token_name }}"
-          changed_when: true
-          failed_when: false
-
-        - name: Stop
-          ansible.builtin.fail:
-            msg: "The token could not be stored in 1Password; it was deleted again. Fix `op` and re-run."
 
     - name: Grant DatastoreBackup on the datastore to the token
       ansible.builtin.command: >-
@@ -240,7 +211,7 @@
         --auth-id {{ pbs_pve_user }}!{{ pbs_pve_token_name }}
       # After the token exists: PBS refuses an ACL for a token it does not know ("no such API token").
       when:
-        - (not (pbs_token_missing | bool)) or (pbs_token_created is changed)
+        - not (pbs_token_missing | bool)
         - >-
           (pbs_acls.stdout | from_json
             | selectattr('path', 'equalto', '/datastore/' ~ pbs_datastore_name)
@@ -248,12 +219,12 @@
             | selectattr('roleid', 'equalto', pbs_pve_role) | list | length) == 0
       changed_when: true
 
-    - name: Report that a token is still missing (check mode or 1Password disabled)
+    - name: Report that a token is still missing (check mode)
       ansible.builtin.debug:
         msg: "API token {{ pbs_pve_user }}!{{ pbs_pve_token_name }} does not exist yet."
       when:
         - pbs_token_missing | bool
-        - ansible_check_mode or not (pbs_token_to_onepassword | bool)
+        - ansible_check_mode
 
 # ── what OpenTofu needs next ────────────────────────────────────────────────
 - name: Read the PBS certificate fingerprint
