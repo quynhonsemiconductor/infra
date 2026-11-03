@@ -51,7 +51,9 @@ is a variable in the local inventory:
   `linux-headers-virtual`, `linux-virtual`, `linux-headers-generic`).
 - `kernel_pin_version: ""` (default): `GRUB_DEFAULT=0`, the meta packages are unheld.
 
-Neither role reboots. k3s-01 was pinned by hand on 2026-11-03 to 7.0.0-38; the role reproduces that state.
+Neither role reboots. k3s-01 was pinned by hand on 2026-11-03 to 7.0.0-38 and unpinned the same day: all three
+nodes run 7.0.0-42 with the override (vlsi-01, ai-01, then k3s-01 after a CNPG backup; every workload back, rova
+/readyz 200).
 
 ## Canary: moving off the kernel pin
 
