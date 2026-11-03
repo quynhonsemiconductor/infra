@@ -64,8 +64,23 @@ The override is what makes the pin unnecessary; prove it on the node with the le
    journalctl -k -b | grep 'apparmor="DENIED"' | grep -c 'operation="signal"'   # 0
    ansible-playbook k3s-agent.yml --tags apparmor_containerd_verify -e apparmor_containerd_strict=true
    ```
-   Run a throwaway CNPG cluster (or any multi-process pod) tolerating `qnsc.vn/pool=vlsi:NoSchedule` on it and
-   confirm it becomes Ready and accepts logins; leave it a day.
+   Run a throwaway PostgreSQL pod on it (the workload that hung in the incident) and confirm it accepts logins
+   and checkpoints, with no signal denial:
+   ```sh
+   kubectl create namespace apparmor-canary
+   kubectl -n apparmor-canary run pg --image=postgres:18.6 --env=POSTGRES_HOST_AUTH_METHOD=trust \
+     --overrides='{"spec":{"nodeSelector":{"kubernetes.io/hostname":"vlsi-01"},
+       "tolerations":[{"key":"qnsc.vn/pool","value":"vlsi","effect":"NoSchedule"}]}}' -- -c io_method=worker
+   kubectl -n apparmor-canary wait pod/pg --for=condition=Ready --timeout=180s
+   kubectl -n apparmor-canary exec pg -- cat /proc/1/attr/current      # cri-containerd.apparmor.d//&unconfined
+   time kubectl -n apparmor-canary exec pg -- bash -c \
+     'for i in $(seq 200); do psql -U postgres -h 127.0.0.1 -Atqc "select 1" >/dev/null || exit 1; done;
+      psql -U postgres -Atqc checkpoint'                                 # seconds, not a hang
+   # on the node: journalctl -k -b | grep 'apparmor="DENIED"' | grep -c 'operation="signal"'   -> 0
+   kubectl delete namespace apparmor-canary
+   ```
+   Result 2026-11-03 on vlsi-01, kernel 7.0.0-42, stacked label present: 200 logins and a checkpoint in 8.7 s,
+   0 signal denials. Without the override the same kernel hung logins indefinitely.
 2. **k3s-01**, in a maintenance window (DB snapshot first, the phase-3 window rules apply): remove
    `kernel_pin_version` from its host vars, run `k3s-server.yml --tags apparmor_containerd,kernel`, upgrade the
    kernel, reboot. Verify 0 denials (strict verify as above), every CNPG cluster `Ready`
