@@ -52,15 +52,16 @@ ssh_public_keys = [
 ]
 
 # ── Proxmox API objects (proxmox_iam.tf, proxmox_host.tf) ─────────────────
-# Copy each from the host (README "Proxmox API objects"); privsep of the `tofu` token:
-proxmox_token_privilege_separation = true
+# Copy each from the host (README "Proxmox API objects"); privsep of the `tofu` token
+# (this site: 0, so the token inherits the user's ACLs and the entries carry user_id).
+proxmox_token_privilege_separation = false
 
 # One entry per row of `pveum acl list` for terraform@pve; exactly one of user_id / token_id.
 # The paths and roles below are PLACEHOLDERS (documentation shapes): use your host's.
 pve_acls = {
-  # tofu_admin        = { path = "/",                      role_id = "PVEAdmin",            token_id = "terraform@pve!tofu" }
-  # tofu_startup      = { path = "/",                      role_id = "TofuStartupOrder",    token_id = "terraform@pve!tofu" }
-  # tofu_gpu_mapping  = { path = "/mapping/pci/gpu-rtx5060ti", role_id = "PVEMappingUser", token_id = "terraform@pve!tofu" }
+  # tofu_admin        = { path = "/",                          role_id = "PVEAdmin",       user_id = "terraform@pve" }
+  # tofu_startup      = { path = "/",                          role_id = "TofuStartupOrder", user_id = "terraform@pve" }
+  # tofu_gpu_mapping  = { path = "/mapping/pci/gpu-rtx5060ti", role_id = "PVEMappingUser", user_id = "terraform@pve" }
 }
 
 # `scripts/owner/pve-gpu-passthrough.sh --check` prints this block from sysfs.
