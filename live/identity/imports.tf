@@ -29,3 +29,11 @@ import {
   to = azurerm_consumption_budget_subscription.monthly
   id = "/subscriptions/${var.subscription_id}/providers/Microsoft.Consumption/budgets/qnsc-platform-monthly"
 }
+
+# grp-qnsc-dev-users was created by hand on 2026-11-03 (az ad group create) so the dev web hosts could use it before
+# the next full apply of this stack; the next apply adopts it here (groups.tf) instead of creating a second one.
+# Object ids stay out of this public repo: TF_VAR_grp_dev_users_object_id = the repo variable ENTRA_GRP_DEV_USERS_ID.
+import {
+  to = azuread_group.dev_users
+  id = "/groups/${var.grp_dev_users_object_id}"
+}
