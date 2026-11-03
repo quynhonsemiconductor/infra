@@ -164,3 +164,121 @@
   loop_control:
     label: "{{ item.key }}"
   tags: [pve_base_zfs]
+
+# ── notifications ───────────────────────────────────────────────────────────
+- name: Notifications to Teams
+  when: pve_base_notify_teams | bool
+  tags: [pve_base_notify]
+  vars:
+    # Proxmox renders the URL template with the endpoint secret "url"; !unsafe keeps Ansible off the braces.
+    pve_base_notify_url_template: !unsafe "{{ secrets.url }}"
+    # base64 is what the API takes, and it keeps the Handlebars braces away from Jinja.
+    pve_base_notify_body_b64: "{{ lookup('ansible.builtin.file', 'teams-webhook-body.json') | trim | b64encode }}"
+    pve_base_notify_header: "name=Content-Type,value={{ 'application/json' | b64encode }}"
+    pve_base_notify_api: /cluster/notifications/endpoints/webhook/{{ pve_base_notify_teams_endpoint }}
+  block:
+    - name: Read the Teams webhook endpoint
+      ansible.builtin.command: pvesh get {{ pve_base_notify_api }} --output-format json
+      register: pve_base_notify_current
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Decide what the endpoint needs
+      ansible.builtin.set_fact:
+        pve_base_notify_exists: "{{ pve_base_notify_current.rc == 0 }}"
+        pve_base_notify_drift: >-
+          {{ pve_base_notify_current.rc == 0 and (
+               (pve_base_notify_current.stdout | from_json).url | default('') != pve_base_notify_url_template
+            or (pve_base_notify_current.stdout | from_json).method | default('') != 'post'
+            or (pve_base_notify_current.stdout | from_json).body | default('') != pve_base_notify_body_b64
+            or (pve_base_notify_current.stdout | from_json).header | default([]) != [pve_base_notify_header]
+            or (pve_base_notify_current.stdout | from_json).disable | default(0) | bool) }}
+
+    - name: Refuse to store a webhook URL that is missing or not https
+      ansible.builtin.assert:
+        that: pve_base_notify_teams_webhook_url is match('^https://[^\s]+$')
+        fail_msg: >-
+          TEAMS_WEBHOOK_URL is missing or not an https URL: run under op run (see defaults/main.yml),
+          or set pve_base_notify_teams=false
+        quiet: true
+      no_log: true
+      when: not pve_base_notify_exists | bool or pve_base_notify_teams_rotate | bool
+
+    # The URL goes in through stdin, so it is not in this task's command line (it is in the module arguments Ansible
+    # copies to the host's remote temp dir for the task, removed afterwards). pvesh only takes it as an argument, so it is
+    # in the host's process list (/proc/<pid>/cmdline) for the moment the call runs; pve01 has no other local users.
+    - name: Create the Teams webhook endpoint, or update it (and the secret only on rotate)
+      ansible.builtin.command:
+        argv:
+          - sh
+          - -c
+          - >-
+            set -e; IFS= read -r u || u=;
+            set -- --url "$URL_TEMPLATE" --method post --header "$HEADER" --body "$BODY"
+            --comment "$COMMENT" --disable 0;
+            if [ -n "$u" ]; then set -- "$@" --secret "name=url,value=$(printf %s "$u" | base64 -w0)"; fi;
+            if [ "$MODE" = create ]; then exec pvesh create /cluster/notifications/endpoints/webhook --name "$NAME" "$@";
+            else exec pvesh set "$API" "$@"; fi
+        stdin: "{{ pve_base_notify_teams_webhook_url if (not pve_base_notify_exists | bool or pve_base_notify_teams_rotate | bool) else '' }}"
+      environment:
+        MODE: "{{ 'set' if pve_base_notify_exists | bool else 'create' }}"
+        NAME: "{{ pve_base_notify_teams_endpoint }}"
+        API: "{{ pve_base_notify_api }}"
+        URL_TEMPLATE: "{{ pve_base_notify_url_template }}"
+        HEADER: "{{ pve_base_notify_header }}"
+        BODY: "{{ pve_base_notify_body_b64 }}"
+        COMMENT: "{{ pve_base_managed_comment }}"
+      no_log: true
+      changed_when: true
+      when: not pve_base_notify_exists | bool or pve_base_notify_drift | bool or pve_base_notify_teams_rotate | bool
+
+    - name: Read the Teams matcher
+      ansible.builtin.command: pvesh get /cluster/notifications/matchers/{{ pve_base_notify_teams_matcher }} --output-format json
+      register: pve_base_notify_matcher
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Create or update the matcher (warnings and errors to Teams)
+      ansible.builtin.command:
+        argv: "{{ (pve_base_notify_matcher_set if pve_base_notify_matcher.rc == 0 else pve_base_notify_matcher_create) + pve_base_notify_matcher_args }}"
+      vars:
+        pve_base_notify_matcher_set:
+          - pvesh
+          - set
+          - /cluster/notifications/matchers/{{ pve_base_notify_teams_matcher }}
+          - --delete
+          - match-field,match-calendar,invert-match
+        pve_base_notify_matcher_create:
+          - pvesh
+          - create
+          - /cluster/notifications/matchers
+          - --name
+          - "{{ pve_base_notify_teams_matcher }}"
+        pve_base_notify_matcher_args:
+          - --target
+          - "{{ pve_base_notify_teams_endpoint }}"
+          - --match-severity
+          - "{{ pve_base_notify_teams_severities | join(',') }}"
+          - --mode
+          - all
+          - --comment
+          - "{{ pve_base_managed_comment }}"
+          - --disable
+          - "0"
+        # pvesh may print a list option as a list or as a comma string.
+        pve_base_notify_matcher_sev: >-
+          {{ (pve_base_notify_matcher.stdout | from_json)['match-severity'] | default([])
+             if pve_base_notify_matcher.rc == 0 else [] }}
+      changed_when: true
+      when: >-
+        pve_base_notify_matcher.rc != 0 or (
+             (pve_base_notify_matcher.stdout | from_json).target | default([]) != [pve_base_notify_teams_endpoint]
+          or (pve_base_notify_matcher_sev if pve_base_notify_matcher_sev is string else pve_base_notify_matcher_sev | join(','))
+             | split(',') | sort != pve_base_notify_teams_severities | sort
+          or (pve_base_notify_matcher.stdout | from_json)['match-field'] | default([]) != []
+          or (pve_base_notify_matcher.stdout | from_json)['match-calendar'] | default([]) != []
+          or (pve_base_notify_matcher.stdout | from_json).mode | default('all') != 'all'
+          or (pve_base_notify_matcher.stdout | from_json)['invert-match'] | default(0) | bool
+          or (pve_base_notify_matcher.stdout | from_json).disable | default(0) | bool)

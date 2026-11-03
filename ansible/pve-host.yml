@@ -1,9 +1,10 @@
 ---
 # The Proxmox host OS layer: base (repos, updates, time, ssh, ZFS properties), GPU passthrough host config,
 # PBS co-located. Run with --check --diff first; a host built by hand should show (almost) no change for the
-# GPU/ZFS parts. Tags select a part: pve_base, pve_gpu, pbs (and the finer pve_gpu_verify, pbs_config, ...).
+# GPU/ZFS parts. Tags select a part: pve_base, pve_gpu, pbs (finer: pve_base_notify, pve_gpu_verify, pbs_config, ...).
 #   ansible-playbook pve-host.yml --check --diff
 #   ansible-playbook pve-host.yml --tags pbs
+#   op run --env-file=<local template> -- ansible-playbook pve-host.yml --tags pve_base_notify
 - name: Proxmox host
   hosts: pve
   become: true
