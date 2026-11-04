@@ -14,13 +14,20 @@ scripts/owner/identity-env/identity-env.sh -- tofu plan -out=tfplan   # runs in 
 
 It stops (never guesses) on an empty lookup, a duplicate app name, a non-GUID id, an app-role set other than the
 seven OpsHub roles, a mail certificate whose thumbprint differs from the one live on the app, a private key
-anywhere, or two credentials on the same app that share a start time. Every mail certificate's PUBLIC part is read
-from the Entra app itself (Graph `keyCredentials[].key` on `$select`); the kit never reads Key Vault or 1Password.
-When an app carries more than one credential (KB Dev does since 2026-11-04), the OLDEST by `startDateTime` is the
-one the stack manages as `mail_service["<slot>"]` and every newer one is exported as
-`TF_VAR_mail_service_rotated_certificates`, keyed by keyId. The kit also builds the grant import maps
-`TF_VAR_mail_service_graph_grant_ids` and `TF_VAR_opshub_prod_service_graph_grant_ids` from each app's live
-`appRoleAssignments` on Microsoft Graph (`appRoleAssignedTo` is the other direction and would return nothing useful).
-`eso_certificates` is built the same way, from the certificate live on each ESO app (a stale file would plan a
-replace), only while the stack still declares it. Test (offline, runs in the `Infrastructure · Plan` lint job):
+anywhere, a credential without a `startDateTime`, a credential the stack does not pin, or a pinned credential that
+is not on the app. Every mail certificate's PUBLIC part is read from the Entra app itself (Graph
+`keyCredentials[].key` on `$select`); the kit never reads Key Vault or 1Password.
+
+The credential keyIds are **pinned in `live/identity/mail.tf`** (`local.mail_service_cert_key_ids` and
+`local.mail_service_rotated_cert_key_ids`), never derived and never supplied by a variable: a missing value there
+would empty a resource's `for_each` and destroy a live credential. The kit parses those two blocks (two-space
+indent, one entry per line — keep the shape), asserts them against Entra, and exports only the PEM maps
+(`TF_VAR_mail_service_certificates`, `TF_VAR_mail_service_rotated_certificates`, keyed by the pinned keyIds). The
+one identifier it ever prints is the keyId of an unpinned live credential, so the owner can pin it.
+
+The kit also builds the grant import maps `TF_VAR_mail_service_graph_grant_ids` and
+`TF_VAR_opshub_prod_service_graph_grant_ids` from each app's live `appRoleAssignments` on Microsoft Graph
+(`appRoleAssignedTo` is the other direction and would return nothing useful). `eso_certificates` is built the same
+way, from the certificate live on each ESO app (a stale file would plan a replace), only while the stack still
+declares it. Test (offline, runs in the `Infrastructure · Plan` lint job):
 `bash scripts/owner/identity-env/test_identity_env.sh`.

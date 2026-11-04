@@ -14,6 +14,31 @@ for c in jq openssl xxd; do command -v "$c" >/dev/null || { echo "need $c"; exit
 g() { printf '%08x-0000-4000-8000-%012x' "$1" "$2"; }   # deterministic GUIDs: g <n> <m>
 mkcert() { openssl req -x509 -newkey rsa:2048 -nodes -keyout "$T/$1.key" -out "$T/$1.crt" -subj "/CN=stub-$1" -days 2 >/dev/null 2>&1; }
 b64thumb() { openssl x509 -in "$1" -noout -fingerprint -sha1 | sed 's/.*=//; s/://g' | tr 'A-F' 'a-f' | xxd -r -p | base64 | tr -d '\n'; }
+slot_i() { case "$1" in rova_prod) echo 1;; rova_dev) echo 2;; opshub_dev) echo 3;; kb_dev) echo 4;; esac; }
+keysf() { echo "$FX/keys-$(g 20 "$(slot_i "$1")").json"; }
+addcred() { # addcred <slot> <cert> <keyId> <startDateTime>: append a credential (a rotation)
+  local f; f=$(keysf "$1")
+  jq -c --arg kid "$3" --arg th "$(b64thumb "$2")" --arg st "$4" \
+    --arg key "$(openssl x509 -in "$2" -outform DER | base64 | tr -d '\n')" \
+    '.+[{keyId:$kid,customKeyIdentifier:$th,startDateTime:$st,key:$key}]' "$f" >"$FX/x" && mv "$FX/x" "$f"
+}
+pins() { # pins [rotated keyIds for kb_dev ...]: write the pinned maps the kit parses out of mail.tf
+  local ids='' id
+  for id in "$@"; do ids="$ids\"$id\", "; done
+  cat >"$T/stack/mail.tf" <<EOF
+locals {
+  mail_service_cert_key_ids = {
+    rova_prod  = "$(g 22 1)"
+    rova_dev   = "$(g 22 2)"
+    opshub_dev = "$(g 22 3)"
+    kb_dev     = "$(g 22 4)"
+  }
+  mail_service_rotated_cert_key_ids = {
+    kb_dev = [${ids%, }]
+  }
+}
+EOF
+}
 
 KEYS=(rova_prod rova_dev opshub_dev kb_dev); i=0
 signin_name() { case "$1" in rova_prod) echo "Rova Prod";; rova_dev) echo "Rova Dev";; opshub_dev) echo "OpsHub Dev";; kb_dev) echo "KB Dev";; esac; }
@@ -38,8 +63,8 @@ build() { # build the fixture set from scratch
     jq -n --arg id "$(g 20 $i)" --arg app "$(g 21 $i)" --arg kid "$(g 22 $i)" --arg th "$(b64thumb "$T/$k.crt")" \
       '{id:$id,appId:$app,keyCredentials:[{keyId:$kid,customKeyIdentifier:$th}]}' >"$FX/app-$(signin_name "$k" | tr " " -)-Service"
     jq -n --arg app "$(g 21 $i)" --arg sp "$(g 23 $i)" '[{id:$sp,appId:$app}]' >"$FX/sp-$(g 21 $i)"
-    # the Graph shape: keyCredentials[].key is base64 DER of the PUBLIC certificate, with the SHA-1 thumbprint
-    # in customKeyIdentifier and one startDateTime per credential (the kit picks the OLDEST as the managed one)
+    # the Graph shape: keyCredentials[].key is base64 DER of the PUBLIC certificate, with the SHA-1 thumbprint in
+    # customKeyIdentifier and a startDateTime per credential (pinned in mail.tf; the kit never classifies)
     jq -n --arg kid "$(g 22 $i)" --arg th "$(b64thumb "$T/$k.crt")" --arg st "2026-10-0${i}T00:00:00Z" \
       --arg key "$(openssl x509 -in "$T/$k.crt" -outform DER | base64 | tr -d '\n')" \
       '[{keyId:$kid,customKeyIdentifier:$th,startDateTime:$st,key:$key}]' >"$FX/keys-$(g 20 $i).json"
@@ -58,6 +83,10 @@ build() { # build the fixture set from scratch
   for r in admin it-admin security hr manager helpdesk auditor; do n=$((n+1)); roles=$(jq -c --arg r "$r" --arg id "$(g 30 $n)" '.+[{value:$r,id:$id,isEnabled:true}]' <<<"$roles"); done
   jq --argjson r "$roles" '.appRoles=$r' "$FX/app-OpsHub-Dev" >"$FX/x" && mv "$FX/x" "$FX/app-OpsHub-Dev"
   for k in "${KEYS[@]}"; do for f in app-$(signin_name "$k" | tr " " -) app-$(signin_name "$k" | tr " " -)-Service; do jq -c '[.]' "$FX/$f" >"$FX/$f.list"; done; done
+  # The live shape on 2026-11-04: KB Dev Service carries a SECOND, pinned credential.
+  mkcert extra
+  addcred kb_dev "$T/extra.crt" "$(g 22 99)" 2026-11-04T00:00:00Z
+  pins "$(g 22 99)"
 }
 cat >"$BIN/az" <<'STUB'
 #!/usr/bin/env bash
@@ -104,24 +133,29 @@ expect_stop() { # expect_stop <label> <expected fragment>
   leak_scan "$out" "$1"
 }
 
-# 1. happy path: names + lengths, 20 variables, no value anywhere
+# 1. happy path: names + lengths, 19 variables, no value anywhere
 build
 OUT="$T/out.happy"; run bash "$SCRIPT" >"$OUT" 2>&1 || { cat "$OUT"; fail "happy path exited non-zero"; }
-grep -q 'identity env OK: 20 variables' "$OUT" || { cat "$OUT"; fail "variable count"; }
+grep -q 'identity env OK: 19 variables' "$OUT" || { cat "$OUT"; fail "variable count"; }
 for v in subscription_id budget_period_start budget_period_end break_glass_upn_domain platform_admins_object_id grp_dev_users_object_id \
   owner_operator_object_id second_owner_object_id proxmox_admin_object_ids proxmox_redirect_uris existing_object_ids existing_sp_object_ids \
-  mail_service_object_ids mail_service_sp_object_ids opshub_dev_app_role_ids mail_service_cert_key_ids mail_service_certificates \
+  mail_service_object_ids mail_service_sp_object_ids opshub_dev_app_role_ids mail_service_certificates \
   mail_service_rotated_certificates mail_service_graph_grant_ids; do
   grep -qE "TF_VAR_$v +[0-9]+$" "$OUT" || fail "missing TF_VAR_$v in the report"
 done
+grep -qE 'TF_VAR_mail_service_cert_key_ids' "$OUT" && fail "the keyIds are pinned in code, the kit must not export them" || true
 grep -qE 'ARM_SUBSCRIPTION_ID +36$' "$OUT" || fail "ARM_SUBSCRIPTION_ID not exported with length 36"
 leak_scan "$OUT" happy
 [ "$(grep -c "2026-10-01T00:00:00Z" "$OUT")" = 0 ] || fail "a value was printed"
 
 # 2. run mode: the child sees the values (checked by shape, nothing printed), cwd is the stack dir
 CH="$T/child.out"
-run bash "$SCRIPT" -- bash -c 'jq -e "(.dev|length)>0" >/dev/null 2>&1 <<<"{}" ; [[ "$TF_VAR_budget_period_start" == 2026-10-01T00:00:00Z && "$TF_VAR_budget_period_end" == 2028-09-30T00:00:00Z ]] && [[ "$TF_VAR_proxmox_redirect_uris" == "[\"https://pve.example.test/\"]" ]] && jq -e "length==2" <<<"$TF_VAR_proxmox_admin_object_ids" >/dev/null && jq -e "length==4" <<<"$TF_VAR_mail_service_certificates" >/dev/null && jq -e "length==0" <<<"$TF_VAR_mail_service_rotated_certificates" >/dev/null && jq -e "length==4" <<<"$TF_VAR_mail_service_graph_grant_ids" >/dev/null && jq -e ".[\"rova_prod/User.Invite.All\"] != null and .[\"opshub_dev/User.Read.All\"] != null" <<<"$TF_VAR_mail_service_graph_grant_ids" >/dev/null && [[ "$TF_VAR_break_glass_upn_domain" == tenant.example ]] && jq -e ".admin and .auditor" <<<"$TF_VAR_opshub_dev_app_role_ids" >/dev/null && pwd' >"$CH" 2>&1 || { cat "$CH"; fail "child did not get the right env"; }
+run bash "$SCRIPT" -- bash -c 'jq -e "(.dev|length)>0" >/dev/null 2>&1 <<<"{}" ; [[ "$TF_VAR_budget_period_start" == 2026-10-01T00:00:00Z && "$TF_VAR_budget_period_end" == 2028-09-30T00:00:00Z ]] && [[ "$TF_VAR_proxmox_redirect_uris" == "[\"https://pve.example.test/\"]" ]] && jq -e "length==2" <<<"$TF_VAR_proxmox_admin_object_ids" >/dev/null && jq -e "length==4" <<<"$TF_VAR_mail_service_certificates" >/dev/null && jq -e "length==1 and (.[\"'$(g 22 99)'\"] != null)" <<<"$TF_VAR_mail_service_rotated_certificates" >/dev/null && jq -e "length==4" <<<"$TF_VAR_mail_service_graph_grant_ids" >/dev/null && jq -e ".[\"rova_prod/User.Invite.All\"] != null and .[\"opshub_dev/User.Read.All\"] != null" <<<"$TF_VAR_mail_service_graph_grant_ids" >/dev/null && [[ "$TF_VAR_break_glass_upn_domain" == tenant.example ]] && jq -e ".admin and .auditor" <<<"$TF_VAR_opshub_dev_app_role_ids" >/dev/null && pwd' >"$CH" 2>&1 || { cat "$CH"; fail "child did not get the right env"; }
 [ "$(cat "$CH")" = "$T/stack" ] || fail "child cwd is not the stack dir"
+# the rotated certificate reaches the child byte for byte under its pinned keyId
+run bash "$SCRIPT" -- sh -c 'printf "%s" "$TF_VAR_mail_service_rotated_certificates"' >"$T/rot.json" 2>/dev/null || fail "rotated child"
+jq -j --arg k "$(g 22 99)" '.[$k]' "$T/rot.json" >"$T/rot.pem"
+cmp -s "$T/rot.pem" "$T/extra.crt" || fail "rotated PEM not passed byte for byte"
 
 # 2b. no temp dir survives, in check mode or after a child run (the script must not exec away its cleanup trap)
 build; TD="$T/tmpd"; mkdir -p "$TD"
@@ -140,16 +174,8 @@ build; rm "$FX/app-KB-Dev.list"; expect_stop "app missing" "az lookup empty: app
 build; jq -c '. + .' "$FX/app-Rova-Dev.list" >"$FX/x" && mv "$FX/x" "$FX/app-Rova-Dev.list"; expect_stop "duplicate app" "expected exactly 1 app named 'Rova Dev'"
 build; echo '[{"id":"not-a-guid","appId":"x"}]' | jq -c '.' >"$FX/sp-$(g 11 1)"; expect_stop "bad SP id" "SP object id is not a GUID"
 build; jq -c '[.[0]|.appRoles|=map(select(.value!="hr"))]' "$FX/app-OpsHub-Dev.list" >"$FX/x" && mv "$FX/x" "$FX/app-OpsHub-Dev.list"; expect_stop "missing app role" "OpsHub Dev must carry exactly the 7 app roles"
-slot_i() { case "$1" in rova_prod) echo 1;; rova_dev) echo 2;; opshub_dev) echo 3;; kb_dev) echo 4;; esac; }
-keysf() { echo "$FX/keys-$(g 20 "$(slot_i "$1")").json"; }
 setcki() { local f; f=$(keysf "$1"); jq -c --arg th "$(b64thumb "$2")" '.[0].customKeyIdentifier=$th' "$f" >"$FX/x" && mv "$FX/x" "$f"; }
 sethexcki() { local f; f=$(keysf "$1"); jq -c --arg th "$(openssl x509 -in "$2" -noout -fingerprint -sha1 | sed 's/.*=//; s/://g')" '.[0].customKeyIdentifier=$th' "$f" >"$FX/x" && mv "$FX/x" "$f"; }
-addcred() { # addcred <slot> <cert> <startDateTime>: append a SECOND credential (a rotation)
-  local f; f=$(keysf "$1")
-  jq -c --arg kid "$(g 22 99)" --arg th "$(b64thumb "$2")" --arg st "$3" \
-    --arg key "$(openssl x509 -in "$2" -outform DER | base64 | tr -d '\n')" \
-    '.+[{keyId:$kid,customKeyIdentifier:$th,startDateTime:$st,key:$key}]' "$f" >"$FX/x" && mv "$FX/x" "$f"
-}
 build; mkcert other; setcki opshub_dev "$T/other.crt"; expect_stop "wrong thumbprint" "mail cert opshub_dev thumbprint differs"
 build; rm "$(keysf kb_dev)"; expect_stop "no key on the app" "service app kb_dev carries no key credential"
 build; mkcert other; setcki rova_prod "$T/other.crt"; expect_stop "prod cert differs" "mail cert rova_prod thumbprint differs"
@@ -159,18 +185,29 @@ run bash "$SCRIPT" >"$T/out.hex" 2>&1 || { cat "$T/out.hex"; fail "hex customKey
 build; mkcert other; sethexcki rova_prod "$T/other.crt"
 out="$T/out.hexbad"; if run bash "$SCRIPT" >"$out" 2>&1; then fail "wrong hex customKeyIdentifier accepted"; fi
 grep -q "mail cert rova_prod thumbprint differs" "$out" || fail "wrong hex customKeyIdentifier reason"
-# a SECOND credential (the 2026-11-04 KB Dev rotation) is adopted by keyId; the OLDEST stays the managed one
-build; mkcert extra; addcred kb_dev "$T/extra.crt" 2026-11-04T00:00:00Z
-run bash "$SCRIPT" -- sh -c 'printf "%s" "$TF_VAR_mail_service_rotated_certificates"' >"$T/rot.json" 2>"$T/rot.err" \
-  || { cat "$T/rot.err"; fail "two credentials rejected"; }
-jq -e --arg k "$(g 22 99)" 'keys==[$k] and .[$k].app_slot=="kb_dev"' "$T/rot.json" >/dev/null || fail "rotated credential not keyed by keyId"
-jq -j --arg k "$(g 22 99)" '.[$k].certificate' "$T/rot.json" >"$T/rot.pem"
-cmp -s "$T/rot.pem" "$T/extra.crt" || fail "rotated PEM not passed byte for byte"
-run bash "$SCRIPT" -- sh -c 'printf "%s" "$TF_VAR_mail_service_cert_key_ids"' >"$T/ids.json" 2>/dev/null || fail "ids child"
-jq -e --arg k "$(g 22 4)" '.kb_dev==$k' "$T/ids.json" >/dev/null || fail "the newer credential took the managed primary slot"
-# two credentials with the SAME start time cannot be told apart: stop
-build; mkcert extra; addcred kb_dev "$T/extra.crt" 2026-10-04T00:00:00Z
-expect_stop "same start time" "same start time"
+# a pinned credential that is NOT live stops (pins are the source of truth)
+build; pins "$(g 22 98)"; expect_stop "pinned credential missing" "a credential pinned for kb_dev is not on the app"
+# an unpinned live credential stops and prints its keyId (the ONE identifier the kit ever prints)
+build; mkcert third; addcred kb_dev "$T/third.crt" "$(g 22 98)" 2026-12-01T00:00:00Z
+out="$T/out.unpinned"
+if run bash "$SCRIPT" >"$out" 2>&1; then fail "unpinned credential accepted"; fi
+grep -q "STOP: .*UNPINNED credential $(g 22 98)" "$out" || { cat "$out"; fail "unpinned credential reason"; }
+# a null/empty startDateTime stops (incomplete credential data)
+build; jq -c '.[1].startDateTime=null' "$(keysf kb_dev)" >"$FX/x" && mv "$FX/x" "$(keysf kb_dev)"
+expect_stop "null startDateTime" "has no startDateTime"
+# the Credentials array has no promised order: reversed input exports the same maps
+build; jq -c 'reverse' "$(keysf kb_dev)" >"$FX/x" && mv "$FX/x" "$(keysf kb_dev)"
+run bash "$SCRIPT" -- sh -c 'printf "%s" "$TF_VAR_mail_service_rotated_certificates"' >"$T/rot.rev.json" 2>/dev/null \
+  || fail "reversed array rejected"
+jq -e --arg k "$(g 22 99)" 'keys==[$k]' "$T/rot.rev.json" >/dev/null || fail "reversed array changed the exports"
+# three credentials, two pinned as rotated
+build; mkcert third; addcred kb_dev "$T/third.crt" "$(g 22 98)" 2026-12-01T00:00:00Z; pins "$(g 22 99)" "$(g 22 98)"
+run bash "$SCRIPT" -- sh -c 'printf "%s" "$TF_VAR_mail_service_rotated_certificates"' >"$T/rot3.json" 2>/dev/null \
+  || fail "three credentials rejected"
+jq -e --arg a "$(g 22 99)" --arg b "$(g 22 98)" 'keys|sort==([$a,$b]|sort)' "$T/rot3.json" >/dev/null || fail "three credentials exports"
+# the pin map must name every app slot
+build; grep -v 'rova_dev' "$T/stack/mail.tf" >"$T/m" && mv "$T/m" "$T/stack/mail.tf"
+expect_stop "missing pinned slot" "must pin exactly these slots"
 build; echo '{"value":[{"verifiedDomains":[{"name":"a","isDefault":true,"isInitial":false}]}]}' >"$FX/org"; expect_stop "no initial domain" "lookup for TF_VAR_break_glass_upn_domain is empty"
 build; echo '[{"@odata.type":"#microsoft.graph.group","id":"x"}]' >"$FX/members"; expect_stop "no admin users" "grp-qnsc-platform-admins has no user members"
 build; out="$T/out.noupn"; if PATH="$BIN:$PATH" FX="$FX" IDENTITY_STACK_DIR="$T/stack" IDENTITY_PROXMOX_HOST=h.test bash "$SCRIPT" >"$out" 2>&1; then fail "missing UPN did not stop"; fi
@@ -187,7 +224,7 @@ esofix() { local j=40 p; for p in dev prod platform; do j=$((j+1)); mkcert "eso-
 build; echo 'variable "eso_certificates" {}' >"$T/stack/eso.tf"
 expect_stop "eso app missing" "az lookup empty: eso app dev"
 build; esofix; OUT="$T/out.eso"; run bash "$SCRIPT" >"$OUT" 2>&1 || { cat "$OUT"; fail "eso happy path"; }
-grep -q 'identity env OK: 21 variables' "$OUT" || fail "eso variable count"
+grep -q 'identity env OK: 20 variables' "$OUT" || fail "eso variable count"
 grep -qE 'TF_VAR_eso_certificates +[0-9]+$' "$OUT" || fail "eso variable not built"
 leak_scan "$OUT" "eso happy path"
 # the PEM text uploaded by the provider reaches the child byte for byte (trailing newline included): no replace planned

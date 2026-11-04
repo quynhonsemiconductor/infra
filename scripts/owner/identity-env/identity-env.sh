@@ -118,6 +118,40 @@ jq -e 'keys==["admin","auditor","helpdesk","hr","it-admin","manager","security"]
 put TF_VAR_opshub_dev_app_role_ids "$ROLES"
 
 # --- mail service certificates: public PEM per app, bound to the keyId and thumbprint Entra holds -----------
+# --- mail service certificates: the PINNED keyIds are the source of truth; the kit only ASSERTS ----------------
+# The keyIds live in mail.tf (two-space indent, one entry per line) because a value arriving through a variable can
+# be missing or mistyped, and that empties a resource's for_each: the apply would DESTROY the live credential.
+# Here the kit only checks that every pinned credential is live, that nothing unknown is live, and that the data is
+# complete; it never decides which credential belongs where.
+MAIL_TF="$STACK/mail.tf"
+[[ -r "$MAIL_TF" ]] || die "mail.tf not found in $STACK"
+pinned_primary() { # "<slot> <keyId>" lines of local.mail_service_cert_key_ids
+  sed -n '/^  mail_service_cert_key_ids = {/,/^  }/p' "$MAIL_TF" \
+    | grep -oE '^ +[a-z_]+ *= *"[0-9a-f-]{36}"' \
+    | sed -E 's/^ +([a-z_]+) *= *"([0-9a-f-]{36})"/\1 \2/'
+}
+pinned_rotated() { # "<slot> <keyId>" lines of local.mail_service_rotated_cert_key_ids
+  sed -n '/^  mail_service_rotated_cert_key_ids = {/,/^  }/p' "$MAIL_TF" \
+    | grep -E '^ +[a-z_]+ *=.*[0-9a-f]{8}-' \
+    | while IFS= read -r l; do
+        s=$(sed -E 's/^ +([a-z_]+) *=.*/\1/' <<<"$l")
+        grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' <<<"$l" \
+          | while read -r i; do echo "$s $i"; done
+      done
+}
+pins_file() { awk -v s="$1" '$1==s{print $2}' <<<"$PINS"; }
+PRIMARY_PINS=$(pinned_primary); ROTATED_PINS=$(pinned_rotated)
+[[ -n "$PRIMARY_PINS" ]] || die "no pinned certificate keyIds in $MAIL_TF"
+PINS="$PRIMARY_PINS
+$ROTATED_PINS"
+want=$(printf '%s\n' "${KEYS[@]}" | sort | tr '\n' ' ')
+have=$(awk 'NF{print $1}' <<<"$PRIMARY_PINS" | sort | tr '\n' ' ')
+[[ "$want" == "$have" ]] || die "mail_service_cert_key_ids must pin exactly these slots: ${KEYS[*]}"
+while read -r slot id; do
+  [[ -n "$slot" ]] || continue
+  case " ${KEYS[*]} " in *" $slot "*) ;; *) die "mail_service_rotated_cert_key_ids pins an unknown slot: $slot" ;; esac
+done <<<"$ROTATED_PINS"
+
 thumb_of_pem() { openssl x509 -noout -fingerprint -sha1 2>/dev/null | sed 's/.*=//; s/://g' | tr 'A-F' 'a-f'; }
 # key_pem <base64 key> <out file>: Graph's keyCredentials[].key is base64 of whatever was uploaded: DER (portal, az)
 # or the PEM text itself (the azuread provider with encoding = "pem"). PEM is kept byte for byte (trailing newline
@@ -128,7 +162,7 @@ key_pem() {
   else openssl x509 -inform DER -outform PEM -in "$2.raw" -out "$2" 2>/dev/null || return 1; rm -f "$2.raw"; fi
   ! grep -q 'PRIVATE KEY' "$2" && openssl x509 -in "$2" -noout 2>/dev/null
 }
-KEYIDS='{}'; CERTS='{}'; ROTATED='{}'
+CERTS='{}'; ROTATED='{}'
 for k in "${KEYS[@]}"; do
   f="$APPS_DIR/service-$k.json"
   oid=$(jq -r '.id // empty' "$f"); need_guid "service $k object id" "$oid"
@@ -138,36 +172,41 @@ for k in "${KEYS[@]}"; do
     | jq -c '.keyCredentials')
   n=$(jq 'length' <<<"$kc")
   [[ "$n" -ge 1 ]] || die "service app $k carries no key credential"
-  # The stack manages the OLDEST credential under mail_service[<slot>] (it was the only one when first imported);
-  # every newer one is an ADDITIONAL credential, adopted by keyId. Order by start time, never by array position:
-  # Graph does not promise an order. Two credentials with the same start time cannot be told apart: stop.
-  if [[ "$n" -gt 1 && "$(jq '[.[].startDateTime] | unique | length' <<<"$kc")" != "$n" ]]; then
-    die "service app $k has two key credentials with the same start time"
-  fi
-  primary=$(jq -r 'sort_by(.startDateTime) | .[0].keyId // empty' <<<"$kc")
-  need_guid "service $k keyId" "$primary"
+  : >"$APPS_DIR/ids-$k"
   j=0
-  while IFS=$'\t' read -r kid cki key; do
+  # Non-whitespace IFS: a whitespace IFS collapses empty fields, which would shift a null startDateTime into `key`.
+  while IFS='|' read -r kid cki start key; do
     j=$((j+1))
     need_guid "service $k keyId" "$kid"
+    [[ -n "$start" ]] || die "service app $k credential $j has no startDateTime"
     # customKeyIdentifier is normally base64 of the SHA-1 bytes; a cert added with the HEX thumbprint where base64
     # was expected (rova-prod, by hand) comes back as those 40 hex characters. Accept both forms.
     if [[ "$cki" =~ ^[0-9A-Fa-f]{40}$ ]]; then want=$(tr 'A-F' 'a-f' <<<"$cki")
     else want=$(printf '%s' "$cki" | base64 -d 2>/dev/null | xxd -p | tr -d '\n'); fi
     [[ -n "$want" ]] || die "service $k credential $j has no customKeyIdentifier (thumbprint)"
-    pem="$APPS_DIR/mail-$k-$kid.pem"
+    pem="$APPS_DIR/cred-$kid.pem"
     if [[ -z "$key" ]] || ! key_pem "$key" "$pem"; then die "lookup failed: mail cert $k"; fi
     have=$(thumb_of_pem <"$pem")
     [[ -n "$have" && "$have" == "$want" ]] || die "mail cert $k thumbprint differs from the certificate live on the app (a replace would be planned)"
-    if [[ "$kid" == "$primary" ]]; then
-      KEYIDS=$(jq -c --arg k "$k" --arg v "$kid" '.[$k]=$v' <<<"$KEYIDS")
-      CERTS=$(jq -c --arg k "$k" --rawfile v "$pem" '.[$k]=$v' <<<"$CERTS")
-    else
-      ROTATED=$(jq -c --arg id "$kid" --arg a "$k" --rawfile v "$pem" '.[$id]={app_slot:$a, certificate:$v}' <<<"$ROTATED")
-    fi
-  done < <(jq -r '.[] | [.keyId, (.customKeyIdentifier // ""), (.key // "")] | @tsv' <<<"$kc")
+    printf '%s\n' "$kid" >>"$APPS_DIR/ids-$k"
+  done < <(jq -r '.[] | [.keyId, (.customKeyIdentifier // ""), (.startDateTime // ""), (.key // "")] | join("|")' <<<"$kc")
+  # Every pinned credential must be on this app...
+  while read -r id; do
+    [[ -n "$id" ]] || continue
+    grep -qx "$id" "$APPS_DIR/ids-$k" || die "a credential pinned for $k is not on the app (check mail.tf)"
+  done < <(pins_file "$k")
+  # ...and nothing unpinned may be live: adding a credential is a reviewed mail.tf change, never a silent extra.
+  while read -r id; do
+    awk 'NF{print $2}' <<<"$PINS" | grep -qx "$id" \
+      || die "service app $k carries an UNPINNED credential $id — add its keyId to mail.tf (local.mail_service_rotated_cert_key_ids) before planning"
+  done <"$APPS_DIR/ids-$k"
+  primary=$(pins_file "$k" | head -1)
+  CERTS=$(jq -c --arg k "$k" --rawfile v "$APPS_DIR/cred-$primary.pem" '.[$k]=$v' <<<"$CERTS")
 done
-put TF_VAR_mail_service_cert_key_ids "$KEYIDS"
+while read -r slot id; do
+  [[ -n "$id" ]] || continue
+  ROTATED=$(jq -c --arg id "$id" --rawfile v "$APPS_DIR/cred-$id.pem" '.[$id]=$v' <<<"$ROTATED")
+done <<<"$ROTATED_PINS"
 put TF_VAR_mail_service_certificates "$CERTS"
 put TF_VAR_mail_service_rotated_certificates "$ROTATED"
 

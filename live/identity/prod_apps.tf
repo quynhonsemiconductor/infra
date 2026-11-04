@@ -72,6 +72,22 @@ resource "azuread_application" "opshub_prod" {
 
   owners = [var.owner_operator_object_id, var.second_owner_object_id]
 
+  # The seven roles, INLINE like the dev app (apps.tf) — one owner. The ids are
+  # derived (local.opshub_prod_app_role_ids) and equal the live ones, so this
+  # block plans 0 change; azuread 3.x does not treat app_roles as Computed, so
+  # they MUST be modelled or an apply removes them.
+  dynamic "app_role" {
+    for_each = local.opshub_prod_app_role_ids
+    content {
+      id                   = app_role.value
+      allowed_member_types = local.opshub_app_roles[app_role.key].allowed_member_types
+      description          = local.opshub_app_roles[app_role.key].description
+      display_name         = local.opshub_app_roles[app_role.key].display_name
+      enabled              = true
+      value                = app_role.key
+    }
+  }
+
   # A 9-add partial apply (sign-in app only, service app skipped) must be
   # impossible: the prod pair is applied together or not at all. The owner
   # supplies the PUBLIC certificate in the same plan.
@@ -80,14 +96,6 @@ resource "azuread_application" "opshub_prod" {
       condition     = var.opshub_prod_service_certificate != null
       error_message = "set TF_VAR_opshub_prod_service_certificate: expected plan is 12 add"
     }
-
-    # The seven roles are managed one object at a time by
-    # azuread_application_app_role.opshub_prod (the id is derived, the same
-    # shape the dev app carries inline). azuread 3.10 reads them back into the
-    # APPLICATION, and as app_roles are not Computed it plans their removal on
-    # every run (seen on 2026-11-04, after the first apply) — an apply would
-    # delete the live roles. The inline view is not authoritative here.
-    ignore_changes = [app_role]
   }
 }
 
@@ -103,15 +111,24 @@ locals {
   }
 }
 
-resource "azuread_application_app_role" "opshub_prod" {
-  for_each = local.opshub_prod_app_role_ids
-
-  application_id       = azuread_application.opshub_prod.id
-  role_id              = each.value
-  allowed_member_types = local.opshub_app_roles[each.key].allowed_member_types
-  description          = local.opshub_app_roles[each.key].description
-  display_name         = local.opshub_app_roles[each.key].display_name
-  value                = each.key
+# The same seven roles used to be seven separate
+# azuread_application_app_role resources (2026-11-04, #337). They are now inline
+# above, so their state entries are FORGOTTEN without touching Entra: the
+# objects exist and the application resource owns them. `destroy = false` is
+# mandatory — an omitted block would delete the live roles, and every role
+# assignment in opshub depends on them.
+# The same seven roles used to be seven separate
+# azuread_application_app_role resources (2026-11-04, #337). They are now inline
+# above, so their state entries are FORGOTTEN without touching Entra: the
+# objects exist and the application resource owns them. `destroy = false` is
+# mandatory — an omitted block would delete the live roles, and every role
+# assignment in opshub depends on them. OpenTofu removed blocks take a RESOURCE
+# address: this forgets all seven instances.
+removed {
+  from = azuread_application_app_role.opshub_prod
+  lifecycle {
+    destroy = false
+  }
 }
 
 resource "azuread_service_principal" "opshub_prod" {
@@ -145,8 +162,7 @@ locals {
 
 variable "opshub_prod_service_graph_grant_ids" {
   type        = map(string)
-  default     = {}
-  description = "Assignment id of each Graph application-role grant 'OpsHub Prod Service' ALREADY holds, keyed by role value (local.opshub_prod_service_graph_roles). Built by scripts/owner/identity-env/identity-env.sh from the live appRoleAssignments (read-only); the grants exist since the 2026-11-04 admin-consent, so importing them before the first apply is mandatory (README). Empty in CI: the read-only plan shows three creates, which never apply."
+  description = "Assignment id of each Graph application-role grant 'OpsHub Prod Service' ALREADY holds, keyed by role value (local.opshub_prod_service_graph_roles). Built by scripts/owner/identity-env/identity-env.sh from the live appRoleAssignments (read-only); the grants exist since the 2026-11-04 admin-consent, so importing them is mandatory (README). REQUIRED and with no default: once imported, a missing map would empty the for_each and DROP the grants, so a plan without it must stop instead."
 }
 
 # Same adoption rule as mail.tf: the grants are live, the import is mandatory,
@@ -189,9 +205,12 @@ resource "azuread_application_certificate" "opshub_prod_service" {
   encoding       = "pem"
 
   # Rotation issues the NEW credential before the old one is removed; the
-  # worker's PEM in the vault is swapped right after apply (README).
+  # worker's PEM in the vault is swapped right after apply (README). The
+  # credential is live: no plan may drop it (retirement = the README's removed
+  # block + Entra delete, never an apply of this resource).
   lifecycle {
     create_before_destroy = true
+    prevent_destroy       = true
   }
 }
 
@@ -231,6 +250,6 @@ output "opshub_prod_object_ids" {
     signin_sp        = azuread_service_principal.opshub_prod.object_id
     service_app      = one(azuread_application.opshub_prod_service[*].id)
     service_sp       = one(azuread_service_principal.opshub_prod_service[*].object_id)
-    signin_app_roles = { for k, r in azuread_application_app_role.opshub_prod : k => r.role_id }
+    signin_app_roles = local.opshub_prod_app_role_ids
   }
 }

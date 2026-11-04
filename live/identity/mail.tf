@@ -13,14 +13,16 @@
 # azuread_application_certificate per dev app, imported by the azuread 3.10
 # parse.CertificateID form — EXACTLY "{app OBJECT id}/certificate/{keyId}"
 # (ObjectSubResourceID: 3 slash-parts, bare UUID, no /applications/ prefix;
-# keyIds via TF_VAR_mail_service_cert_key_ids — public identifiers), the
-# VALUE being the public certificate already in 1Password ("Entra mail cert –
-# <product>-dev – certificate"). rova_prod's certificate is ADOPTED too (the
-# hand-made app already has it; README). ignore_changes on value/encoding keeps the imported certs
-# imported (see the resource comment).
+# keyIds PINNED in local.mail_service_cert_key_ids — public identifiers, never a
+# variable), the VALUE being the public certificate already in 1Password
+# ("Entra mail cert – <product>-dev – certificate"). rova_prod's certificate is
+# ADOPTED too (the hand-made app already has it; README). ignore_changes on
+# value/encoding keeps the imported certs imported (see the resource comment).
 #
 # ADDITIONAL credentials (rotation) are adopted the same way, one resource per
-# credential, keyed by its keyId: TF_VAR_mail_service_rotated_certificates.
+# credential, keyed by its keyId, the ids PINNED in
+# local.mail_service_rotated_cert_key_ids; the PEM map
+# (TF_VAR_mail_service_rotated_certificates) supplies values only.
 # "KB Dev Service" carries TWO today: the 2026-10-18 credential imported above
 # and a Key Vault-generated one appended by the owner on 2026-11-04
 # (sa-notes/kb-dev-secrets.sh; the vault keeps the private key, Entra the
@@ -101,22 +103,41 @@ variable "mail_service_sp_object_ids" {
   description = "Object ids of the mail service apps' service principals (the enterprise-application objects, NOT the app-registrations object ids). TF_VAR_mail_service_sp_object_ids exported by the owner, never committed."
 }
 
-variable "mail_service_cert_key_ids" {
-  type = object({
-    rova_prod  = string
-    rova_dev   = string
-    opshub_dev = string
-    kb_dev     = string
-  })
-  description = "keyId of the EXISTING certificate credential on each service app (rova_prod included: hand-made, already carries its certificate), from the owner's `az ad app show` export (keyCredentials[].keyId) — public identifiers, used only to build the import ids. TF_VAR_mail_service_cert_key_ids (JSON), never committed."
-
-  validation {
-    condition = alltrue([
-      for id in values(var.mail_service_cert_key_ids) :
-      can(regex("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", id))
-    ])
-    error_message = "Every mail_service_cert_key_ids value must be a GUID."
+# ── PINNED credential keyIds — reviewed, never derived, never owner-supplied ──
+# A keyId is a public identifier. It is PINNED here on purpose: a value that
+# arrives through a variable can be missing (the for_each empties) or mistyped,
+# and either DESTROYS the live credential on the next apply —
+# create_before_destroy does not protect a destroy. Changing this map is a
+# reviewed code change.
+#
+#   mail_service_cert_key_ids          slot  -> the credential under
+#                                              azuread_application_certificate.mail_service["<slot>"]
+#   mail_service_rotated_cert_key_ids  slot  -> ADDITIONAL credentials, each under
+#                                              mail_service_rotated["<keyId>"]
+#
+# scripts/owner/identity-env/identity-env.sh parses these two blocks (exact
+# shape: two-space indent, one entry per line) and ASSERTS every id exists in
+# Entra, every live credential is pinned, and every startDateTime is present;
+# it never decides which credential is which. Values read from Entra on
+# 2026-11-04.
+locals {
+  mail_service_cert_key_ids = {
+    rova_prod  = "f0b1686d-9eea-47e5-ba16-eb2566ee5709"
+    rova_dev   = "687e178e-feae-4ebc-a881-b5d2f0ae5357"
+    opshub_dev = "ddf98e3f-48f1-43be-9455-5e92b4044312"
+    kb_dev     = "fc90ec3d-d5a4-4747-8c8b-b64a1fd89c30" # the 2026-10-18 credential
   }
+
+  mail_service_rotated_cert_key_ids = {
+    kb_dev = ["e967b988-1892-4f56-975a-2ff7d02f0049"] # the 2026-11-04 Key Vault credential
+  }
+
+  # Flattened so each credential gets its own address, keyed by keyId.
+  mail_service_rotated_credentials = merge([
+    for slot, ids in local.mail_service_rotated_cert_key_ids : {
+      for id in ids : id => { slot = slot, key_id = id }
+    }
+  ]...)
 }
 
 variable "mail_service_certificates" {
@@ -126,7 +147,7 @@ variable "mail_service_certificates" {
     opshub_dev = string
     kb_dev     = string
   })
-  description = "PEM PUBLIC certificate per app, keyed like local.mail_service_apps. Dev values are the certificates ALREADY LIVE (1Password 'Entra mail cert – <product>-dev – certificate' — the same bytes the export shows); rova_prod's is the PUBLIC half of the certificate already on the hand-made app (extracted from kv-qnsc-prod/rova-prod-graph-cert, README step 3). Passed through TF_VAR_mail_service_certificates, never committed. A private key must never be passed."
+  description = "PEM PUBLIC certificate of the PRIMARY credential per app (the keyId pinned in local.mail_service_cert_key_ids), keyed like local.mail_service_apps. The kit reads them from the Entra app itself; rova_prod's is the PUBLIC half of the certificate already on the hand-made app. Passed through TF_VAR_mail_service_certificates, never committed. A private key must never be passed. Required: no default, so a plan without it fails instead of dropping a resource."
 
   validation {
     condition = alltrue([
@@ -138,19 +159,15 @@ variable "mail_service_certificates" {
 }
 
 variable "mail_service_rotated_certificates" {
-  type = map(object({
-    app_slot    = string
-    certificate = string
-  }))
-  default     = {}
-  description = "ADDITIONAL live certificate credentials per service app, keyed by the credential's keyId (public identifier): { \"<keyId>\" = { app_slot = \"kb_dev\", certificate = \"<PEM>\" } }. One entry per credential appended to an app that ALREADY has one imported under azuread_application_certificate.mail_service — today only KB Dev Service, whose 2026-11-04 Key Vault-generated certificate is the second. Built by scripts/owner/identity-env/identity-env.sh from the Entra app itself (public halves only); never a private key, never committed. Empty means every app carries exactly the one adopted credential."
+  type        = map(string)
+  description = "PEM PUBLIC certificate of each ADDITIONAL credential, keyed by its keyId (the keys pinned in local.mail_service_rotated_cert_key_ids). Today exactly one entry for KB Dev's 2026-11-04 Key Vault-generated credential. Built by scripts/owner/identity-env/identity-env.sh from the Entra app itself (public half only), never committed. REQUIRED and with no default: a missing value must stop the plan (invalid index), never empty the for_each and destroy a live credential."
 
   validation {
     condition = alltrue([
-      for id, c in var.mail_service_rotated_certificates :
+      for id, pem in var.mail_service_rotated_certificates :
       can(regex("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", id)) &&
-      can(regex("-----BEGIN CERTIFICATE-----", c.certificate)) &&
-      !can(regex("PRIVATE KEY", c.certificate))
+      can(regex("-----BEGIN CERTIFICATE-----", pem)) &&
+      !can(regex("PRIVATE KEY", pem))
     ])
     error_message = "mail_service_rotated_certificates keys must be credential keyIds (GUIDs) and every certificate a PEM PUBLIC certificate (BEGIN CERTIFICATE); a private key is never accepted."
   }
@@ -158,8 +175,7 @@ variable "mail_service_rotated_certificates" {
 
 variable "mail_service_graph_grant_ids" {
   type        = map(string)
-  default     = {}
-  description = "Assignment id of every Graph application-role grant the service apps ALREADY hold, keyed like local.mail_service_graph_grants (\"<slot>/<role value>\"). Built by scripts/owner/identity-env/identity-env.sh from the live appRoleAssignments (read-only). The grants exist (admin consent); importing them before the first apply is mandatory, or the plan adds duplicates. Empty in CI (no live read): the read-only plan then shows the grants as creates, which never apply."
+  description = "Assignment id of every Graph application-role grant the service apps ALREADY hold, keyed like local.mail_service_graph_grants (\"<slot>/<role value>\"). Built by scripts/owner/identity-env/identity-env.sh from the live appRoleAssignments (read-only). The grants exist (admin consent); importing them is mandatory, or the plan adds duplicates. REQUIRED and with no default: once imported, a missing map would empty the for_each and DROP the grants, so a plan without it must stop instead."
 }
 
 resource "azuread_application" "mail_service" {
@@ -209,15 +225,20 @@ resource "azuread_application_certificate" "mail_service" {
   lifecycle {
     create_before_destroy = true
     ignore_changes        = [value, encoding]
+    # The credential is LIVE and read by the worker: no plan may ever drop it.
+    # Retiring one is the reviewed procedure in the README (removed block with
+    # destroy = false, then the Entra delete by hand), never an apply of this
+    # resource.
+    prevent_destroy = true
   }
 }
 
 resource "azuread_application_certificate" "mail_service_rotated" {
-  for_each = var.mail_service_rotated_certificates
+  for_each = local.mail_service_rotated_credentials
 
-  application_id = azuread_application.mail_service[each.value.app_slot].id
+  application_id = azuread_application.mail_service[each.value.slot].id
   type           = "AsymmetricX509Cert"
-  value          = each.value.certificate
+  value          = var.mail_service_rotated_certificates[each.key]
   encoding       = "pem"
 
   # Same write-only shape as the primary certificate above: the credential is
@@ -225,6 +246,7 @@ resource "azuread_application_certificate" "mail_service_rotated" {
   lifecycle {
     create_before_destroy = true
     ignore_changes        = [value, encoding]
+    prevent_destroy       = true
   }
 }
 
@@ -304,28 +326,29 @@ import {
 # duplicate key credential.
 import {
   to = azuread_application_certificate.mail_service["rova_prod"]
-  id = "${var.mail_service_object_ids.rova_prod}/certificate/${var.mail_service_cert_key_ids.rova_prod}"
+  id = "${var.mail_service_object_ids.rova_prod}/certificate/${local.mail_service_cert_key_ids.rova_prod}"
 }
 import {
   to = azuread_application_certificate.mail_service["rova_dev"]
-  id = "${var.mail_service_object_ids.rova_dev}/certificate/${var.mail_service_cert_key_ids.rova_dev}"
+  id = "${var.mail_service_object_ids.rova_dev}/certificate/${local.mail_service_cert_key_ids.rova_dev}"
 }
 import {
   to = azuread_application_certificate.mail_service["opshub_dev"]
-  id = "${var.mail_service_object_ids.opshub_dev}/certificate/${var.mail_service_cert_key_ids.opshub_dev}"
+  id = "${var.mail_service_object_ids.opshub_dev}/certificate/${local.mail_service_cert_key_ids.opshub_dev}"
 }
 import {
   to = azuread_application_certificate.mail_service["kb_dev"]
-  id = "${var.mail_service_object_ids.kb_dev}/certificate/${var.mail_service_cert_key_ids.kb_dev}"
+  id = "${var.mail_service_object_ids.kb_dev}/certificate/${local.mail_service_cert_key_ids.kb_dev}"
 }
-# Additional (rotated) credentials: same CertificateID shape, keyed by keyId.
-# KEEP LAST: an import block for a resource that is already in state stops the
-# plan, so this set stays empty for an app whose extra credential was already
-# adopted.
+# Additional (rotated) credentials: same CertificateID shape, each keyId pinned
+# in local.mail_service_rotated_cert_key_ids. An import of a resource that is
+# ALREADY in state with the SAME id is a NO-OP (verified with OpenTofu 1.12,
+# 2026-11-04), so these blocks stay in the tree after the apply; they are the
+# authoritative statement that the credential is managed here.
 import {
-  for_each = var.mail_service_rotated_certificates
+  for_each = local.mail_service_rotated_credentials
   to       = azuread_application_certificate.mail_service_rotated[each.key]
-  id       = "${var.mail_service_object_ids[each.value.app_slot]}/certificate/${each.key}"
+  id       = "${var.mail_service_object_ids[each.value.slot]}/certificate/${each.value.key_id}"
 }
 # The GRANTS that admin consent already created. The id is the ASSIGNMENT id
 # (not the role id) under the Graph service principal, the resource of every

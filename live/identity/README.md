@@ -491,13 +491,54 @@ Import id form (azuread 3.10 parser): EXACTLY
 `<app OBJECT id>/certificate/<keyId>` — no `/applications/` prefix.
 **Additional credentials** (rotation) are adopted the same way, one
 `azuread_application_certificate.mail_service_rotated` per credential, keyed by
-its keyId (`TF_VAR_mail_service_rotated_certificates`). **KB Dev Service carries
-two today**: the 2026-10-18 credential above and a Key Vault-generated one the
-owner appended on 2026-11-04 (`sa-notes/kb-dev-secrets.sh`; the vault holds the
-private key, Entra the public half, `kv-qnsc-dev/kb-dev-graph-cert`). The OLDEST
-credential stays the managed `mail_service["<slot>"]`; every newer one is
-`mail_service_rotated["<keyId>"]`. Both are imported, so the plan shows an
+its keyId. **KB Dev Service carries two today**: the 2026-10-18 credential above
+and a Key Vault-generated one the owner appended on 2026-11-04
+(`sa-notes/kb-dev-secrets.sh`; the vault holds the private key, Entra the public
+half, `kv-qnsc-dev/kb-dev-graph-cert`). Both are imported, so the plan shows an
 IMPORT and never a create or replace.
+
+**The keyIds are PINNED in `mail.tf`** (`local.mail_service_cert_key_ids` and
+`local.mail_service_rotated_cert_key_ids`), not derived and not passed as
+Terraform variables. A credential keyId is a public identifier, and a value that
+comes from a variable can be missing or mistyped — which would empty a
+resource's `for_each` and **destroy the live credential** on the next apply
+(`create_before_destroy` does not protect a destroy). With pinned ids the plan
+is driven by reviewed code: the kit only ASSERTS that every pinned credential
+exists on its app, that no unpinned credential is live, and that every
+credential has a `startDateTime`. Every certificate resource also carries
+`prevent_destroy = true`, so no apply can drop one.
+
+An import block whose resource is already in state with the SAME id is a
+**no-op** in OpenTofu (verified 2026-11-04 with 1.12: the resource is refreshed,
+not re-imported), so the blocks stay in the tree after the apply. An import
+block with a DIFFERENT id against a managed address fails the plan — a stop, not
+a replace.
+
+**Retiring a credential** (the 2026-10-18 KB Dev key is dead — its private key
+never left AWS): this is NEVER done by deleting a resource from `mail.tf`, which
+would destroy it as part of an ordinary apply. The reviewed procedure is:
+
+1. Remove the keyId from the pinned map.
+2. Add, in the same commit, the forget block (OpenTofu removes the state entry
+   and does not call Entra):
+
+   ```hcl
+   removed {
+     from = azuread_application_certificate.mail_service_rotated["<keyId>"]
+     lifecycle {
+       destroy = false
+     }
+   }
+   ```
+
+   (For the slot's PRIMARY credential the address is
+   `azuread_application_certificate.mail_service["<slot>"]` — and `prevent_destroy`
+   means the plan refuses any other shape.)
+3. Apply: the plan must show **1 to forget, 0 to destroy**. Then delete the key
+   credential in Entra (App registrations > <app> > Certificates & secrets) —
+   only after the plan is applied, and never while the worker still uses it.
+4. Drop the `removed` block in a later commit once the state no longer holds the
+   address (`tofu state list`).
 NO opshub/kb PROD apps in this section: opshub prod's service app is CREATED
 in `prod_apps.tf` (below); kb prod's service app comes with its own prod PR,
 after its hostnames and permissions are decided. rova_prod carries the ONE Graph permission
@@ -552,25 +593,17 @@ the invite to the Service cert — a rova-track change, not this stack's).
      ```;
    - `TF_VAR_mail_service_sp_object_ids` — the SP object ids
      (`id` field of each `*-sp.json`);
-   - `TF_VAR_mail_service_cert_key_ids` — the four `keyId`s. Each app carries
-     at least one certificate credential; the OLDEST (by `startDateTime`) is
-     the one adopted under `mail_service["<slot>"]`, any newer one is adopted
-     under `mail_service_rotated`. `KB Dev Service` has two since 2026-11-04.
-     `scripts/owner/identity-env/identity-env.sh` builds both maps from Entra
-     and reads only public halves; two credentials sharing a startDateTime stop
-     the run (they cannot be told apart). Manual check:
+   - **the keyIds are NOT exported any more**: they are pinned in
+     `local.mail_service_cert_key_ids` / `local.mail_service_rotated_cert_key_ids`
+     (see "The keyIds are PINNED" above). Adding a credential to an app means a
+     reviewed edit there, in the same commit that adds its PEM to the variable
+     below. Confirm the pins against the export before planning — every pinned
+     keyId must be on its app, and every live credential must be pinned:
 
      ```sh
      for f in rova-prod rova-dev opshub-dev kb-dev; do
-       n=$(jq '.keyCredentials|length' "$f-service-app.json")
-       [ "$n" = "1" ] || echo "STOP: $f-service-app.json has $n key credentials, expected 1"
+       jq -r --arg f "$f" '.keyCredentials[] | "\($f) \(.keyId)"' "$f-service-app.json"
      done
-     jq -n \
-       --slurpfile p rova-prod-service-app.json \
-       --slurpfile a rova-dev-service-app.json \
-       --slurpfile b opshub-dev-service-app.json \
-       --slurpfile c kb-dev-service-app.json \
-       '{rova_prod:$p[0].keyCredentials[0].keyId, rova_dev:$a[0].keyCredentials[0].keyId, opshub_dev:$b[0].keyCredentials[0].keyId, kb_dev:$c[0].keyCredentials[0].keyId}'
      ```
 
    - `TF_VAR_mail_service_certificates` — one PEM PUBLIC certificate per app.
@@ -627,12 +660,12 @@ the invite to the Service cert — a rova-track change, not this stack's).
    and/or the `User.Invite.All` application role ADDED, whichever the export
    shows is not yet in line (the role is already consented on the live app, so
    the plan may show no permission line at all). NO certificate create. A
-   plan that creates a certificate means `rova_prod` is missing from
-   `mail_service_cert_key_ids`: STOP.
+   plan that creates a certificate means the keyId is missing from the pinned
+   map in `mail.tf`: STOP.
    Any change on an imported app — a permission add or removal, a redirect
    URI, a secret credential — is NO-GO, and **any certificate showing
-   "must be replaced" is STOP** (the dev certs are imported write-only; see
-   the `mail.tf` resource comment). opshub_dev's three application roles are
+   "must be replaced" is STOP** (the certs are imported write-only; see the
+   `mail.tf` resource comment). opshub_dev's three application roles are
    in the code; a different live set is STOP and reconcile `mail.tf` first.
    The `User.Invite.All` ADMIN CONSENT is a separate manual step right after
    apply (the plan only updates the app):
@@ -647,7 +680,7 @@ the invite to the Service cert — a rova-track change, not this stack's).
    three read roles) are modelled but not yet imported. The next plan
    (`scripts/owner/identity-env/identity-env.sh -- tofu plan`, which also
    supplies the grant ids and KB Dev's second certificate) must read EXACTLY
-   **8 to import, 0 to add, 0 to change, 0 to destroy**:
+   **8 to import, 0 to add, 0 to change, 0 to destroy, 7 to forget**:
 
    - `azuread_application_certificate.mail_service_rotated["e967b988-…"]` (KB
      Dev's 2026-11-04 credential);
@@ -657,7 +690,14 @@ the invite to the Service cert — a rova-track change, not this stack's).
    - `azuread_app_role_assignment.opshub_prod_service["…Read.All"]` ×3.
 
    Any `create` on those addresses means the id map is wrong (STOP); a
-   `destroy` or a certificate `must be replaced` is STOP, always.
+   `destroy` or a certificate `must be replaced` is STOP, always. The **7 to
+   forget** are the seven `azuread_application_app_role.opshub_prod` state
+   entries that became inline `app_role` blocks on `azuread_application.opshub_prod`
+   (prod_apps.tf): the plan shows
+   "will be removed from the OpenTofu state but will not be destroyed" — no
+   Entra call, the roles stay. Verify every one of the seven carries
+   `destroy = false`; anything that says "will be destroyed" is STOP.
+   After this apply the same plan reads `No changes` (the imports are no-ops).
 
 5. After apply: record `mail_service_client_ids` (rova_prod's is the value
    rova's Graph config records; the dev values land in the dev bundles). The
@@ -1029,9 +1069,8 @@ product-docs), so the owner reads the rest from Entra or `az` as shown.
 | `TF_VAR_proxmox_admin_object_ids` | JSON list of user object ids | Entra, Users, Object ID; keep equal to the platform admins group |
 | `TF_VAR_mail_service_object_ids` | JSON, 4 service app object ids | mail export `*-app.json` `.id` |
 | `TF_VAR_mail_service_sp_object_ids` | JSON, 4 service SP object ids | mail export `*-sp.json` `.id` |
-| `TF_VAR_mail_service_cert_key_ids` | JSON, 4 key GUIDs (rova_prod included) | `.keyCredentials[0].keyId` of each service app export |
-| `TF_VAR_mail_service_certificates` | JSON, 4 PEM public certs | dev: 1Password "Entra mail cert – <product>-dev – certificate"; rova_prod: `az keyvault secret show ... | openssl x509` (mail step 3) |
-| `TF_VAR_mail_service_rotated_certificates` | JSON map `{keyId: {app_slot, certificate}}`; default `{}` | the kit builds it from Entra (`appRoleAssignments`/`keyCredentials`); today one entry: KB Dev's 2026-11-04 credential. Never hand-built |
+| `TF_VAR_mail_service_certificates` | JSON, 4 PEM public certs (the pinned primary of each app) | dev: 1Password "Entra mail cert – <product>-dev – certificate"; rova_prod: `az keyvault secret show ... | openssl x509` (mail step 3) |
+| `TF_VAR_mail_service_rotated_certificates` | JSON map `{keyId: PEM}`, REQUIRED, no default | built by the kit from Entra `keyCredentials`; today one entry: KB Dev's 2026-11-04 credential. Keyed by the keyIds pinned in `mail.tf`, never hand-built |
 | `TF_VAR_mail_service_graph_grant_ids` | JSON map `{"<slot>/<role>": <assignment id>}`; default `{}` | built by the kit from each service app's live `appRoleAssignments` (README "Graph permission grants") |
 | `TF_VAR_opshub_prod_service_graph_grant_ids` | JSON map `{<role>: <assignment id>}`; default `{}` | built by the kit from "OpsHub Prod Service" `appRoleAssignments` |
 | `TF_VAR_opshub_prod_service_certificate` | PEM PUBLIC cert (one string), optional | `$HOME/keys/opshub-prod-cert.pem` from "Prod identity: OpsHub" step 1. Unset = the prod service app is not created |
