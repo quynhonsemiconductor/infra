@@ -72,6 +72,22 @@ resource "azuread_application" "opshub_prod" {
 
   owners = [var.owner_operator_object_id, var.second_owner_object_id]
 
+  # The seven roles, INLINE like the dev app (apps.tf) — one owner. The ids are
+  # derived (local.opshub_prod_app_role_ids) and equal the live ones, so this
+  # block plans 0 change; azuread 3.x does not treat app_roles as Computed, so
+  # they MUST be modelled or an apply removes them.
+  dynamic "app_role" {
+    for_each = local.opshub_prod_app_role_ids
+    content {
+      id                   = app_role.value
+      allowed_member_types = local.opshub_app_roles[app_role.key].allowed_member_types
+      description          = local.opshub_app_roles[app_role.key].description
+      display_name         = local.opshub_app_roles[app_role.key].display_name
+      enabled              = true
+      value                = app_role.key
+    }
+  }
+
   # A 9-add partial apply (sign-in app only, service app skipped) must be
   # impossible: the prod pair is applied together or not at all. The owner
   # supplies the PUBLIC certificate in the same plan.
@@ -95,15 +111,24 @@ locals {
   }
 }
 
-resource "azuread_application_app_role" "opshub_prod" {
-  for_each = local.opshub_prod_app_role_ids
-
-  application_id       = azuread_application.opshub_prod.id
-  role_id              = each.value
-  allowed_member_types = local.opshub_app_roles[each.key].allowed_member_types
-  description          = local.opshub_app_roles[each.key].description
-  display_name         = local.opshub_app_roles[each.key].display_name
-  value                = each.key
+# The same seven roles used to be seven separate
+# azuread_application_app_role resources (2026-11-04, #337). They are now inline
+# above, so their state entries are FORGOTTEN without touching Entra: the
+# objects exist and the application resource owns them. `destroy = false` is
+# mandatory — an omitted block would delete the live roles, and every role
+# assignment in opshub depends on them.
+# The same seven roles used to be seven separate
+# azuread_application_app_role resources (2026-11-04, #337). They are now inline
+# above, so their state entries are FORGOTTEN without touching Entra: the
+# objects exist and the application resource owns them. `destroy = false` is
+# mandatory — an omitted block would delete the live roles, and every role
+# assignment in opshub depends on them. OpenTofu removed blocks take a RESOURCE
+# address: this forgets all seven instances.
+removed {
+  from = azuread_application_app_role.opshub_prod
+  lifecycle {
+    destroy = false
+  }
 }
 
 resource "azuread_service_principal" "opshub_prod" {
@@ -135,6 +160,21 @@ locals {
   ]
 }
 
+variable "opshub_prod_service_graph_grant_ids" {
+  type        = map(string)
+  description = "Assignment id of each Graph application-role grant 'OpsHub Prod Service' ALREADY holds, keyed by role value (local.opshub_prod_service_graph_roles). Built by scripts/owner/identity-env/identity-env.sh from the live appRoleAssignments (read-only); the grants exist since the 2026-11-04 admin-consent. These ids feed the IMPORT blocks ONLY: the resources are declared from the role list, so a missing entry cannot drop a grant — it plans a CREATE that Entra rejects as a duplicate (HTTP 409) at apply. Required (no default) so that foot-gun stops at plan time."
+}
+
+# Same adoption rule as mail.tf: the grants are live, the import is mandatory,
+# and a key that does not match a declared role fails the plan. Gated on the
+# certificate because the app (and so its grant addresses) does not exist
+# without it.
+import {
+  for_each = var.opshub_prod_service_certificate == null ? {} : var.opshub_prod_service_graph_grant_ids
+  to       = azuread_app_role_assignment.opshub_prod_service[each.key]
+  id       = "/servicePrincipals/${data.azuread_service_principal.msgraph.object_id}/appRoleAssignedTo/${each.value}"
+}
+
 resource "azuread_application" "opshub_prod_service" {
   count = var.opshub_prod_service_certificate == null ? 0 : 1
 
@@ -164,10 +204,16 @@ resource "azuread_application_certificate" "opshub_prod_service" {
   value          = var.opshub_prod_service_certificate
   encoding       = "pem"
 
-  # Rotation issues the NEW credential before the old one is removed; the
-  # worker's PEM in the vault is swapped right after apply (README).
+  # Rotation does NOT happen through an apply: this resource keeps the one
+  # credential it created from this public half. A new credential is appended
+  # in Entra (`az ad app credential reset --cert --append`) and adopted as a
+  # reviewed pin + import (README "Rotation"); prevent_destroy refuses a
+  # replace, so a changed value is a hard error, not a silent rotation. The
+  # credential is live: no plan may drop it (retirement = forget from state
+  # first, then the Entra delete by hand).
   lifecycle {
     create_before_destroy = true
+    prevent_destroy       = true
   }
 }
 
@@ -181,10 +227,9 @@ resource "azuread_service_principal" "opshub_prod_service" {
 # the RESOURCE service principal (Microsoft Graph), so requiredResourceAccess
 # alone does not manage them: on 2026-11-04 the owner's admin-consent created
 # all three while the app's requiredResourceAccess read empty, i.e. Terraform
-# saw nothing. Managing them here makes a revoked or extra grant show up in
-# the plan. The three ALREADY EXIST in the tenant — import them BEFORE applying
-# (README "Pre-apply check": it prints the assignment ids); a create would add
-# a duplicate grant.
+# saw nothing. Managing them here means a REVOKED grant shows as a create in the
+# plan (STOP). The three ALREADY EXIST in the tenant — the import block below
+# adopts them; a create would add a duplicate grant.
 resource "azuread_app_role_assignment" "opshub_prod_service" {
   for_each = toset(var.opshub_prod_service_certificate == null ? [] : local.opshub_prod_service_graph_roles)
 
@@ -204,10 +249,12 @@ output "opshub_prod_client_ids" {
 output "opshub_prod_object_ids" {
   description = "Object ids the owner needs for the follow-up steps: signin_app is the argument of scripts/rotate-signin-secret.sh, service_app is the service app-registration object id, the two *_sp ids are the enterprise-application object ids (Exchange New-ServicePrincipal takes the app id AND the SP object id). Not secrets."
   value = {
-    signin_app       = azuread_application.opshub_prod.id
-    signin_sp        = azuread_service_principal.opshub_prod.object_id
-    service_app      = one(azuread_application.opshub_prod_service[*].id)
-    service_sp       = one(azuread_service_principal.opshub_prod_service[*].object_id)
-    signin_app_roles = { for k, r in azuread_application_app_role.opshub_prod : k => r.role_id }
+    signin_app  = azuread_application.opshub_prod.id
+    signin_sp   = azuread_service_principal.opshub_prod.object_id
+    service_app = one(azuread_application.opshub_prod_service[*].id)
+    service_sp  = one(azuread_service_principal.opshub_prod_service[*].object_id)
+    # Read from the LIVE application (not from the derived local) so the
+    # README's "existing role ids must EQUAL the derived ones" check is real.
+    signin_app_roles = { for r in azuread_application.opshub_prod.app_role : r.value => r.id }
   }
 }

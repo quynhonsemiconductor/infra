@@ -157,7 +157,7 @@ printf '%s\n' "$PROD_CODE" | grep -qi 'Mail\.Send' &&
 
 # 8. Prod identity: the sign-in app refuses to apply without the service
 #    certificate, so a 9-add partial shape cannot be applied.
-grep -A60 'resource "azuread_application" "opshub_prod"' prod_apps.tf |
+grep -A90 'resource "azuread_application" "opshub_prod"' prod_apps.tf |
 	grep -q 'condition[[:space:]]*=[[:space:]]*var\.opshub_prod_service_certificate != null' ||
 	fail "prod_apps.tf: the OpsHub Prod app has no precondition on the service certificate"
 
