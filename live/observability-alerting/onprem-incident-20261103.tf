@@ -145,6 +145,20 @@ resource "grafana_rule_group" "onprem_incident_20261103" {
 # The collector ships ONLY kernel/audit journal lines matching
 # apparmor="DENIED" (gitops#141), so any line here is a denial. Beyla
 # (comm="beyla") is excluded: its denials are known and get their own fix.
+#
+# HOST COREUTILS PROFILES ARE EXCLUDED TOO (triaged 2026-11-04). The firing
+# rule was 100% these two, measured on k3s-01 over 24 h:
+#   profile="who"      357  open /etc/passwd, /etc/nsswitch.conf (who cannot
+#                            resolve names; it still prints the login list)
+#   profile="hostname"  19  hostname's own profile denying one of its reads
+# Both are Ubuntu's apparmor-profiles coreutils profiles, loaded by
+# apparmor.service, and neither is a container escaping its confinement: the
+# denied files are world-readable host files and the processes are ordinary
+# host utilities. They are not a profile gap in cri-containerd and are not
+# actionable by the k3s/containerd override. Excluding them by `profile=`
+# keeps the rule meaningful for CONTAINER denials (the incident it was written
+# for) without an allowlist file that could hide a real one.
+#
 # for = 0m: count_over_time over 10m already is the window; one denial is the
 # signal. Absence is normal (no_data OK).
 resource "grafana_rule_group" "onprem_apparmor" {
@@ -173,7 +187,7 @@ resource "grafana_rule_group" "onprem_apparmor" {
       model = jsonencode({
         refId      = "A"
         datasource = { type = "loki", uid = data.grafana_data_source.logs.uid }
-        expr       = "sum by (instance) (count_over_time({cluster=\"qnsc-onprem\", job=\"integrations/kubernetes/journal\"} |= `apparmor=\"DENIED\"` != `comm=\"beyla\"` [10m]))"
+        expr       = "sum by (instance) (count_over_time({cluster=\"qnsc-onprem\", job=\"integrations/kubernetes/journal\"} |= `apparmor=\"DENIED\"` != `comm=\"beyla\"` != `profile=\"who\"` != `profile=\"hostname\"` [10m]))"
         queryType  = "instant"
         instant    = true
         intervalMs = 1000
@@ -232,7 +246,7 @@ resource "grafana_rule_group" "onprem_apparmor" {
     }
 
     annotations = {
-      summary = "AppArmor denied {{ $values.B }} operation(s) on node {{ $labels.instance }} in the last 10 minutes (Beyla excluded). Explore: {cluster=\"qnsc-onprem\", job=\"integrations/kubernetes/journal\"}."
+      summary = "AppArmor denied {{ $values.B }} operation(s) on node {{ $labels.instance }} in the last 10 minutes (Beyla and the host `who`/`hostname` coreutils profiles excluded — see the rule comment). Explore: {cluster=\"qnsc-onprem\", job=\"integrations/kubernetes/journal\"}."
     }
   }
 }
