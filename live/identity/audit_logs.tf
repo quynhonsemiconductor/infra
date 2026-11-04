@@ -38,16 +38,16 @@ locals {
   )
 }
 
+# Skips, one posture: this account holds audit LOGS, is reached only by Azure
+# Monitor and the owner's read-only queries, and the on-prem cluster has no VNet
+# to privatize into (same reason as the state account).
+#checkov:skip=CKV_AZURE_33:no queue/table service is used; the account holds only diagnostic blobs
+#checkov:skip=CKV_AZURE_59:public network access stays ON (no VNet); blob-level public access is OFF and the blobs are private
+#checkov:skip=CKV_AZURE_206:LRS is deliberate ($10/month budget); an audit trail is not primary data
+#checkov:skip=CKV2_AZURE_1:diagnostic logs are not customer data; CMK on the log account is a later hardening item
+#checkov:skip=CKV2_AZURE_33:no private endpoint is reachable from the on-prem cluster; RBAC and private blobs are the boundary
+#checkov:skip=CKV2_AZURE_40:Azure Monitor's storage destination authenticates with the account key; shared keys cannot be disabled here
 resource "azurerm_storage_account" "kv_audit" {
-  # Skips, one posture: this account holds audit LOGS, is reached only by the
-  # Azure Monitor service and the owner's read-only queries, and the on-prem
-  # cluster has no VNet to privatize into (same reason as the state account).
-  # checkov:skip=CKV_AZURE_33:no queue/table service is used — the account holds only diagnostic blobs
-  # checkov:skip=CKV_AZURE_59:public network access stays ON (no VNet); blob-level public access is OFF and the blobs are private
-  # checkov:skip=CKV_AZURE_206:LRS is deliberate ($10/month budget); an audit trail is not primary data
-  # checkov:skip=CKV2_AZURE_1:diagnostic logs are not customer data; CMK on the log account is a later hardening item
-  # checkov:skip=CKV2_AZURE_33:no private endpoint is reachable from the on-prem cluster; RBAC and private blobs are the boundary
-  # checkov:skip=CKV2_AZURE_40:Azure Monitor's storage destination authenticates with the account key; shared keys cannot be disabled here
   name                            = "stqnsckvaudit"
   resource_group_name             = azurerm_resource_group.platform.name
   location                        = azurerm_resource_group.platform.location
@@ -94,6 +94,7 @@ resource "azurerm_storage_account" "kv_audit" {
 # The audit container Azure Monitor writes into. It is declared here so the
 # WORM policy below has a stable resource id; Azure Monitor would create the
 # same name on its first event, and an existing empty container is fine.
+#checkov:skip=CKV2_AZURE_21:the account's logging destination is Azure Monitor itself; blob read logging into the same account would loop
 resource "azurerm_storage_container" "kv_audit" {
   name                  = "insights-logs-auditevent"
   storage_account_id    = azurerm_storage_account.kv_audit.id
