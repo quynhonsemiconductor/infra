@@ -49,6 +49,10 @@ locals {
 
   # Nothing goes live before the tunnels exist (DNS targets them).
   cutover_live = var.tunnels_exist ? local.cutover : []
+
+  # Hosts whose SPA is the product's in-cluster web component (chart 0.18+), not a Workers script: the tunnel
+  # sends every path to the cluster, so they get no Workers routes at all.
+  worker_web_live = [for h in local.cutover_live : h if try(local.app_hosts[h].web, "worker") == "worker"]
 }
 
 # A typo in local.cutover must fail the plan, not silently create nothing.
@@ -282,7 +286,7 @@ resource "cloudflare_zero_trust_access_policy" "dev_bypass" {
 # omitted — the route exists with no script, so the traffic falls through to
 # the tunnel). v5 renamed `script_name` to `script`.
 resource "cloudflare_workers_route" "spa" {
-  for_each = { for h, v in local.app_hosts : h => v if contains(local.cutover_live, h) }
+  for_each = { for h, v in local.app_hosts : h => v if contains(local.worker_web_live, h) }
 
   zone_id = var.cloudflare_zone_id
   pattern = "${each.key}/*"
@@ -292,7 +296,7 @@ resource "cloudflare_workers_route" "spa" {
 resource "cloudflare_workers_route" "api_no_worker" {
   for_each = {
     for pair in flatten([
-      for h in local.cutover_live : [
+      for h in local.worker_web_live : [
         for p in local.api_paths : { host = h, path = p }
       ]
     ]) : "${pair.host}${pair.path}" => pair
