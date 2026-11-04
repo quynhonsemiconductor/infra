@@ -364,6 +364,52 @@ jobs:
           echo "::error::at least one plan failed or errored. That stack was NOT applied; independent stacks were not held back. Read the failed Plan job, fix it, re-run."
           exit 1
 
+  # ───────────────────────────────────────────────────────────────────────
+  # The production environment gate is silent outside the run page: the apply for #338 (run
+  # 41778707810) waited 2h10m on 2026-11-04. While it waited it held the concurrency group, so
+  # later merges queued behind it, and only one of those can be pending at a time. This job
+  # watches this run's own jobs through
+  # the Actions API and posts one Teams card (stack, commit title, run link) the first time
+  # each Apply <stack> job reports status `waiting`. It runs beside the applies, gates nothing,
+  # and its only hard failure is its own self-test: a notification problem must never stop an
+  # apply. The webhook is the same TEAMS_ALERTS_WEBHOOK_URL alerting-health.yml uses.
+  # ───────────────────────────────────────────────────────────────────────
+  notify-approval:
+    name: Notify approval pending
+    needs: [detect, gate]
+    if: ${{ !cancelled() && needs.gate.result == 'success' && needs.gate.outputs.changed != '[]' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    permissions:
+      contents: read
+      actions: read   # read this run's jobs to see which apply job is `waiting`
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Self-test the approval card
+        run: python3 -m unittest scripts/test_notify_apply_waiting.py
+
+      - name: Post a card when an apply job waits for approval
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TEAMS_ALERTS_WEBHOOK_URL: ${{ secrets.TEAMS_ALERTS_WEBHOOK_URL }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          CHANGED: ${{ needs.gate.outputs.changed }}
+          HEAD_COMMIT: ${{ github.event.head_commit.message }}
+          STACKS_INPUT: ${{ inputs.stacks }}
+        run: |
+          set -euo pipefail
+          title="$(printf '%s' "${HEAD_COMMIT:-}" | head -n 1)"
+          if [ -z "$title" ]; then title="manual dispatch: ${STACKS_INPUT:-all}"; fi
+          python3 scripts/notify_apply_waiting.py \
+            --watch --repo "$REPO" --run-id "$RUN_ID" \
+            --expected "$CHANGED" --commit-title "$title" --run-url "$RUN_URL"
+
   apply-edge:
     name: Apply edge
     needs: [detect, gate]
