@@ -179,15 +179,15 @@ resource "grafana_rule_group" "onprem_pve_risk" {
     }
   }
 
-  # NVMe wear, media errors or the controller's critical-warning flag. One
-  # rule, because all three answer the same question ("replace this disk
-  # before it takes the estate down") and the owner acts the same way.
-  # `bool` turns each comparison into 0/1 so the three can be `or`-ed without
-  # losing a 0-valued series; threshold > 0 catches any one of them.
+  # EXPECTED POOLS. `zpool list` simply omits a pool that was destroyed or
+  # failed to import, so the not-ONLINE rule above goes NoData and reads
+  # healthy. `absent()` turns each missing expected pool into a 1. The pool
+  # names are the host's two real pools (rpool = the NVMe; backup = the 2x4 TB
+  # HDD mirror); a third pool is a change to this rule, deliberately.
   rule {
-    name           = "pve-nvme-wear-or-errors"
+    name           = "pve-zpool-expected-missing"
     condition      = "B"
-    for            = "5m"
+    for            = "10m"
     no_data_state  = "OK"
     exec_err_state = "KeepLast"
 
@@ -205,9 +205,8 @@ resource "grafana_rule_group" "onprem_pve_risk" {
         refId      = "A"
         datasource = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
         expr = join(" or ", [
-          "(pve_nvme_percentage_used{job=\"pve-host\"} > bool 80)",
-          "(pve_nvme_media_errors{job=\"pve-host\"} > bool 0)",
-          "(pve_nvme_critical_warning{job=\"pve-host\"} > bool 0)",
+          "absent(pve_zpool_health{job=\"pve-host\",pool=\"rpool\"})",
+          "absent(pve_zpool_health{job=\"pve-host\",pool=\"backup\"})",
         ])
         instant       = true
         range         = false
@@ -250,7 +249,209 @@ resource "grafana_rule_group" "onprem_pve_risk" {
     }
 
     annotations = {
-      summary = "NVMe {{ $labels.device }} on pve01 reports wear over 80%, a media error, or a critical SMART warning. This is the single disk the whole estate runs on (no PLP, no mirror): plan the replacement and confirm the PBS off-site copy before it fails."
+      summary = "An expected ZFS pool (rpool or backup) is missing from pve01's zpool list. It failed to import or was destroyed — the VMs or the backup mirror are no longer on a pool the host sees. Run `zpool import` / `zpool status` on the host."
+    }
+  }
+
+  # NVMe health is THREE rules, not one `or`: all three branches carry the same
+  # `device` label set, and PromQL `or` returns only the left-hand series when
+  # label sets match — so a media error would have been hidden behind a healthy
+  # wear value. Separate rules keep each condition independently visible.
+  rule {
+    name           = "pve-nvme-wear-over-80"
+    condition      = "B"
+    for            = "5m"
+    no_data_state  = "OK"
+    exec_err_state = "KeepLast"
+
+    data {
+      ref_id         = "A"
+      query_type     = "instant"
+      datasource_uid = data.grafana_data_source.prometheus.uid
+
+      relative_time_range {
+        from = 900
+        to   = 0
+      }
+
+      model = jsonencode({
+        refId         = "A"
+        datasource    = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
+        expr          = "pve_nvme_percentage_used{job=\"pve-host\"} > 80"
+        instant       = true
+        range         = false
+        intervalMs    = 1000
+        maxDataPoints = 43200
+      })
+    }
+
+    data {
+      ref_id         = "B"
+      datasource_uid = "__expr__"
+
+      relative_time_range {
+        from = 0
+        to   = 0
+      }
+
+      model = jsonencode({
+        refId      = "B"
+        type       = "threshold"
+        datasource = { type = "__expr__", uid = "__expr__" }
+        expression = "A"
+        conditions = [
+          {
+            evaluator = {
+              type   = "gt"
+              params = [0]
+            }
+          }
+        ]
+        intervalMs    = 1000
+        maxDataPoints = 43200
+      })
+    }
+
+    labels = {
+      product  = "platform"
+      env      = "production"
+      severity = "warning"
+    }
+
+    annotations = {
+      summary = "NVMe {{ $labels.device }} on pve01 is at {{ $value }}% rated wear. This is the single no-PLP disk the whole estate runs on: plan the replacement before 100%, and confirm the PBS off-site copy."
+    }
+  }
+
+  rule {
+    name           = "pve-nvme-media-errors"
+    condition      = "B"
+    for            = "5m"
+    no_data_state  = "OK"
+    exec_err_state = "KeepLast"
+
+    data {
+      ref_id         = "A"
+      query_type     = "instant"
+      datasource_uid = data.grafana_data_source.prometheus.uid
+
+      relative_time_range {
+        from = 900
+        to   = 0
+      }
+
+      model = jsonencode({
+        refId         = "A"
+        datasource    = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
+        expr          = "pve_nvme_media_errors{job=\"pve-host\"} > 0"
+        instant       = true
+        range         = false
+        intervalMs    = 1000
+        maxDataPoints = 43200
+      })
+    }
+
+    data {
+      ref_id         = "B"
+      datasource_uid = "__expr__"
+
+      relative_time_range {
+        from = 0
+        to   = 0
+      }
+
+      model = jsonencode({
+        refId      = "B"
+        type       = "threshold"
+        datasource = { type = "__expr__", uid = "__expr__" }
+        expression = "A"
+        conditions = [
+          {
+            evaluator = {
+              type   = "gt"
+              params = [0]
+            }
+          }
+        ]
+        intervalMs    = 1000
+        maxDataPoints = 43200
+      })
+    }
+
+    labels = {
+      product  = "platform"
+      env      = "production"
+      severity = "critical"
+    }
+
+    annotations = {
+      summary = "NVMe {{ $labels.device }} on pve01 reports {{ $value }} uncorrected media error(s). The disk has lost data internally; confirm the PBS copy and replace it."
+    }
+  }
+
+  rule {
+    name           = "pve-nvme-critical-warning"
+    condition      = "B"
+    for            = "5m"
+    no_data_state  = "OK"
+    exec_err_state = "KeepLast"
+
+    data {
+      ref_id         = "A"
+      query_type     = "instant"
+      datasource_uid = data.grafana_data_source.prometheus.uid
+
+      relative_time_range {
+        from = 900
+        to   = 0
+      }
+
+      model = jsonencode({
+        refId         = "A"
+        datasource    = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
+        expr          = "pve_nvme_critical_warning{job=\"pve-host\"} > 0"
+        instant       = true
+        range         = false
+        intervalMs    = 1000
+        maxDataPoints = 43200
+      })
+    }
+
+    data {
+      ref_id         = "B"
+      datasource_uid = "__expr__"
+
+      relative_time_range {
+        from = 0
+        to   = 0
+      }
+
+      model = jsonencode({
+        refId      = "B"
+        type       = "threshold"
+        datasource = { type = "__expr__", uid = "__expr__" }
+        expression = "A"
+        conditions = [
+          {
+            evaluator = {
+              type   = "gt"
+              params = [0]
+            }
+          }
+        ]
+        intervalMs    = 1000
+        maxDataPoints = 43200
+      })
+    }
+
+    labels = {
+      product  = "platform"
+      env      = "production"
+      severity = "critical"
+    }
+
+    annotations = {
+      summary = "NVMe {{ $labels.device }} on pve01 raised a SMART critical warning ({{ $value }}). Replace the disk; this is the only copy of the running estate."
     }
   }
 
@@ -394,10 +595,11 @@ resource "grafana_rule_group" "onprem_pve_risk" {
   }
 }
 
-# COLLECTOR DEAD — the textfile script is installed by the Ansible role, so
-# absence after that is a real failure, not "not rolled out yet". Same
-# `absent_over_time` shape as pve-metrics-absent: the empty result is the
-# healthy case (no_data OK); the alert fires on the synthesized 1.
+# COLLECTOR DEAD OR STALE — the textfile script is installed by the Ansible
+# role, so absence after that is a real failure, not "not rolled out yet".
+# `absent_over_time` turns absence into data (empty result = healthy, no_data
+# OK). The second rule catches the harder case a textfile collector cannot see
+# by itself: the file is present but frozen, so every gauge reads a stale value.
 resource "grafana_rule_group" "onprem_pve_textfile_absent" {
   count            = local.pve_host_live ? 1 : 0
   name             = "onprem (pve — host collector)"
@@ -467,6 +669,76 @@ resource "grafana_rule_group" "onprem_pve_textfile_absent" {
 
     annotations = {
       summary = "No pve_zpool_health from pve01 for 30 minutes. The textfile timer, node-exporter or the host Alloy push has stopped, so every ZFS/NVMe/PBS signal above is blind. Check `systemctl status pve-metrics.timer prometheus-node-exporter alloy-pve` on the host."
+    }
+  }
+
+  # STALE, not absent: the file (and its series) still exist, but the timer or
+  # script stopped rewriting it. node-exporter cannot tell a fresh textfile
+  # from a week-old one, so the script stamps the epoch of its last COMPLETED
+  # run. 15 min = three missed 5-minute ticks (one lost tick is tolerated).
+  rule {
+    name           = "pve-metrics-stale"
+    condition      = "B"
+    for            = "5m"
+    no_data_state  = "OK"
+    exec_err_state = "KeepLast"
+
+    data {
+      ref_id         = "A"
+      query_type     = "instant"
+      datasource_uid = data.grafana_data_source.prometheus.uid
+
+      relative_time_range {
+        from = 900
+        to   = 0
+      }
+
+      model = jsonencode({
+        refId         = "A"
+        datasource    = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
+        expr          = "time() - pve_metrics_last_success_timestamp_seconds{job=\"pve-host\"} > 900"
+        instant       = true
+        range         = false
+        intervalMs    = 1000
+        maxDataPoints = 43200
+      })
+    }
+
+    data {
+      ref_id         = "B"
+      datasource_uid = "__expr__"
+
+      relative_time_range {
+        from = 0
+        to   = 0
+      }
+
+      model = jsonencode({
+        refId      = "B"
+        type       = "threshold"
+        datasource = { type = "__expr__", uid = "__expr__" }
+        expression = "A"
+        conditions = [
+          {
+            evaluator = {
+              type   = "gt"
+              params = [0]
+            }
+          }
+        ]
+        intervalMs    = 1000
+        maxDataPoints = 43200
+      })
+    }
+
+    labels = {
+      product  = "platform"
+      env      = "production"
+      severity = "critical"
+    }
+
+    annotations = {
+      summary = "The pve01 textfile snapshot has not been rewritten for over 15 minutes (last successful run {{ $value }}s ago). The series are still present but STALE — every ZFS/NVMe/PBS value is frozen. Check `systemctl status pve-metrics.timer` and `journalctl -u pve-metrics` on the host."
     }
   }
 }

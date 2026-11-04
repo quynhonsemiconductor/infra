@@ -23,9 +23,16 @@ pve_monitoring_enabled: true
 # with gitops versions.yaml; the checksum is from the GitHub release asset.
 pve_monitoring_alloy_version: "1.13.0"
 pve_monitoring_alloy_sha256: "1e4e809917e2a0395b7027012379103fc9112731832508b03ff8aeffa041c977"
+# The archive holds one file; its hash is checked AFTER extraction too, so a
+# mis-labelled archive cannot install a different binary under this pin.
+pve_monitoring_alloy_binary_sha256: "03e9131bcb46c10559f0117586c816e79a284fbea06eb6bb15eccd8dd920cb42"
 pve_monitoring_alloy_url: "https://github.com/grafana/alloy/releases/download/v{{ pve_monitoring_alloy_version }}/alloy-linux-amd64.zip"
 pve_monitoring_alloy_binary: /usr/local/bin/alloy
 pve_monitoring_alloy_config: /etc/alloy/config.alloy
+pve_monitoring_alloy_user: alloy
+# Root-only 0700: the archive and the extracted binary are not world-readable
+# while they sit on disk, and nothing else can plant a file there.
+pve_monitoring_download_dir: /var/lib/qnsc-alloy-download
 
 # OTLP/HTTP endpoint of the in-cluster `alloy-otlp-host` NodePort service,
 # e.g. "http://192.0.2.20:30418". REQUIRED when enabled; it is a site

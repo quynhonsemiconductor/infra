@@ -9,7 +9,15 @@ Type=oneshot
 ExecStart={{ pve_monitoring_script }}
 User=root
 Group=root
-# zpool/smartctl/proxmox-backup-manager failures are handled inside the script;
-# a non-zero exit here still leaves the previous snapshot in place, so the
-# timer can retry without taking the file away.
+# zpool/smartctl/proxmox-backup-manager failures are handled inside the script
+# (each command has its own `timeout 20`); this is the outer bound, so a wedged
+# unit can never leave the timer's next tick queued behind it.
+TimeoutStartSec=60s
 Nice=10
+# The script needs root only to read SMART/PBS/ZFS. It writes exactly one
+# directory, so give it read-only everything else and no new privileges.
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+ReadWritePaths={{ pve_monitoring_textfile_dir }}

@@ -6,8 +6,8 @@ Wants=network-online.target prometheus-node-exporter.service
 
 [Service]
 Type=simple
-User=root
-Group=root
+User={{ pve_monitoring_alloy_user }}
+Group={{ pve_monitoring_alloy_user }}
 ExecStart={{ pve_monitoring_alloy_binary }} run --disable-reporting --storage.path=/var/lib/alloy --server.http.listen-addr=127.0.0.1:12345 {{ pve_monitoring_alloy_config }}
 Restart=on-failure
 RestartSec=10s

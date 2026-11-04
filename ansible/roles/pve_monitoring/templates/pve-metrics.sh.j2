@@ -24,7 +24,7 @@ emit() {
 # DEGRADED / FAULTED / OFFLINE / UNAVAIL / REMOVED, so the exported gauge is
 # 1 only for ONLINE and 0 for everything else.
 if command -v zpool >/dev/null 2>&1; then
-    zpool list -Hp -o name,size,alloc,free,health 2>/dev/null |
+    timeout 20 zpool list -Hp -o name,size,alloc,free,health 2>/dev/null |
     while read -r pool size alloc free health; do
         if [ "$health" = "ONLINE" ]; then state=1; else state=0; fi
         emit "pve_zpool_health{pool=\"$pool\"} $state"
@@ -41,7 +41,7 @@ fi
 # absolute counts/flags (any non-zero matters).
 for dev in $nvme_glob; do
     [ -e "$dev" ] || continue
-    json="$(smartctl -j -a "$dev" 2>/dev/null || true)"
+    json="$(timeout 20 smartctl -j -a "$dev" 2>/dev/null || true)"
     [ -n "$json" ] || continue
 
     pct="$(printf '%s' "$json" | jq -r '.nvme_smart_health_information_log.percentage_used // empty' 2>/dev/null || true)"
@@ -61,7 +61,7 @@ done
 # no total is emitted as 0; the alert's `size > 0` gate keeps it out of the
 # ratio instead of paging on a divide-by-zero.
 if command -v proxmox-backup-manager >/dev/null 2>&1; then
-    proxmox-backup-manager datastore list --output-format json 2>/dev/null |
+    timeout 20 proxmox-backup-manager datastore list --output-format json 2>/dev/null |
     jq -r '.[] | [.name, (.total // 0), (.used // 0), (.avail // 0)] | @tsv' 2>/dev/null |
     while IFS="$(printf '\t')" read -r name total used avail; do
         [ -n "$name" ] || continue
@@ -70,6 +70,11 @@ if command -v proxmox-backup-manager >/dev/null 2>&1; then
         emit "pve_pbs_datastore_avail_bytes{datastore=\"$name\"} ${avail:-0}"
     done || true
 fi
+
+# Heartbeat: the file was rewritten by a COMPLETED run. The alert uses
+# `time() - this > 900` to catch a timer/script that stopped updating the
+# snapshot (a present-but-stale file is otherwise invisible to node-exporter).
+emit "pve_metrics_last_success_timestamp_seconds $(date +%s)"
 
 # Atomic publish: node-exporter ignores a half-written file. The mode must be
 # world-readable because node-exporter runs as the prometheus user.

@@ -102,27 +102,68 @@
 # Pinned archive, not a distribution package: it is the same binary version the
 # cluster collector runs, and the checksum makes the download reviewable. The
 # archive holds one file, `alloy-linux-amd64`.
+#
+# DOWNLOAD DIR IS 0700 ROOT: neither the archive nor the extracted binary is
+# world-readable while on disk, and no other account can plant a file in it.
+- name: Create the Alloy service account
+  ansible.builtin.user:
+    name: "{{ pve_monitoring_alloy_user }}"
+    system: true
+    shell: /usr/sbin/nologin
+    home: /var/lib/alloy
+    create_home: false
+    comment: Grafana Alloy (pve host metrics)
+
+- name: Create the root-only download directory
+  ansible.builtin.file:
+    path: "{{ pve_monitoring_download_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
 - name: Download the pinned Alloy release
   ansible.builtin.get_url:
     url: "{{ pve_monitoring_alloy_url }}"
-    dest: /tmp/alloy-linux-amd64-{{ pve_monitoring_alloy_version }}.zip
+    dest: "{{ pve_monitoring_download_dir }}/alloy-linux-amd64-{{ pve_monitoring_alloy_version }}.zip"
     checksum: "sha256:{{ pve_monitoring_alloy_sha256 }}"
     owner: root
     group: root
-    mode: "0644"
+    mode: "0600"
 
 # Versioned unpack directory: a version bump cannot reuse the previous
 # binary via `creates`.
 - name: Unpack Alloy
   ansible.builtin.unarchive:
-    src: /tmp/alloy-linux-amd64-{{ pve_monitoring_alloy_version }}.zip
-    dest: /tmp/alloy-{{ pve_monitoring_alloy_version }}
+    src: "{{ pve_monitoring_download_dir }}/alloy-linux-amd64-{{ pve_monitoring_alloy_version }}.zip"
+    dest: "{{ pve_monitoring_download_dir }}/alloy-{{ pve_monitoring_alloy_version }}"
     remote_src: true
-    creates: /tmp/alloy-{{ pve_monitoring_alloy_version }}/alloy-linux-amd64
+    owner: root
+    group: root
+    mode: "0700"
+    creates: "{{ pve_monitoring_download_dir }}/alloy-{{ pve_monitoring_alloy_version }}/alloy-linux-amd64"
+
+# The archive checksum proves the download; this proves the EXTRACTED file is
+# the pinned binary (a substituted archive body is caught here, not by a
+# checksum recorded for a different blob).
+- name: Hash the extracted Alloy binary
+  ansible.builtin.stat:
+    path: "{{ pve_monitoring_download_dir }}/alloy-{{ pve_monitoring_alloy_version }}/alloy-linux-amd64"
+    checksum_algorithm: sha256
+    get_checksum: true
+  register: pve_monitoring_alloy_extracted
+
+- name: Refuse a binary that does not match the pinned digest
+  ansible.builtin.assert:
+    that: pve_monitoring_alloy_extracted.stat.checksum == pve_monitoring_alloy_binary_sha256
+    fail_msg: >-
+      Extracted Alloy binary digest is {{ pve_monitoring_alloy_extracted.stat.checksum }},
+      expected {{ pve_monitoring_alloy_binary_sha256 }}. Refusing to install.
+    quiet: true
 
 - name: Install the Alloy binary
   ansible.builtin.copy:
-    src: /tmp/alloy-{{ pve_monitoring_alloy_version }}/alloy-linux-amd64
+    src: "{{ pve_monitoring_download_dir }}/alloy-{{ pve_monitoring_alloy_version }}/alloy-linux-amd64"
     dest: "{{ pve_monitoring_alloy_binary }}"
     remote_src: true
     owner: root

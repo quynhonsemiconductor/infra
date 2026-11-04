@@ -58,6 +58,13 @@ pve:
 The role asserts it rather than installing a collector that sends nowhere. Node-exporter binds to loopback; no new
 port is opened on the host.
 
+**The OTLP door is LAN-reachable and unauthenticated.** `alloy-otlp-host` (NodePort 30418) admits RFC1918 sources
+and filters metrics by `service.name`/name; it does not authenticate them. Pinning the source to pve01 would require
+the host's address in the public GitOps repo (NetworkPolicy `ipBlock` cannot read a Secret, and there is no policy
+engine here), so the source restriction is deliberately left out of GitOps. Mitigations in place: RFC1918-only
+NetworkPolicy, the PVE metric-name allowlist, and the host sending only `pve_.*`. If the owner wants a strict source
+pin, add a node-firewall rule allowing only pve01 → 30418; that keeps the address in the site firewall, not in Git.
+
 ## PBS API token
 
 The `pbs` role never handles the token secret (and cannot run `op` itself: 1Password app integration only answers
