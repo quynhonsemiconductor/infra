@@ -27,6 +27,32 @@ resource is already in state).
 merge in `.github` and `gitops`; auto-merge on in `gitops` only. The default-branch
 rulesets already restrict PR merges to `squash`, so these flags are latent, not live.
 
+## Actions policy (added 2026-11-04, N-H3)
+
+`actions.tf` sets the org baseline: default workflow token **read**, Actions may
+**not** approve pull-request reviews, and `sha_pinning_required` **on** (org-wide,
+plus explicit on every platform repository this stack owns).
+
+Two things to know before and after the apply:
+
+- **Every `uses:` must be a full 40-character SHA.** It is today across the org's
+  active repositories; the three that still carry tags (`9router-pool`,
+  `agent-forge`, `solodesk`) are ARCHIVED, so their workflows cannot run and their
+  references cannot fail the policy. Pinning is the norm the org preset's Renovate
+  rule maintains.
+- **Repository-level token defaults are not in this provider.** Only the org-level
+  setting is managed, so a repository that explicitly set its own default to
+  `write` keeps it. After the apply, check each repository once and clear an
+  override where one surfaces:
+  ```sh
+  for r in $(gh repo list quynhonsemiconductor --limit 100 --json name -q '.[].name'); do
+    gh api "repos/quynhonsemiconductor/$r/actions/permissions/workflow" \
+      --jq '"$r \(.default_workflow_permissions) \(.can_approve_pull_request_reviews)"'
+  done
+  ```
+  Any row that is not `read false` needs
+  `gh api -X PUT repos/quynhonsemiconductor/<repo>/actions/permissions/workflow -f default_workflow_permissions=read -F can_approve_pull_request_reviews=false`.
+
 ## Not managed, on purpose
 
 - **Secret and variable values, and the secrets themselves.** `github_actions_secret`
