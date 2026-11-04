@@ -2,11 +2,14 @@
 # prod CNPG backup age + exporter health — pg-rova, pg-opshub, pg-kb
 # (P3 launch, 2026-11-04).
 #
-# WHY NOT A 5xx RULE: SA verified in Grafana Cloud (2026-11-04) that NO
-# `http_server_*` series exist for any product, dev or prod — the app HTTP
-# metrics are an instrumentation follow-up, not this PR. Availability for
-# opshub/kb prod is the readyz Synthetic check (opshub-prod.tf / kb-prod.tf)
-# plus the shared Kubernetes rules.
+# WHY NOT A 5xx RULE HERE: the app 5xx rules are in prod-http-5xx.tf (rova,
+# opshub, kb) and are independent of this backup set. An earlier header said
+# "NO `http_server_*` series exist for any product" — that was WRONG (audit
+# S-H2): the series exist and are aggregated by Adaptive Metrics, so they are
+# queried `sum by (job,status_class,deployment_environment_name)`, not as a
+# bare `{__name__=~"http_server_.*"}` selector. Availability for opshub/kb
+# prod is still the readyz Synthetic check (opshub-prod.tf / kb-prod.tf) plus
+# the shared Kubernetes rules.
 #
 # WHY NO FLAG: every rule here is silent until its cluster exists. The metric
 # selectors only match a live CNPG scrape, and the "exporter up but no backup

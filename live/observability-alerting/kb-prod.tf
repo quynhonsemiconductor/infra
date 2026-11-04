@@ -13,14 +13,15 @@
 # and the CNPG backup/replication rules are prod-data-plane wide (see
 # prod-cnpg-backup.tf and onprem-k3s.tf) — kb needs no copy of them.
 #
-# NO 5xx RULE FOR KB — deliberately, and this is a real gap rather than a
-# decision: kb publishes only the in-process Prometheus text
-# (`qnsc_http_requests_total` on /metrics, qnsc-kb-backend
-# src/core/metrics.py) and nothing scrapes it; it has no `http_server_*` OTel
-# series (SA verified in Grafana Cloud on 2026-11-04: no http_server_* series
-# exist for ANY product). App HTTP metrics are a separate instrumentation
-# follow-up, not this PR. A threshold over a series nobody has seen is exactly
-# the silent-no-data alert the audit warned about.
+# 5xx RULE: kb HAS one now, in prod-http-5xx.tf (`kb-prod-http-5xx-rate`),
+# alongside rova/opshub. The older claim in this header — that no
+# `http_server_*` series exist for any product and kb publishes only its
+# in-process /metrics — was WRONG and is corrected here (audit S-H2):
+# qnsc-kb-backend#369 exports the same `http.server.duration` family over
+# OTLP, and the series ARE in Mimir. They are aggregated by Adaptive Metrics,
+# so a bare `{__name__=~"http_server_.*"}` query returns nothing/422; query
+# them `sum by (job,status_class,deployment_environment_name)`. The rule is
+# silent until a kb prod API serves traffic (no_data_state = OK).
 #
 # ── GATE ───────────────────────────────────────────────────────────────────
 # `kb_prod_live` is flipped by ONE PR in the kb prod window, after the SA's

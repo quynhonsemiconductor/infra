@@ -159,7 +159,7 @@ once, none of which any existing check reported.
 |---|---|---|
 | `drift-detection` | — (`tofu plan`) | State says X, does AWS still say X? |
 | `unmanaged-resources` | `scripts/unmanaged_resources.py` | Does AWS hold cost-bearing things state has never known about? |
-| `alerting-health` | `scripts/alerting_health.py` | Is the configuration intact but unable to deliver? |
+| `alerting-health` | `scripts/alerting_health.py` | Is the configuration intact but unable to deliver? Includes a 7-day no-data sweep over every Prometheus alert rule (reported as WARN, because a not-yet-launched product is legitimately silent). |
 
 The third is the one that hides longest, because it produces no diff. Every alarm topic in
 this account once had zero subscriptions, the budget had no notifications, and six RDS

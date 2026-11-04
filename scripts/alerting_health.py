@@ -11,6 +11,11 @@ authenticate? Terraform reads Grafana datasources at PLAN time, so an expired to
 degrade alerting quietly, it fails every plan and apply that touches the grafana provider
 (it did, 2026-09-11, and went unnoticed for two days).
 
+The second check is the S-H1 guard: every enabled Prometheus alert rule must have returned
+data at least once in the last 7 days. It exists because half the rules once filtered a label
+value that does not exist, evaluated NoData and reported OK forever. Findings are WARN (a
+pre-launch product is legitimately silent); a rule whose query itself errors is also WARN.
+
 A check that could not run must never read as a check that passed: a missing token is
 SKIPPED, and a skip fails the run in CI.
 
@@ -20,9 +25,12 @@ turns red and the workflow's alert job opens the issue.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
+import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 
@@ -58,7 +66,85 @@ def check_grafana() -> tuple[list, list]:
         return [("Grafana", f"{url} unreachable: {error}")], []
 
 
-CHECKS = [("Grafana token", check_grafana)]
+def _get_json(url: str, token: str) -> object:
+    request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    with urllib.request.urlopen(request, timeout=30) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def check_alert_rules_have_data() -> tuple[list, list]:
+    """Every enabled Prometheus alert rule must have returned data in 7 days.
+
+    The 2026-11-04 audit found ~half the rules filtering a label value that does
+    not exist (``deployment_environment_name="production"`` while on-prem emits
+    ``prod``). They evaluated NoData and, with ``no_data_state = OK``, reported
+    healthy forever. A rule can only be checked for "has data" by asking its
+    datasource: Grafana's rule API carries the expression but not a 7-day data
+    history. So each rule's expression is run over the last 7 days at a 6-hour
+    step; an empty result is the finding.
+
+    WARN, not FAIL: several rules are silent until their product or cluster
+    exists (opshub/kb prod before launch), and paging on that would be noise. A
+    WARN keeps the job green while putting the list in the run summary every day.
+    """
+    token = os.environ.get("GRAFANA_ALERTS_TOKEN")
+    url = os.environ.get("GRAFANA_URL", "https://qnsc.grafana.net").rstrip("/")
+    if not token:
+        raise Skipped("GRAFANA_ALERTS_TOKEN is not set in the environment")
+
+    try:
+        rules = _get_json(f"{url}/api/v1/provisioning/alert-rules", token)
+    except urllib.error.HTTPError as error:
+        return [("Alert rules", f"cannot list rules: HTTP {error.code}")], []
+    except (urllib.error.URLError, TimeoutError) as error:
+        return [("Alert rules", f"{url} unreachable: {error}")], []
+    if not isinstance(rules, list):
+        return [("Alert rules", "unexpected provisioning response")], []
+
+    end = int(time.time())
+    start = end - 7 * 24 * 3600
+    warns: list[tuple[str, str]] = []
+    for rule in rules:
+        if not isinstance(rule, dict) or rule.get("isPaused"):
+            continue
+        rule_name = f"{rule.get('ruleGroup', '?')}/{rule.get('title', '?')}"
+        for node in rule.get("data") or []:
+            uid = node.get("datasourceUid")
+            model = node.get("model") or {}
+            datasource = model.get("datasource") or {}
+            if not uid or uid == "__expr__" or not model.get("expr"):
+                continue
+            # Loki rules are log queries with a different proxy path and a
+            # different shape; the fail-open rule is verified by its own PR.
+            if datasource.get("type") != "prometheus":
+                continue
+            query = urllib.parse.urlencode(
+                {"query": model["expr"], "start": start, "end": end, "step": 21600}
+            )
+            try:
+                payload = _get_json(
+                    f"{url}/api/datasources/proxy/uid/{uid}/api/v1/query_range?{query}",
+                    token,
+                )
+            except urllib.error.HTTPError as error:
+                warns.append((rule_name, f"query failed: HTTP {error.code}"))
+                break
+            except (urllib.error.URLError, TimeoutError) as error:
+                warns.append((rule_name, f"query failed: {error}"))
+                break
+            result = ((payload or {}).get("data") or {}).get("result")
+            if not result:
+                warns.append(
+                    (rule_name, "no data in 7 days — the selector or label value may not exist")
+                )
+            break
+    return [], warns
+
+
+CHECKS = [
+    ("Grafana token", check_grafana),
+    ("Alert rules have data", check_alert_rules_have_data),
+]
 
 
 def main() -> int:

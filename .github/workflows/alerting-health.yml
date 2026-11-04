@@ -1,10 +1,16 @@
 # =============================================================================
-# Alerting health — daily check that the Grafana token still authenticates.
+# Alerting health — daily check that the Grafana token still authenticates, and that every
+# enabled Prometheus alert rule returned data at least once in the last 7 days.
 #
 # The script is scripts/alerting_health.py. This file only schedules it and supplies the
 # token. Its AWS checks (SNS subscriptions, budgets, cost anomaly, EventBridge) were removed
 # with the AWS exit (2026-11-02). The token check stays because an expired token fails every
 # plan and apply that touches the grafana provider (2026-09-11, unnoticed for two days).
+#
+# The 7-day sweep is the S-H1 guard: a rule that filters a label value which does not exist
+# evaluates NoData, and with no_data_state=OK reports healthy forever. It reports WARN, not
+# FAIL, because rules for a product/cluster that has not launched are legitimately silent;
+# the list is in the run summary every day and turns FAIL only when a query itself errors.
 # =============================================================================
 name: Alerting health
 
@@ -26,7 +32,7 @@ permissions:
 
 jobs:
   check:
-    name: Does the Grafana token authenticate?
+    name: Token authenticates and every alert rule has 7-day data
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
