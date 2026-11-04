@@ -143,7 +143,11 @@ while IFS= read -r id; do
   [[ -n "$id" ]] || continue
   graph_get "$GRAPH/servicePrincipals/$id?\$select=id,appId,displayName,servicePrincipalType,appOwnerOrganizationId" allow-missing >"$TMP/sps/$id.json"
 done < <(jq -r '[.[] | .clientId, .resourceId] | unique[]' "$TMP/grants.json"; jq -r '.[] | .principalId, .resourceId' "$TMP/assigned.json")
-jq -s -c '[.[] | select(type == "object" and .id) | {(.id): {displayName, appId, servicePrincipalType, appOwnerOrganizationId}}] | add // {}' "$TMP"/sps/*.json >"$TMP/sps.json"
+if compgen -G "$TMP/sps/*.json" >/dev/null; then
+  jq -s -c '[.[] | select(type == "object" and .id) | {(.id): {displayName, appId, servicePrincipalType, appOwnerOrganizationId}}] | add // {}' "$TMP"/sps/*.json >"$TMP/sps.json"
+else
+  echo '{}' >"$TMP/sps.json" # a tenant with no tenant-wide grants at all still renders an empty report
+fi
 
 # ── one portable JSON file: the report step reads only this ──────────────────────────────────────────────
 jq -n \
