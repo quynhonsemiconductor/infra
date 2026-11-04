@@ -25,6 +25,15 @@ prometheus.relabel "pve_only" {
     regex         = "pve_.*"
     action        = "keep"
   }
+
+  // The scrape adds job/instance labels (job defaults to "pve_textfile").
+  // If they reach OTLP as datapoint attributes they can win over the
+  // resource service.name that the cluster exporter maps to `job`, and every
+  // rule here selects job="pve-host". Drop them; service.name is the identity.
+  rule {
+    regex  = "job|instance"
+    action = "labeldrop"
+  }
 }
 
 otelcol.receiver.prometheus "pve" {
