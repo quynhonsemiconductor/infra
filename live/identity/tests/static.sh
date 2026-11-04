@@ -136,4 +136,21 @@ OLD_LN=$(grep -n 'service-account-issuer={{ k3s_server_oidc_issuer_old }}' "$K3S
 [ -n "$NEW_LN" ] && [ -n "$OLD_LN" ] && [ "$NEW_LN" -lt "$OLD_LN" ] ||
 	fail "k3s_server template must list the new issuer BEFORE the old default (k3s signs with the first)"
 
+# 7. Prod identity (prod_apps.tf): the prod sign-in callback is the deployed
+#    host only (no loopback, ever) and the prod service app never carries
+#    Mail.Send — prod mail is Exchange RBAC, not an Entra permission.
+PROD_CODE=$(grep -vE '^[[:space:]]*#' prod_apps.tf)
+printf '%s\n' "$PROD_CODE" | grep -q 'https://opshub.qnsc.vn/api/auth/callback/microsoft' ||
+	fail "prod_apps.tf: the OpsHub Prod sign-in callback is missing"
+printf '%s\n' "$PROD_CODE" | grep -qE 'localhost|127\.0\.0\.1' &&
+	fail "prod_apps.tf: a loopback redirect — prod sign-in uses the deployed callback only"
+printf '%s\n' "$PROD_CODE" | grep -qi 'Mail\.Send' &&
+	fail "prod_apps.tf: Mail.Send in Entra — prod mail is Exchange RBAC only"
+
+# 8. Prod identity: the sign-in app refuses to apply without the service
+#    certificate, so a 9-add partial shape cannot be applied.
+grep -A60 'resource "azuread_application" "opshub_prod"' prod_apps.tf |
+	grep -q 'condition[[:space:]]*=[[:space:]]*var\.opshub_prod_service_certificate != null' ||
+	fail "prod_apps.tf: the OpsHub Prod app has no precondition on the service certificate"
+
 echo "PASS: static guard"

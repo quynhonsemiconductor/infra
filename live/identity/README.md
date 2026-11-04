@@ -484,8 +484,9 @@ app already carries it (2026-11-01; its combined PEM is
 `kv-qnsc-prod/rova-prod-graph-cert`), so nothing is created in this stack.
 Import id form (azuread 3.10 parser): EXACTLY
 `<app OBJECT id>/certificate/<keyId>` — no `/applications/` prefix.
-NO opshub/kb PROD apps: those products are not live in prod; their service
-apps come with their own prod PRs. rova_prod carries the ONE Graph permission
+NO opshub/kb PROD apps in this section: opshub prod's service app is CREATED
+in `prod_apps.tf` (below); kb prod's service app comes with its own prod PR,
+after its hostnames and permissions are decided. rova_prod carries the ONE Graph permission
 the plan gives the rova Service app — tenant-wide guest invite
 (`User.Invite.All`, §7.3/H-D14, backlog P0-7), admin-consented on apply; the
 rova SIGN-IN apps keep NO application permissions of their own (the dev
@@ -647,6 +648,222 @@ exists before the old is removed) → write the new combined PEM to the vault
 authenticates — no gap.
 
 
+## Prod identity: OpsHub (`prod_apps.tf`)
+
+Unlike the dev pair, the prod pair does not exist: this stack CREATES it.
+Nothing is imported, and the shape is OpenTofu's like any other resource.
+
+- **"OpsHub Prod"** — sign-in app, Delegated Graph scopes only (the dev set:
+  `openid profile email offline_access User.Read`), ONE redirect:
+  `https://opshub.qnsc.vn/api/auth/callback/microsoft`. NO loopback (prod
+  sign-in happens on the deployed host only). It carries the same seven app
+  roles as the dev registration (the ids are derived name-based UUIDs, so a
+  re-plan never changes them). No client secret in state: the owner creates
+  it (step 4).
+- **"OpsHub Prod Service"** — certificate only, the same three Graph
+  application roles as the dev service app
+  (`DeviceManagementManagedDevices.Read.All`, `SecurityEvents.Read.All`,
+  `User.Read.All`). **Never `Mail.Send` in Entra** — prod mail is Exchange
+  RBAC for Applications, scoped to the mailbox (step 7). Created only when
+  the PUBLIC certificate is supplied, so a plan never creates an app without
+  its credential.
+
+### Pre-apply check (run it first)
+
+The readiness report (2026-11-03) says neither app exists, so the plan is
+CREATES. Confirm before spending the keypair step:
+
+```sh
+az ad app list --display-name "OpsHub Prod" --query "[].appId" -o tsv
+az ad app list --display-name "OpsHub Prod Service" --query "[].appId" -o tsv
+```
+
+- **Both empty** — expected. Continue with the owner steps: `tofu plan` must
+  show the 12 adds.
+- **Any app exists** — do NOT create. Adopt it instead of a duplicate: add
+  the import blocks below to `prod_apps.tf` (the ids are OBJECT ids, not app
+  ids: `az ad app show --id <appId> --query id -o tsv`, and
+  `az ad sp show --id <appId> --query id -o tsv`), then `tofu plan` must show
+  no create for the imported addresses. The certificate import id is
+  `<service app OBJECT id>/certificate/<keyId>` (the same shape mail.tf uses).
+
+  ```hcl
+  import {
+    to = azuread_application.opshub_prod
+    id = "/applications/<sign-in app OBJECT id>"
+  }
+  import {
+    to = azuread_service_principal.opshub_prod
+    id = "/servicePrincipals/<sign-in SP OBJECT id>"
+  }
+  import {
+    to = azuread_application.opshub_prod_service[0]
+    id = "/applications/<service app OBJECT id>"
+  }
+  import {
+    to = azuread_service_principal.opshub_prod_service[0]
+    id = "/servicePrincipals/<service SP OBJECT id>"
+  }
+  import {
+    to = azuread_application_certificate.opshub_prod_service[0]
+    id = "<service app OBJECT id>/certificate/<keyId>"
+  }
+  ```
+
+  App roles cannot be imported by a single block: repeat
+  `to = azuread_application_app_role.opshub_prod["<key>"]` with
+  `id = "<sign-in app OBJECT id>/appRole/<role id>"` for each of the seven.
+  The existing role ids must EQUAL the derived ones
+  (`tofu output -json opshub_prod_object_ids | jq .signin_app_roles`); if they
+  differ, STOP — adopting them is a reviewed code change (a var like the dev
+  `opshub_dev_app_role_ids`), not an import.
+
+  The gitops comment that says the service app's certificate is "already in
+  kv-qnsc-prod from the AWS-exit copy-out" (`values/opshub/prod.secrets.yaml`,
+  the `opshub-prod-graph-cert` rule) is stale: this runbook creates and
+  writes it. The gitops owner is correcting that comment; the README is the
+  source of truth until then.
+
+### Owner steps
+
+1. Generate the service keypair locally (RSA 2048, ≤ 24 months). Only the
+   PUBLIC half goes to Terraform; the combined PEM goes to the vault. None of
+   it enters the repo or TF state:
+
+   ```sh
+   umask 077
+   mkdir -p "$HOME/keys" && cd "$HOME/keys"
+   openssl req -x509 -newkey rsa:2048 -nodes \
+     -keyout opshub-prod-key.pem -out opshub-prod-cert.pem \
+     -days 730 -subj '/CN=OpsHub Prod Service'
+   # ORDER MATTERS: private key (PKCS#8) FIRST, then the certificate —
+   # exactly what the gitops consumer (values/opshub/prod.secrets.yaml)
+   # reads. The other order mounts a file the worker cannot parse.
+   cat opshub-prod-key.pem opshub-prod-cert.pem > opshub-prod-combined.pem
+   grep -c "PRIVATE KEY" opshub-prod-cert.pem
+   export TF_VAR_opshub_prod_service_certificate="$(cat "$HOME/keys/opshub-prod-cert.pem")"
+   ```
+
+   The `grep` must print `0` and the export carries the PUBLIC half only.
+   `scripts/owner/identity-env/identity-env.sh` keeps TF_VARs already set in
+   your shell, so this export survives the kit.
+
+2. `tofu plan` with the full variable set (the kit). Go/no-go, exactly:
+   **12 to add, 0 to change, 0 to destroy** — 1 sign-in application
+   ("OpsHub Prod"), 1 service principal, 7 app roles; 1 service application
+   ("OpsHub Prod Service"), 1 service principal, 1 certificate credential.
+   Without `TF_VAR_opshub_prod_service_certificate` the plan adds only the
+   sign-in app + SP + roles (9): supply the certificate and re-plan — do not
+   apply the partial shape.
+
+3. `tofu apply`, then record the outputs:
+   `tofu output -json opshub_prod_client_ids` (gitops placeholders
+   `<OPSHUB_PROD_ENTRA_CLIENT_ID>` = `signin`,
+   `<OPSHUB_PROD_SERVICE_APP_ID>` = `service`) and
+   `tofu output -json opshub_prod_object_ids` (follow-up steps below).
+
+4. **Sign-in client secret** — never in state, ≤ 6 months, straight into the
+   vault. The script appends the credential and writes it in one run:
+
+   ```sh
+   ./scripts/rotate-signin-secret.sh \
+     "$(tofu output -json opshub_prod_object_ids | jq -r .signin_app)" \
+     kv-qnsc-prod opshub-prod-entra-client-secret
+   ```
+
+5. **Service certificate** — the worker reads the combined PEM from the
+   vault through ESO (key + cert, one secret). The FILE is the argv:
+
+   ```sh
+   az keyvault secret set --vault-name kv-qnsc-prod \
+     --name opshub-prod-graph-cert \
+     --file "$HOME/keys/opshub-prod-combined.pem" \
+     --tags owner=platform rotate-by=2028-11-04
+   ```
+
+6. **Admin consent** for the three application roles (tenant-wide; they are
+   the dev set, no `Mail.Send`):
+
+   ```sh
+   az ad app permission admin-consent \
+     --id "$(tofu output -json opshub_prod_client_ids | jq -r .service)"
+   ```
+
+7. **Exchange RBAC** (owner, PowerShell 7 + ExchangeOnlineManagement, Exchange
+   admin role). Creates the mailbox, the mailbox-scoped management scope and
+   `Application Mail.Send` on the SERVICE app, then proves the scope. Allow up
+   to an hour for propagation before debugging.
+
+   ```powershell
+   Import-Module ExchangeOnlineManagement
+   Connect-ExchangeOnline -ShowBanner:$false
+   # Run this INSIDE the repo's live/identity directory, logged in with `az
+   # login`; the two values are read from the outputs, not typed.
+   $svcApp = (tofu output -json opshub_prod_client_ids  | ConvertFrom-Json).service
+   $svcObj = (tofu output -json opshub_prod_object_ids  | ConvertFrom-Json).service_sp
+   $own    = 'noreply-opshub@qnsc.vn'
+
+   Get-Mailbox -Identity $own -ErrorAction SilentlyContinue
+   New-Mailbox -Shared -Name 'OpsHub No-Reply' -Alias 'noreply-opshub' -PrimarySmtpAddress $own
+   New-ManagementScope -Name 'noreply-opshub' -RecipientRestrictionFilter "PrimarySmtpAddress -eq '$own'"
+   New-ServicePrincipal -AppId $svcApp -ObjectId $svcObj -DisplayName 'OpsHub Prod Service'
+   New-ManagementRoleAssignment -App $svcApp -Role 'Application Mail.Send' -CustomResourceScope 'noreply-opshub'
+   foreach ($mb in 'noreply-opshub@qnsc.vn','noreply-rova@qnsc.vn','noreply-kb@qnsc.vn','noreply-opshub-dev@qnsc.vn') {
+     $in = @(Test-ServicePrincipalAuthorization -Identity $svcApp -Resource $mb) |
+       Where-Object { $_.RoleName -eq 'Application Mail.Send' } |
+       ForEach-Object { [string]$_.InScope }
+     '{0,-32} {1}' -f $mb, ($in -join ',')
+   }
+   ```
+
+   The proof table must read `True` for `noreply-opshub@qnsc.vn` and `False`
+   for every other row. Run each `New-*` only when the matching `Get-*` shows
+   it missing (all of them are idempotent in the rova script's shape; a
+   second `New-ManagementScope` fails on the name). If `Get-Mailbox` finds a
+   non-SharedMailbox at that address, stop and fix it by hand.
+
+8. **Group access** — already wired, nothing in this stack: prod internal
+   tools are gated at the EDGE by `grp-qnsc-staff` (this stack's
+   `grp_staff_id` output → repo variable `ENTRA_GRP_STAFF_ID` → live/edge).
+   The `opshub.qnsc.vn` host row in live/edge and its Access policy are the
+   edge owner's change; inside opshub, access is the app roles above.
+
+### Key Vault wiring (`opshub-prod-*`)
+
+Values never pass through OpenTofu. The prod ESO store already authenticates
+with workload identity and reads `kv-qnsc-prod` (Secrets User, Phase 1), so
+there is no per-name TF resource to add. `values/opshub/prod.secrets.yaml`
+expects these names in `kv-qnsc-prod`:
+
+| Secret | Written by |
+| --- | --- |
+| `opshub-prod-entra-client-secret` | step 4 (this README) |
+| `opshub-prod-graph-cert` | step 5 (this README) |
+| `opshub-prod-cookie-secret`, `-csrf-secret`, `-better-auth-secret` | owner bootstrap (`secrets.sh --product opshub --env prod`), random values |
+| `opshub-prod-db-app`, `-db-worker`, `-db-migrator`, `-db-readonly`, `-redis-url` | owner bootstrap / pg-opshub provisioning |
+| `opshub-prod-storage-access-key-id`, `-storage-secret-access-key` | R2 token (live/storage-prod) |
+
+### KB prod — open questions (no resources until decided)
+
+KB dev's apps tell us the shape but not the prod addresses:
+
+1. **Sign-in redirects**: dev has two on the `kb-api-dev` host
+   (`/api/v1/auth/entra/callback` and `/api/v1/connectors/oauth/callback`)
+   plus their localhost forms. What are the PROD host names? They are not in
+   live/edge or gitops yet, so they are deliberately not written here.
+2. **OAuth connector**: do the `/api/v1/connectors/oauth/callback` redirect
+   and the delegated `Files.Read`, `Files.Read.All`, `Sites.Read.All` scopes
+   ship in prod? Dev has them.
+3. **Mail**: the KB dev service app holds NO Graph application roles. If kb
+   prod sends mail, the only requirement is the owner's Exchange RBAC
+   (`Application Mail.Send` scoped to `noreply-kb@qnsc.vn`) — no Entra role.
+   Confirm whether kb prod mail is in scope for P3.
+4. **Service certificate / KV names**: same create pattern as opshub (public
+   PEM in, combined PEM to `kv-qnsc-prod/kb-prod-graph-cert` once the name is
+   confirmed against `values/kb/prod.secrets.yaml`).
+5. **Optional id-token claims**: dev has none (`email` is not in its scopes
+   either); keep none unless KB asks for `preferred_username`.
+
 ## Prod mail readiness: the rova prod fast-track checklist
 
 For the rova prod move (fast track, 2026-11-01). Everything below already
@@ -721,6 +938,7 @@ product-docs), so the owner reads the rest from Entra or `az` as shown.
 | `TF_VAR_mail_service_sp_object_ids` | JSON, 4 service SP object ids | mail export `*-sp.json` `.id` |
 | `TF_VAR_mail_service_cert_key_ids` | JSON, 4 key GUIDs (rova_prod included) | `.keyCredentials[0].keyId` of each service app export |
 | `TF_VAR_mail_service_certificates` | JSON, 4 PEM public certs | dev: 1Password "Entra mail cert – <product>-dev – certificate"; rova_prod: `az keyvault secret show ... | openssl x509` (mail step 3) |
+| `TF_VAR_opshub_prod_service_certificate` | PEM PUBLIC cert (one string), optional | `$HOME/keys/opshub-prod-cert.pem` from "Prod identity: OpsHub" step 1. Unset = the prod service app is not created |
 
 The `existing_*` and `mail_service_*` ids are public identifiers, not secrets,
 and can be read with read-only `az ad app list|show` / `az ad sp show`.
