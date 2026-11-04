@@ -126,6 +126,15 @@ variable "opshub_prod_service_certificate" {
   }
 }
 
+locals {
+  # One list feeds the declaration AND the managed grant, so they cannot drift.
+  opshub_prod_service_graph_roles = [
+    "DeviceManagementManagedDevices.Read.All",
+    "SecurityEvents.Read.All",
+    "User.Read.All",
+  ]
+}
+
 resource "azuread_application" "opshub_prod_service" {
   count = var.opshub_prod_service_certificate == null ? 0 : 1
 
@@ -138,7 +147,7 @@ resource "azuread_application" "opshub_prod_service" {
   required_resource_access {
     resource_app_id = data.azuread_service_principal.msgraph.client_id
     dynamic "resource_access" {
-      for_each = ["DeviceManagementManagedDevices.Read.All", "SecurityEvents.Read.All", "User.Read.All"]
+      for_each = local.opshub_prod_service_graph_roles
       content {
         id   = data.azuread_service_principal.msgraph.app_role_ids[resource_access.value]
         type = "Role"
@@ -166,6 +175,22 @@ resource "azuread_service_principal" "opshub_prod_service" {
   count = var.opshub_prod_service_certificate == null ? 0 : 1
 
   client_id = azuread_application.opshub_prod_service[0].client_id
+}
+
+# The GRANTS for the three roles declared above. They are separate objects on
+# the RESOURCE service principal (Microsoft Graph), so requiredResourceAccess
+# alone does not manage them: on 2026-11-04 the owner's admin-consent created
+# all three while the app's requiredResourceAccess read empty, i.e. Terraform
+# saw nothing. Managing them here makes a revoked or extra grant show up in
+# the plan. The three ALREADY EXIST in the tenant — import them BEFORE applying
+# (README "Pre-apply check": it prints the assignment ids); a create would add
+# a duplicate grant.
+resource "azuread_app_role_assignment" "opshub_prod_service" {
+  for_each = toset(var.opshub_prod_service_certificate == null ? [] : local.opshub_prod_service_graph_roles)
+
+  app_role_id         = data.azuread_service_principal.msgraph.app_role_ids[each.value]
+  principal_object_id = one(azuread_service_principal.opshub_prod_service[*].object_id)
+  resource_object_id  = data.azuread_service_principal.msgraph.object_id
 }
 
 output "opshub_prod_client_ids" {
