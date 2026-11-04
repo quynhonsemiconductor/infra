@@ -772,7 +772,7 @@ az ad app list --display-name "OpsHub Prod Service" --query "[].appId" -o tsv
 
    ```sh
    ./scripts/rotate-signin-secret.sh \
-     "$(tofu output -json opshub_prod_object_ids | jq -r .signin_app)" \
+     "$(tofu output -json opshub_prod_client_ids | jq -r .signin)" \
      kv-qnsc-prod opshub-prod-entra-client-secret
    ```
 

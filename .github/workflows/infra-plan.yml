@@ -235,6 +235,14 @@ jobs:
       - name: identity apply kit (offline test)
         run: bash scripts/owner/identity-env/test_identity_env.sh
 
+      # rotate-signin-secret.sh (owner, credential rotation): stub az output in
+      # the REAL `az ad app credential reset -o json` shape (no keyId) and the
+      # credential-list shape. Proves the /applications/ prefix is stripped, the
+      # vault write happens before any later failure, and a broken reset output
+      # stops without writing the vault.
+      - name: rotate-signin-secret (offline test)
+        run: bash scripts/owner/rotate-signin-secret_test.sh
+
   # ───────────────────────────────────────────────────────────────────────
   # tflint — NOT a required check yet, deliberately.
   #
