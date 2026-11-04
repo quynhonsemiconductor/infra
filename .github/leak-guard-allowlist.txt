@@ -82,3 +82,8 @@ key:ROLE_FIXTURE_ID
 key:SP_FIXTURE_ID
 key:TENANT_FIXTURE_ID
 key:FIXED_CREDENTIAL_ID
+# live/identity/mail.tf pins the EXISTING service-app certificate credentials by
+# keyId (public identifiers; the file is the reviewed source of truth for which
+# credential the stack manages). Only a GUID written as a pinned_key_id value is
+# suppressed — nothing else.
+key:pinned_key_id
