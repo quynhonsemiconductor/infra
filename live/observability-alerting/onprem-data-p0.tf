@@ -60,10 +60,11 @@ locals {
     failed_jobs = {
       name = "k3s-job-failed"
       # The LATEST Job of each CronJob only (a later success clears the alert),
-      # plus every Job that no CronJob owns (ArgoCD hook Jobs: migrator PreSync,
-      # role-timeouts, restore test), which are replaced on the next sync.
+      # plus every Job that no CronJob owns (ArgoCD hook Jobs: migrator PreSync
+      # in the product namespaces, role-timeouts and the restore test in
+      # restore-test), which are replaced on the next sync.
       # Needs kube_job_owner and kube_job_status_start_time in the allowlist.
-      expr      = "(max by (namespace, job_name) (kube_job_failed{condition=\"true\", namespace=~\"data-prod|rova-prod|restore-test\"}) and on (namespace, job_name) ((kube_job_status_start_time * on (namespace, job_name) group_left (owner_name) max by (namespace, job_name, owner_name) (kube_job_owner{owner_kind=\"CronJob\"})) == on (namespace, owner_name) group_left () max by (namespace, owner_name) (kube_job_status_start_time * on (namespace, job_name) group_left (owner_name) max by (namespace, job_name, owner_name) (kube_job_owner{owner_kind=\"CronJob\"})))) or (max by (namespace, job_name) (kube_job_failed{condition=\"true\", namespace=~\"data-prod|rova-prod|restore-test\"}) unless on (namespace, job_name) kube_job_owner{owner_kind=\"CronJob\"})"
+      expr      = "(max by (namespace, job_name) (kube_job_failed{condition=\"true\", namespace=~\"data-prod|rova-prod|opshub-prod|kb-prod|restore-test\"}) and on (namespace, job_name) ((kube_job_status_start_time * on (namespace, job_name) group_left (owner_name) max by (namespace, job_name, owner_name) (kube_job_owner{owner_kind=\"CronJob\"})) == on (namespace, owner_name) group_left () max by (namespace, owner_name) (kube_job_status_start_time * on (namespace, job_name) group_left (owner_name) max by (namespace, job_name, owner_name) (kube_job_owner{owner_kind=\"CronJob\"})))) or (max by (namespace, job_name) (kube_job_failed{condition=\"true\", namespace=~\"data-prod|rova-prod|opshub-prod|kb-prod|restore-test\"}) unless on (namespace, job_name) kube_job_owner{owner_kind=\"CronJob\"})"
       op        = "gt"
       threshold = 0
       for       = "5m"

@@ -15,8 +15,8 @@
 locals {
   app_hosts = {
     "rova.qnsc.vn"       = { product = "rova", env = "prod" }
-    "rova-dev.qnsc.vn"   = { product = "rova", env = "dev" }
-    "opshub-dev.qnsc.vn" = { product = "opshub", env = "dev" }
+    "rova-dev.qnsc.vn"   = { product = "rova", env = "dev", web = "cluster" }
+    "opshub-dev.qnsc.vn" = { product = "opshub", env = "dev", web = "cluster" }
     "kb-dev.qnsc.vn"     = { product = "kb", env = "dev", web = "cluster" }
   }
 
