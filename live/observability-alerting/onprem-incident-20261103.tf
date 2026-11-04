@@ -51,7 +51,7 @@ locals {
       name = "k3s-deployment-unavailable-prod"
       # Missing replicas per Deployment. A normal rolling update closes the gap
       # well inside 5 minutes; a stuck rollout or a crash loop does not.
-      expr      = "max by (namespace, deployment) (kube_deployment_spec_replicas{cluster=\"qnsc-onprem\", namespace=~\"rova-prod|opshub-prod|data-prod\"} - kube_deployment_status_replicas_available{cluster=\"qnsc-onprem\", namespace=~\"rova-prod|opshub-prod|data-prod\"})"
+      expr      = "max by (namespace, deployment) (kube_deployment_spec_replicas{cluster=\"qnsc-onprem\", namespace=~\"rova-prod|opshub-prod|kb-prod|data-prod\"} - kube_deployment_status_replicas_available{cluster=\"qnsc-onprem\", namespace=~\"rova-prod|opshub-prod|kb-prod|data-prod\"})"
       op        = "gt"
       threshold = 0
       for       = "5m"

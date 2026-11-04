@@ -21,6 +21,10 @@
 ^opshub-api-dev\.qnsc\.vn$
 ^kb-dev\.qnsc\.vn$
 ^kb-api-dev\.qnsc\.vn$
+# KB PROD hostname: live/observability-alerting/kb-prod.tf is the Synthetic
+# Monitoring target for the prod readyz check (public DNS by design, same as
+# rova/opshub prod above).
+^kb\.qnsc\.vn$
 # The cluster's public OIDC issuer (live/onprem-oidc): Entra fetches the
 # discovery document and JWKS from it, so the hostname is public by design.
 ^oidc\.qnsc\.vn$

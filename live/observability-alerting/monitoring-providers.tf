@@ -43,12 +43,6 @@ variable "grafana_sm_token" {
   sensitive   = true
 }
 
-variable "sm_probe_id" {
-  description = "Synthetic Monitoring probe id for the single allowed probe (§12: cap 1 probe, ≤ 10 checks). Default null — the id is only knowable with a live SM token; each product's flip PR sets it."
-  type        = number
-  default     = null
-}
-
 variable "healthchecks_api_token" {
   description = "Healthchecks.io API token (team account) — repo secret HEALTHCHECKS_API_TOKEN, same mappings as the SM token."
   type        = string
