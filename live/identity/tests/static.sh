@@ -27,6 +27,14 @@ grep -rnE 'azuread_(application|service_principal)_password|^[[:space:]]*passwor
 grep -rn 'client_secret' --include='*.tf' . >/dev/null &&
 	fail "client_secret found — no secret-based auth in this stack"
 
+# 1b. The ESO certificate credential is gone from EVERY .tf file: no
+#     certificate resource for the ESO apps and no eso_certificates variable.
+#     mail.tf keeps its OWN certificates and is not matched (the names make
+#     the check ESO-specific).
+grep -rnE 'azuread_application_certificate"[[:space:]]*"eso"|variable[[:space:]]*"eso_certificates"' \
+	--include='*.tf' . >/dev/null &&
+	fail "the ESO certificate credential is back — the ESO apps authenticate with workload identity only"
+
 # 2. No private key material committed.
 grep -rn 'BEGIN [A-Z ]*PRIVATE KEY' --include='*.tf' . >/dev/null &&
 	fail "private key material committed"
