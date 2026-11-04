@@ -73,7 +73,7 @@ case "$a" in
     if [ -f "$FX/keys-$o.json" ]; then jq -c '{keyCredentials:.}' "$FX/keys-$o.json"; exit 0; fi
     f=$(grep -l "\"$o\"" "$FX"/cert-eso-* 2>/dev/null | head -1); [ -n "$f" ] || { echo '{"keyCredentials":[]}'; exit 0; }
     jq -n --arg k "$(sed 1d "$f" | base64 | tr -d '\n')" '{keyCredentials:[{key:$k}]}' ;;
-  "ad sp show --id 00000003-0000-0000-c000-000000000000"*) cat "$FX/graph-sp" ;;
+  "ad sp show --id "*) cat "$FX/graph-sp" ;;
   "ad group show --group "*) g=${a#ad group show --group }; cat "$FX/group-${g%% *}" ;;
   "ad group member list"*) cat "$FX/members" ;;
   "ad signed-in-user show"*) cat "$FX/me" ;;
