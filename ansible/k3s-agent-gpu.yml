@@ -10,6 +10,10 @@
   roles:
     - role: vm_guest
       tags: [vm_guest]
+    - role: kubelet
+      vars:
+        kubelet_profile: agent
+      tags: [kubelet]
     - role: apparmor_containerd
       vars:
         apparmor_containerd_k3s_unit: k3s-agent

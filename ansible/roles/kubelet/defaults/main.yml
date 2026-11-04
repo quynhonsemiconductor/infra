@@ -1,0 +1,30 @@
+---
+# Kubelet settings for every k3s node, as a KubeletConfiguration drop-in.
+#
+# k3s cannot express these through config.yaml: `shutdownGracePeriod` and
+# `shutdownGracePeriodCriticalPods` stopped being kubelet flags in Kubernetes 1.36, and k3s has no
+# kubelet-config argument. The drop-in directory below is merged over k3s's generated config.
+#
+# The reservations are the point: a memory spike on vlsi-01 must OOM a pod, not kubelet or
+# containerd. Reservations are NOT limits: they only reduce the node's allocatable CPU/memory.
+kubelet_profile: agent
+
+kubelet_profiles:
+  server:
+    cpu: "1"
+    memory: "2Gi"
+  agent:
+    cpu: "500m"
+    memory: "1Gi"
+
+# Keep k3s-01 from filling its root disk with images of finished workloads (kb-worker images are
+# ~1.9 GB each). 14 days is long enough to debug a rollout and short enough to bound imagefs.
+kubelet_image_maximum_gc_age: "336h"
+
+# The drop-in path k3s documents and the one the live k3s-01 already uses.
+kubelet_config_dir: /var/lib/rancher/k3s/agent/etc/kubelet.conf.d
+kubelet_config_file: "{{ kubelet_config_dir }}/90-qnsc.conf"
+
+# A changed drop-in needs a k3s restart, which interrupts every workload on the node. Default:
+# report only. Apply in a maintenance window with -e kubelet_allow_restart=true.
+kubelet_allow_restart: false
