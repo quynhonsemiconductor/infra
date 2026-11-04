@@ -17,7 +17,7 @@ locals {
     "rova.qnsc.vn"       = { product = "rova", env = "prod" }
     "rova-dev.qnsc.vn"   = { product = "rova", env = "dev" }
     "opshub-dev.qnsc.vn" = { product = "opshub", env = "dev" }
-    "kb-dev.qnsc.vn"     = { product = "kb", env = "dev" }
+    "kb-dev.qnsc.vn"     = { product = "kb", env = "dev", web = "cluster" }
   }
 
   # The ONLY Access bypasses (plan §8.2): /readyz per dev host + the rova-dev
@@ -45,7 +45,7 @@ locals {
   # api on k3s (gitops#75/#76), SPA Worker opshub-dev-web (opshub#521).
   # 2026-11-01 rova prod (owner fast track): rova.qnsc.vn moves off AWS on the
   # move night. Merge ONLY on the night of the move — this line is the switch.
-  cutover = ["rova-dev.qnsc.vn", "opshub-dev.qnsc.vn", "rova.qnsc.vn"]
+  cutover = ["rova-dev.qnsc.vn", "opshub-dev.qnsc.vn", "rova.qnsc.vn", "kb-dev.qnsc.vn"]
 
   # Nothing goes live before the tunnels exist (DNS targets them).
   cutover_live = var.tunnels_exist ? local.cutover : []

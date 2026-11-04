@@ -56,7 +56,9 @@ locals {
     # kb dev — everything under /api (incl. /api/v1/auth/entra/callback) plus
     # /readyz, the alias of /health/ready that Synthetic Monitoring probes
     { hostname = "kb-dev.qnsc.vn", path = "^/api/", service = "http://api.kb-dev.svc:8000" },
-    { hostname = "kb-dev.qnsc.vn", path = "^/readyz$", service = "http://api.kb-dev.svc:8000" },
+    { hostname = "kb-dev.qnsc.vn", path = "^/readyz$", service = "http://api.kb-dev.svc:8000", bypass = true },
+    # The SPA: the chart's in-cluster web component (kb has no Workers SPA; live/edge web = "cluster").
+    { hostname = "kb-dev.qnsc.vn", path = null, service = "http://web.kb-dev.svc:8080" },
   ]
 }
 
