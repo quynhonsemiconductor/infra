@@ -1,5 +1,5 @@
 # =============================================================================
-# PROD app 5xx-rate alerts — rova and opshub (P3 launch, 2026-11-04).
+# PROD app 5xx-rate alerts — rova, opshub and kb (P3 launch, 2026-11-04).
 #
 # These were written once, in opshub-prod-app.tf, then removed in the same day
 # because `http_server_*` came back empty from Mimir — the collector was not
@@ -59,6 +59,17 @@ locals {
       job     = "opshub/.+"
       product = "opshub"
       summary = "opshub prod: more than 5% of API requests returned 5xx for 10 minutes (at least 50 requests in the window). Check the API logs and the pg-opshub dependency first."
+    }
+    kb = {
+      name    = "kb-prod-http-5xx-rate"
+      job     = "kb/.+"
+      product = "kb"
+      # kb's series come from the Python exporter added in qnsc-kb-backend#369,
+      # which records the SAME `http.server.duration` family with route/method/
+      # status_class, so this rule needs no shape change: the Adaptive Metrics
+      # keep-list keeps the same labels and the histogram `_count` carries 5xx.
+      # Silent until a kb prod API serves traffic (no_data_state = OK).
+      summary = "kb prod: more than 5% of API requests returned 5xx for 10 minutes (at least 50 requests in the window). Check the API logs, the TEI embedding service and pg-kb first."
     }
   }
 }

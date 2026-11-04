@@ -94,7 +94,7 @@ locals {
 # lookup fails the plan if an app is missing, so a host is never left
 # unchecked silently.
 locals {
-  access_jwt_hosts = toset(["rova-dev.qnsc.vn", "opshub-dev.qnsc.vn"])
+  access_jwt_hosts = toset(["rova-dev.qnsc.vn", "opshub-dev.qnsc.vn", "kb-dev.qnsc.vn"])
   # A rule may name a different Access app than its host's (`access_app`): /mcp is behind the MCP server
   # apps (live/edge mcp.tf, mcp_rova_prod.tf), whose JWT carries THEIR aud, not the host web app's.
   access_jwt_apps = setunion(local.access_jwt_hosts, toset(compact([for r in local.qnsc_apps_ingress : try(r.access_app, "")])))
