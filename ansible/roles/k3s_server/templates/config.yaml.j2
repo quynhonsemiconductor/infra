@@ -9,3 +9,9 @@ kube-apiserver-arg:
   - service-account-issuer={{ k3s_server_oidc_issuer }}
   - service-account-issuer={{ k3s_server_oidc_issuer_old }}
 {% endif %}
+kube-controller-manager-arg:
+  # Terminated pods (Succeeded/Failed) are garbage-collected once the cluster holds more than this many, oldest
+  # first. The upstream default (12500) never triggers on a three-node cluster, so every node reboot left its
+  # Deployment pods behind as `Completed` and finished Job pods piled up next to them. Jobs also carry
+  # ttlSecondsAfterFinished (gitops chart 0.19.0) so their logs stay for 3 days; this is the backstop.
+  - terminated-pod-gc-threshold={{ k3s_server_terminated_pod_gc_threshold }}

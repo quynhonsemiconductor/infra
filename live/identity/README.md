@@ -729,6 +729,59 @@ az ad app list --display-name "OpsHub Prod Service" --query "[].appId" -o tsv
   writes it. The gitops owner is correcting that comment; the README is the
   source of truth until then.
 
+### Graph permission grants — import the existing ones, never create
+
+The three application roles are declared in `required_resource_access` AND
+managed as `azuread_app_role_assignment` (a grant is a separate object on the
+Microsoft Graph service principal; on 2026-11-04 admin-consent created all
+three while the app's `requiredResourceAccess` read empty). The grants already
+exist — importing them first is mandatory, or the plan adds duplicates.
+
+```sh
+GRAPH_APP_ID="00000003-0000-0000-c000-000000000000"   # Microsoft Graph, well-known, not a secret
+SVC=$(az ad sp list --display-name "OpsHub Prod Service" --query "[0].id" -o tsv)
+GRAPH=$(az ad sp show --id "$GRAPH_APP_ID" --query id -o tsv)
+az ad sp show --id "$GRAPH_APP_ID" \
+  --query "appRoles[?value=='DeviceManagementManagedDevices.Read.All' || value=='SecurityEvents.Read.All' || value=='User.Read.All'].{value:value,id:id}" -o table
+az rest --method get \
+  --url "https://graph.microsoft.com/v1.0/servicePrincipals/$SVC/appRoleAssignedTo" \
+  --query "value[].{assignment:id,appRoleId:appRoleId}" -o table
+```
+
+Match each `appRoleId` in the second table to a `value` in the first, then
+import that assignment by its ASSIGNMENT id (not the role id):
+
+```sh
+tofu import 'azuread_app_role_assignment.opshub_prod_service["DeviceManagementManagedDevices.Read.All"]' \
+  "/servicePrincipals/$GRAPH/appRoleAssignedTo/<assignment id>"
+tofu import 'azuread_app_role_assignment.opshub_prod_service["SecurityEvents.Read.All"]' \
+  "/servicePrincipals/$GRAPH/appRoleAssignedTo/<assignment id>"
+tofu import 'azuread_app_role_assignment.opshub_prod_service["User.Read.All"]' \
+  "/servicePrincipals/$GRAPH/appRoleAssignedTo/<assignment id>"
+```
+
+Then `tofu plan`: the three assignments show **0 to add**. A planned create
+means the import key/appRoleId pairing is wrong — STOP. A grant in Entra that
+is NOT one of the three shows as a Terraform destroy; that is the drift this
+change exists to surface — reconcile by hand first.
+
+**Other service apps (owner, read-only):** check whether Rova Prod Service,
+Rova Dev Service, OpsHub Dev Service and KB Dev Service have the same gap
+(grants present while `requiredResourceAccess` is empty):
+
+```sh
+for n in "Rova Prod Service" "Rova Dev Service" "OpsHub Dev Service" "KB Dev Service"; do
+  sp=$(az ad sp list --display-name "$n" --query "[0].id" -o tsv)
+  echo "$n"
+  az rest --method get --url "https://graph.microsoft.com/v1.0/servicePrincipals/$sp/appRoleAssignedTo" \
+    --query "value[].{assignment:id,appRoleId:appRoleId}" -o table
+done
+```
+
+If one shows grants not declared in `mail.tf`, that app gets the same
+assignment resources + import ids in its own follow-up PR (not guessed here).
+`rova_prod`'s `User.Invite.All` is already declared in `mail.tf`.
+
 ### Owner steps
 
 1. Generate the service keypair locally (RSA 2048, ≤ 24 months). Only the
@@ -772,7 +825,7 @@ az ad app list --display-name "OpsHub Prod Service" --query "[].appId" -o tsv
 
    ```sh
    ./scripts/rotate-signin-secret.sh \
-     "$(tofu output -json opshub_prod_object_ids | jq -r .signin_app)" \
+     "$(tofu output -json opshub_prod_client_ids | jq -r .signin)" \
      kv-qnsc-prod opshub-prod-entra-client-secret
    ```
 
