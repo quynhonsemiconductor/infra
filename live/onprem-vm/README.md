@@ -15,10 +15,6 @@ holds no Proxmox token, and the API endpoint is the admin door.
   server VLAN, serial0 socket, VGA std. `prevent_destroy` is set: the VM holds
   every PVC. `reboot_after_update = false` — this stack never power-cycles the
   node as a side effect.
-- `files/k3s/config.yaml` + `files/k3s/version` — the k3s server config as it
-  should stand on the node, and the version pin. Applied **by hand** on the
-  node; nothing here writes into a running VM.
-
 - Proxmox API objects of the host, imported (`proxmox_iam.tf`, `proxmox_host.tf`): the user
   `terraform@pve`, the API token `tofu`, the role `TofuStartupOrder` (Sys.Modify), the ACL entries, the PCI
   mapping `gpu-rtx5060ti`, and the storages `local` and `local-zfs`. Provider
@@ -42,8 +38,9 @@ holds no Proxmox token, and the API endpoint is the admin door.
   VM. The rest of k3s-01's cloud-init (ide2, IP, DNS, user, keys) IS described, as it
   stands on the live VM.
 - Tags, description — the live VM has neither, and setting one is a diff.
-- Anything inside the guest (disks, filesystems, k3s install). Those are the
-  node's own state; `files/k3s/*` is the source of truth for the config.
+- Anything inside the guest (disks, filesystems, k3s install, the kubelet
+  drop-in). Those are the node's own state. The k3s config and version pin have
+  ONE source: the Ansible `k3s_server` role (see below).
 
 ## Before the first plan — the live VM is the authority
 
@@ -92,17 +89,20 @@ tofu plan        # must be: No changes.
 ```
 
 ## The k3s config on the node
-`files/k3s/config.yaml` is the live node's `/etc/rancher/k3s/config.yaml`, byte for byte
-(verified 2026-11-02). The OIDC issuer args for ESO workload identity (infra#252) are
-added in that PR, not here. Diff before any change:
+
+There is ONE source: the Ansible `k3s_server` role (`ansible/roles/k3s_server/templates/config.yaml.j2`,
+the `k3s_version` pin in `ansible/group_vars/k3s.yml`, and the `kubelet` role's drop-in). This stack
+no longer carries a copy under `files/`: a second copy without the ESO issuer lines made a rebuild
+silently lose workload identity. Run from `ansible/`:
+
 ```sh
-scp files/k3s/config.yaml qnsc@<node>:/tmp/config.yaml
-ssh qnsc@<node> 'sudo diff -u /etc/rancher/k3s/config.yaml /tmp/config.yaml'
+ansible-playbook k3s-server.yml --check --diff
+ansible-playbook k3s-server.yml          # writes config; reports that a restart is needed
+ansible-playbook k3s-server.yml -e k3s_server_allow_restart=true -e kubelet_allow_restart=true
 ```
 
-`files/k3s/version` pins `vX.Y.Z+k3s1`: an upgrade is
-`curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION=<version> sh -` on the node
-after editing the file.
+Set `k3s_server_oidc_issuer` (and its `_old` second issuer) in the git-ignored local inventory; the
+value must equal `live/onprem-oidc` and `live/identity` `eso_oidc_issuer`.
 
 ## Proxmox API objects (import, then No changes)
 
@@ -169,7 +169,7 @@ the host is the authority. Four things to know:
 | Proxmox **API objects**: VMs, users, token, role, ACLs, PCI mapping, storages | OpenTofu | this stack |
 | Host **OS**: kernel cmdline (`iommu=pt`), vfio / nouveau modprobe files, initramfs, ZFS ARC limit, `snippets` on `local`, UPS/NUT, PBS install | idempotent owner scripts and runbooks run as root on pve01 | `scripts/owner/pve-gpu-passthrough.sh`, the server-setup runbook |
 | The VM **template** 9000 (an Ubuntu cloud image turned into a template) | idempotent owner script | `scripts/owner/pve-template-9000.sh` |
-| Inside the VMs: k3s install and config, drivers | owner scripts and the files in `files/k3s/` | `qnsc-k3s-agent-join.sh`, runbook |
+| Inside the VMs: k3s install and config, kubelet drop-in, drivers | Ansible `k3s_server` / `k3s_agent*` / `kubelet` (the join script remains for ai-01) | `ansible/`, `qnsc-k3s-agent-join.sh` |
 
 Why the template is a script, not `proxmox_download_file` + a `template = true` VM (the usual bpg pattern):
 `disk.import_from` is a create-time argument the provider cannot read back, so importing the existing template

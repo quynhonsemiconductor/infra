@@ -7,13 +7,13 @@
 #
 # The node token is read from k3s-01 over SSH into a shell variable and handed
 # to the installer through the ENVIRONMENT — never argv (visible in `ps`),
-# never a file in Git, never Terraform state. The version comes from
-# live/onprem-vm/files/k3s/version, so agent and server cannot drift.
+# never a file in Git, never Terraform state. The version comes from the SAME
+# pin the server uses, ansible/group_vars/k3s.yml, so agent and server cannot drift.
 set -euo pipefail
 
 SERVER="${1:?usage: $0 <k3s-01 address> [ssh user]}"
 SSH_USER="${2:-$(id -un)}"
-VERSION_FILE="${VERSION_FILE:-files/k3s/version}"
+VERSION_FILE="${VERSION_FILE:-ansible/group_vars/k3s.yml}"
 NVIDIA_BRANCH="580"           # Blackwell (sm_120) needs >= 570.86.16; 580 is current production
 NVIDIA_PKG="nvidia-driver-${NVIDIA_BRANCH}-open"
 
@@ -62,7 +62,11 @@ node-taint:
 YAML
 
 # 4. version + token: token through stdin into config.yaml, never argv
-VERSION="$(tr -d '[:space:]' <"$VERSION_FILE")"
+if [[ $VERSION_FILE == *.yml || $VERSION_FILE == *.yaml ]]; then
+	VERSION="$(awk -F'"' '/^k3s_version:/ {print $2; exit}' "$VERSION_FILE")"
+else
+	VERSION="$(tr -d '[:space:]' <"$VERSION_FILE")"
+fi
 [ -n "$VERSION" ] || fail "no version in $VERSION_FILE"
 TOKEN="$(ssh "${SSH_USER}@${SERVER}" 'sudo cat /var/lib/rancher/k3s/server/node-token')"
 [ -n "$TOKEN" ] || fail "could not read the node token from ${SERVER}"
