@@ -26,7 +26,7 @@ permissions:
 
 jobs:
   prune:
-    name: "rova (production) rules + SLO (${{ inputs.apply && 'DELETE' || 'dry run' }})"
+    name: rova (production) rules + SLO
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -37,6 +37,10 @@ jobs:
       - name: Prune
         env:
           GRAFANA_ALERTS_TOKEN: ${{ secrets.GRAFANA_ALERTS_TOKEN }}
+          # Pass the boolean through env, never interpolate it into the shell.
+          APPLY: ${{ inputs.apply }}
         run: |
           set -euo pipefail
-          python3 scripts/prune_dead_rova_alerts.py ${{ inputs.apply && '--apply' || '' }}
+          args=()
+          if [ "$APPLY" = "true" ]; then args+=(--apply); fi
+          python3 scripts/prune_dead_rova_alerts.py "${args[@]}"
