@@ -29,6 +29,15 @@ locals {
 }
 
 resource "azurerm_storage_account" "kv_audit" {
+  # Skips, one posture: this account holds audit LOGS, is reached only by the
+  # Azure Monitor service and the owner's read-only queries, and the on-prem
+  # cluster has no VNet to privatize into (same reason as the state account).
+  # checkov:skip=CKV_AZURE_33:no queue/table service is used — the account holds only diagnostic blobs
+  # checkov:skip=CKV_AZURE_59:public network access stays ON (no VNet); blob-level public access is OFF and the blobs are private
+  # checkov:skip=CKV_AZURE_206:LRS is deliberate ($10/month budget); an audit trail is not primary data
+  # checkov:skip=CKV2_AZURE_1:diagnostic logs are not customer data; CMK on the log account is a later hardening item
+  # checkov:skip=CKV2_AZURE_33:no private endpoint is reachable from the on-prem cluster; RBAC and private blobs are the boundary
+  # checkov:skip=CKV2_AZURE_40:Azure Monitor's storage destination authenticates with the account key; shared keys cannot be disabled here
   name                            = "stqnsckvaudit"
   resource_group_name             = azurerm_resource_group.platform.name
   location                        = azurerm_resource_group.platform.location
@@ -47,6 +56,13 @@ resource "azurerm_storage_account" "kv_audit" {
   # account is dedicated to audit logs (no other data), listed only by the four
   # diagnostic settings, and the blobs are private.
   shared_access_key_enabled = true
+
+  # A SAS is never issued against this account; the policy exists so the
+  # capability cannot quietly become an unbounded one.
+  sas_policy {
+    expiration_period = "1.00:00:00"
+    expiration_action = "Log"
+  }
 
   # A deleted log blob is recoverable for 30 days: the incident that makes the
   # trail matter is also the one that might delete it.
