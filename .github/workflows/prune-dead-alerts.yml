@@ -1,0 +1,42 @@
+# =============================================================================
+# One-off, manual: delete the AWS-era rova alert group and SLO that filter a
+# label value on-prem never emits (audit S-H1, 2026-11-04).
+#
+# Run from Actions -> "Prune dead AWS-era alerts" -> Run workflow.
+#   apply = false (default): dry run, prints every match, changes nothing.
+#   apply = true:           deletes the exact group/SLO by name.
+#
+# Kept as a workflow rather than a local-only script because the Grafana
+# token already exists here as GRAFANA_ALERTS_TOKEN; nobody has to handle it
+# by hand. The script is narrow (exact group title, exact SLO name), so a
+# mistyped input cannot widen it.
+# =============================================================================
+name: Prune dead AWS-era alerts
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: "Actually delete (leave false for a dry run)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  prune:
+    name: "rova (production) rules + SLO (${{ inputs.apply && 'DELETE' || 'dry run' }})"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Prune
+        env:
+          GRAFANA_ALERTS_TOKEN: ${{ secrets.GRAFANA_ALERTS_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 scripts/prune_dead_rova_alerts.py ${{ inputs.apply && '--apply' || '' }}
