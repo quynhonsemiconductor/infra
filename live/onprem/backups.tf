@@ -1,10 +1,13 @@
-# ── qnsc-backups — the R2 backup bucket (ONPREM-PLAN §10.2–10.3 — M-6) ──────
+# ── qnsc-backups — the PROD R2 backup bucket (ONPREM-PLAN §10.2–10.3 — M-6) ─
 #
-# ONE bucket, prefix-scoped lifecycle + Bucket Lock:
+# The prod bucket: prefix-scoped lifecycle + Bucket Lock. (pg-dev has its own
+# bucket, qnsc-backups-dev, at the end of this file: a dev token must never be
+# able to reach a prod WAL/base backup.) Prefixes:
 #   pg-rova/    CNPG barman base+WAL        PITR 14 d (barman prunes, not us)
 #   dumps/      pg_dump daily 15 d / weekly 35 d / monthly 100 d
 #   files/      rova attachments 35 d; full-<YYYY-MM>/ 35 d
-#   dev/        pg-dev dumps 7 d (NO lock — a 14-day lock would override it)
+#   dev/        RETIRED 2026-11-04: pg-dev dumps moved to qnsc-backups-dev
+#               (a dev token must never be able to reach this bucket)
 #   gate/       pg-gate Phase-1 gate 7 d (NO lock); CUTOVER B9 adds a locked
 #               TEST prefix to prove barman works under the lock
 #
@@ -206,9 +209,67 @@ resource "cloudflare_r2_bucket_lifecycle" "qnsc_backups" {
   }
 }
 
+# ── qnsc-backups-dev — pg-dev dumps, isolated from every prod backup ───────
+#
+# A SEPARATE bucket on purpose: the pg-dev dump runs with a dev credential, and a
+# dev token must never be able to write (or delete) prod WAL/base backups. The
+# token is scoped to this bucket only; nothing here is referenced by a prod job.
+#
+# 7-day lifecycle on EVERY object. No bucket lock: the dev dumps are rebuildable,
+# and a 14-day lock would outlive the 7-day delete. Incomplete multipart uploads
+# are reaped after 7 days.
+resource "cloudflare_r2_bucket" "qnsc_backups_dev" {
+  account_id = var.cloudflare_account_id
+  name       = "qnsc-backups-dev"
+  location   = "apac"
+}
+
+resource "cloudflare_r2_bucket_lifecycle" "qnsc_backups_dev" {
+  account_id   = var.cloudflare_account_id
+  bucket_name  = cloudflare_r2_bucket.qnsc_backups_dev.name
+  jurisdiction = "default"
+
+  rules = [
+    {
+      id      = "cleanup-incomplete-uploads"
+      enabled = true
+      conditions = {
+        prefix = ""
+      }
+      abort_multipart_uploads_transition = {
+        condition = { type = "Age", max_age = 604800 } # 7 d
+      }
+    },
+    {
+      id      = "dev-dumps-7d"
+      enabled = true
+      conditions = {
+        prefix = ""
+      }
+      delete_objects_transition = {
+        condition = { type = "Age", max_age = 604800 } # 7 d
+      }
+    },
+  ]
+
+  # Same Optional+Computed fields the API fills on unused transitions as the
+  # qnsc-backups lifecycle above; ignore exactly those two.
+  lifecycle {
+    ignore_changes = [
+      rules[0].delete_objects_transition,
+      rules[1].abort_multipart_uploads_transition,
+    ]
+  }
+}
+
 output "qnsc_backups_bucket" {
-  description = "Bucket name for the backup CronJobs' env (r2-backup-rw / r2-backup-dev-rw tokens are scoped to this bucket, §10.3)."
+  description = "Bucket name for the PROD backup CronJobs' env (r2-backup-rw / r2-dump-rw / r2-backup-ro tokens are scoped to this bucket, §10.3)."
   value       = cloudflare_r2_bucket.qnsc_backups.name
+}
+
+output "qnsc_backups_dev_bucket" {
+  description = "Bucket for the pg-dev dump only; the dev R2 token is scoped to it, never to qnsc-backups."
+  value       = cloudflare_r2_bucket.qnsc_backups_dev.name
 }
 
 # ── Office-IP allowlist (OPTIONAL, owner 2026-10-25) ────────────────────────
