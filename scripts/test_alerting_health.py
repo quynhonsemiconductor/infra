@@ -98,7 +98,7 @@ class AlertRulesHaveData(unittest.TestCase):
         self.assertEqual(len(warns), 1)
         self.assertIn("no data in 7 days", warns[0][1])
 
-    def test_a_loki_rule_is_skipped(self):
+    def test_a_loki_rule_is_reported_not_silently_skipped(self):
         loki = {
             "isPaused": False,
             "ruleGroup": "security",
@@ -110,7 +110,17 @@ class AlertRulesHaveData(unittest.TestCase):
                 }
             ],
         }
-        self.assertEqual(self.run_check([loki], []), ([], []))
+        fails, warns = self.run_check([loki], [])
+        self.assertEqual(fails, [])
+        self.assertEqual(len(warns), 1)
+        self.assertIn("not checked", warns[0][1])
+
+    def test_a_paused_rule_is_reported(self):
+        paused = dict(self.rule, isPaused=True)
+        fails, warns = self.run_check([paused], [])
+        self.assertEqual(fails, [])
+        self.assertEqual(len(warns), 1)
+        self.assertIn("paused", warns[0][1])
 
     def test_a_missing_token_is_skipped(self):
         with mock.patch.dict(os.environ, {}, clear=True):

@@ -86,11 +86,19 @@ def check_alert_rules_have_data() -> tuple[list, list]:
     WARN, not FAIL: several rules are silent until their product or cluster
     exists (opshub/kb prod before launch), and paging on that would be noise. A
     WARN keeps the job green while putting the list in the run summary every day.
+
+    NOTHING IS SKIPPED SILENTLY: a paused rule, a non-Prometheus datasource and
+    a rule with no query node each produce a WARN saying why it was not checked.
+    The sweep also has a total time budget (`ALERTING_HEALTH_BUDGET_SECONDS`,
+    default 60); when it runs out, the remaining rules are reported as
+    unchecked rather than letting the daily job run long.
     """
     token = os.environ.get("GRAFANA_ALERTS_TOKEN")
     url = os.environ.get("GRAFANA_URL", "https://qnsc.grafana.net").rstrip("/")
     if not token:
         raise Skipped("GRAFANA_ALERTS_TOKEN is not set in the environment")
+    budget = float(os.environ.get("ALERTING_HEALTH_BUDGET_SECONDS", "60"))
+    deadline = time.monotonic() + budget
 
     try:
         rules = _get_json(f"{url}/api/v1/provisioning/alert-rules", token)
@@ -104,10 +112,23 @@ def check_alert_rules_have_data() -> tuple[list, list]:
     end = int(time.time())
     start = end - 7 * 24 * 3600
     warns: list[tuple[str, str]] = []
-    for rule in rules:
-        if not isinstance(rule, dict) or rule.get("isPaused"):
+    for index, rule in enumerate(rules):
+        if time.monotonic() >= deadline:
+            warns.append(
+                (
+                    "Alert rules",
+                    f"time budget {budget:.0f}s exhausted; "
+                    f"{len(rules) - index} rule(s) not checked",
+                )
+            )
+            break
+        if not isinstance(rule, dict):
+            warns.append(("Alert rules", f"entry {index} is not an object; not checked"))
             continue
         rule_name = f"{rule.get('ruleGroup', '?')}/{rule.get('title', '?')}"
+        if rule.get("isPaused"):
+            warns.append((rule_name, "paused — no data check"))
+            continue
         for node in rule.get("data") or []:
             uid = node.get("datasourceUid")
             model = node.get("model") or {}
@@ -115,9 +136,15 @@ def check_alert_rules_have_data() -> tuple[list, list]:
             if not uid or uid == "__expr__" or not model.get("expr"):
                 continue
             # Loki rules are log queries with a different proxy path and a
-            # different shape; the fail-open rule is verified by its own PR.
+            # different response shape; say so rather than silently skipping.
             if datasource.get("type") != "prometheus":
-                continue
+                warns.append(
+                    (
+                        rule_name,
+                        f"not checked: datasource type {datasource.get('type')!r}",
+                    )
+                )
+                break
             query = urllib.parse.urlencode(
                 {"query": model["expr"], "start": start, "end": end, "step": 21600}
             )
@@ -138,6 +165,8 @@ def check_alert_rules_have_data() -> tuple[list, list]:
                     (rule_name, "no data in 7 days — the selector or label value may not exist")
                 )
             break
+        else:
+            warns.append((rule_name, "no query node; not checked"))
     return [], warns
 
 
