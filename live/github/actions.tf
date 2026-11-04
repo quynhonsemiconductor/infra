@@ -45,6 +45,11 @@ resource "github_actions_organization_workflow_permissions" "this" {
 resource "github_actions_repository_permissions" "platform" {
   for_each = local.repos
 
+  # allowed_actions is REQUIRED, not optional: the provider sends an empty value
+  # when the attribute is absent, the API rejects "" with 422, and the next plan
+  # shows a perpetual diff. "all" matches the organisation's current policy, so
+  # nothing changes at apply.
   repository           = github_repository.this[each.key].name
+  allowed_actions      = "all"
   sha_pinning_required = true
 }

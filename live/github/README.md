@@ -35,23 +35,28 @@ plus explicit on every platform repository this stack owns).
 
 Two things to know before and after the apply:
 
-- **Every `uses:` must be a full 40-character SHA.** It is today across the org's
-  active repositories; the three that still carry tags (`9router-pool`,
-  `agent-forge`, `solodesk`) are ARCHIVED, so their workflows cannot run and their
-  references cannot fail the policy. Pinning is the norm the org preset's Renovate
-  rule maintains.
+- **Every `uses:` must be a full 40-character SHA — merge `code-review#4` FIRST.**
+  Every active repository is already SHA-pinned except `code-review`, whose
+  `codeql.yml` still used `checkout@v7` and `codeql-action@v4`; #4 pins them, and
+  enabling the policy before that merge turns that workflow red. The three other
+  repositories that still carry tags (`9router-pool`, `agent-forge`, `solodesk`)
+  are ARCHIVED, so their workflows cannot run and their references cannot fail
+  the policy.
 - **Repository-level token defaults are not in this provider.** Only the org-level
   setting is managed, so a repository that explicitly set its own default to
-  `write` keeps it. After the apply, check each repository once and clear an
-  override where one surfaces:
+  `write` keeps it — the org flip does not reach an explicit override. Check each
+  repository BEFORE the apply (to learn which rows are inherited) and AFTER it (a
+  row still reporting `write true` is explicit):
   ```sh
   for r in $(gh repo list quynhonsemiconductor --limit 100 --json name -q '.[].name'); do
     gh api "repos/quynhonsemiconductor/$r/actions/permissions/workflow" \
       --jq '"$r \(.default_workflow_permissions) \(.can_approve_pull_request_reviews)"'
   done
   ```
-  Any row that is not `read false` needs
+  Any row that is not `read false` AFTER the apply is an explicit override and needs
   `gh api -X PUT repos/quynhonsemiconductor/<repo>/actions/permissions/workflow -f default_workflow_permissions=read -F can_approve_pull_request_reviews=false`.
+  That API clear is the only option today — the provider has no repository-level
+  workflow-token resource — so record it in the apply notes if one surfaces.
 
 ## Not managed, on purpose
 
