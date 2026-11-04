@@ -128,7 +128,7 @@ def main() -> int:
         rule
         for rule in (rules if isinstance(rules, list) else [])
         if isinstance(rule, dict)
-        and rule.get("folderUID") == args.folder_uid
+        and (rule.get("folderUID") or rule.get("folderUid")) == args.folder_uid
         and rule.get("ruleGroup") == RULE_GROUP
     ]
     found = {str(rule.get("title")) for rule in matched}

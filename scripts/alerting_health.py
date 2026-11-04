@@ -125,10 +125,8 @@ def check_alert_rules_have_data() -> tuple[list, list]:
         if not isinstance(rule, dict):
             warns.append(("Alert rules", f"entry {index} is not an object; not checked"))
             continue
-        rule_name = (
-            f"{rule.get('folderUID', '?')}/{rule.get('ruleGroup', '?')}/"
-            f"{rule.get('title', '?')}"
-        )
+        folder = rule.get("folderUID") or rule.get("folderUid") or "?"
+        rule_name = f"{folder}/{rule.get('ruleGroup', '?')}/{rule.get('title', '?')}"
         if rule.get("isPaused"):
             warns.append((rule_name, "paused — no data check"))
             continue
