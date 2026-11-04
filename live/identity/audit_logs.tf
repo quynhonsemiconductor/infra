@@ -11,9 +11,19 @@
 # secret VALUE stays out of this stream — Key Vault never logs secret contents,
 # only the caller, the operation and the object name.
 #
-# Retention: the lifecycle rule below deletes the diagnostic container's blobs
-# after 365 days. Azure writes one path per hour under
-# insights-logs-auditevent, so the prefix filter is exact.
+# Retention and tamper resistance: the container is WORM (a locked 365-day
+# container-level time-based policy) and the lifecycle rule deletes its blobs
+# after 365 days. The two use the same anchor (append blobs age from their LAST
+# modification), so a blob is deletable exactly when its immutability expires.
+# The policy sets protected_append_writes_enabled: Azure Monitor writes each
+# hourly log file as an APPEND blob, and container-level WORM blocks Append
+# Block unless that flag is on (Microsoft: "The Append Block operation is
+# permitted only for policies with the allowProtectedAppendWrites property
+# enabled"). Version-level WORM is what the Azure Monitor docs recommend and
+# would not need the flag, but azurerm has no version-level resource.
+# The policy is LOCKED: delete protection is exactly what an audit trail needs,
+# and an unlocked policy provides none (Microsoft: "Unlocked policies don't
+# provide delete protection"). Retention can only be increased afterwards.
 #
 # This is the owner decision "logging + alerts first; firewall later" (PLAN-
 # PLATFORM-HARDENING 2026-11-04, decision 3): the vault firewall stays as it is
@@ -51,10 +61,14 @@ resource "azurerm_storage_account" "kv_audit" {
   public_network_access           = "Enabled" # no VNet on-prem (same posture as the state account); the blobs are private and the name is not published
   tags                            = local.tags
 
-  # Azure Monitor's storage destination authenticates with the account key;
-  # disabling shared keys on a diagnostics destination is not supported. The
-  # account is dedicated to audit logs (no other data), listed only by the four
-  # diagnostic settings, and the blobs are private.
+  # Azure Monitor's storage destination uses the account key. The diagnostic-
+  # settings documentation lists no Microsoft Entra/managed-identity
+  # authentication for a storage-account destination (only "the destination
+  # resource must already exist" and the trusted-Microsoft-services firewall
+  # bypass), so shared keys stay ON. The account is dedicated to audit logs,
+  # listed only by the four diagnostic settings, and the blobs are private.
+  # Re-checked 2026-11-04 against
+  # learn.microsoft.com/azure/azure-monitor/essentials/diagnostic-settings.
   shared_access_key_enabled = true
 
   # A SAS is never issued against this account; the policy exists so the
@@ -77,10 +91,35 @@ resource "azurerm_storage_account" "kv_audit" {
   }
 }
 
+# The audit container Azure Monitor writes into. It is declared here so the
+# WORM policy below has a stable resource id; Azure Monitor would create the
+# same name on its first event, and an existing empty container is fine.
+resource "azurerm_storage_container" "kv_audit" {
+  name                  = "insights-logs-auditevent"
+  storage_account_id    = azurerm_storage_account.kv_audit.id
+  container_access_type = "private"
+
+  lifecycle {
+    prevent_destroy = true # the audit trail outlives any stack rewrite
+  }
+}
+
+# Locked, 365-day WORM for every blob in the container. Protected append writes
+# are ENABLED so Azure Monitor can keep appending to the current hour's blob.
+resource "azurerm_storage_container_immutability_policy" "kv_audit" {
+  storage_container_resource_manager_id = azurerm_storage_container.kv_audit.id
+  immutability_period_in_days           = 365
+  protected_append_writes_enabled       = true
+  locked                                = true
+}
+
 # 1-year retention. The rule runs daily and removes blobs under the audit
 # container only; nothing else ever lives in this account.
 resource "azurerm_storage_management_policy" "kv_audit" {
   storage_account_id = azurerm_storage_account.kv_audit.id
+
+  # Deletion at 365 days is allowed only once the WORM policy above has
+  # expired for that blob; both count from the blob's last modification.
 
   rule {
     name    = "expire-audit-logs"
