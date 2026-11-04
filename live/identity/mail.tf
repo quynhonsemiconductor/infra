@@ -4,9 +4,10 @@
 # "<Product> <Env> Service". The registrations are ADOPTED via import (no new
 # ids): rova prod (hand-made by the owner on 2026-11-01, already with its
 # certificate — README "Mail service apps") and the three EXISTING dev service apps (live since
-# 2026-10-18, reconciled to the 2026-10-28 exports). NO opshub/kb PROD apps —
-# those products are not live in prod; their service apps come with their own
-# prod PRs and stay draft until then.
+# 2026-10-18, reconciled to the 2026-10-28 exports). NO opshub/kb PROD apps
+# here — opshub prod's service app is CREATED in prod_apps.tf (with its
+# certificate, owner-supplied public half); kb prod's comes with its own prod
+# PR once its hostnames and permissions are decided (README).
 #
 # The DEV certificates are ADOPTED too (SA decision — no rotation): one
 # azuread_application_certificate per dev app, imported by the azuread 3.10
