@@ -12,6 +12,8 @@
       tags: [vm_guest]
     - role: k3s_data_disk
       tags: [k3s_data_disk]
+    - role: k3s_registries
+      tags: [k3s_registries]
     - role: kubelet
       vars:
         kubelet_profile: agent
