@@ -164,6 +164,9 @@ resource "cloudflare_pages_project" "landing" {
 
   lifecycle {
     prevent_destroy = true # destroying the Pages project deletes its deployments and detaches its custom domains: the landing site goes down
+    # Direct-upload project: there is no Git build, so these are API-computed. Provider v5 plans them as
+    # "(known after apply)" on every run without ever converging, which kept the daily edge drift job red.
+    ignore_changes = [build_config, build_image_auto_upgrade]
   }
 }
 
