@@ -9,8 +9,9 @@
 #               TEST prefix to prove barman works under the lock
 #
 # The lock is the immutability control: RW tokens scoped to this bucket, no
-# "write-only" claim (§10.3). Lock covers pg-rova/<server>/wals/, dumps/, files/ — 14 days,
-# never longer than the shortest locked lifecycle (daily 15 d > 14 d).
+# "write-only" claim (§10.3). Lock covers pg-rova/<server>/wals/,
+# pg-opshub/<server>/wals/, dumps/, files/ — 14 days, never longer than the
+# shortest locked lifecycle (daily 15 d > 14 d).
 #
 # Product buckets (rova-dev/opshub-dev/kb-dev + rova-prod files) are imported
 # from live/storage-dev/-prod in their move PRs — this file is only the
@@ -59,6 +60,24 @@ resource "cloudflare_r2_bucket_lock" "qnsc_backups" {
       condition = {
         type            = "Age"
         max_age_seconds = 1209600
+      }
+    },
+    {
+      # WAL segments of the opshub CNPG cluster — the same shape and the same
+      # reason as pg-rova below (barman-cloud rewrites backup.info, so the
+      # base/ prefixes stay unlocked; WAL files are written once).
+      # pg-opshub is not deployed yet (gitops platform/opshub-prod is
+      # disabled), so this rule locks nothing until it is: the prefix is fixed
+      # NOW so the cluster's first archive is immutable from the first WAL.
+      # The path carries the archive generation (serverName in the future
+      # gitops platform/cnpg/pg-opshub.yaml): keep it at pg-opshub-g1 and bump
+      # this prefix together with that file if the archive is ever rebuilt.
+      id      = "lock-pg-opshub-14d"
+      prefix  = "pg-opshub/pg-opshub-g1/wals/"
+      enabled = true
+      condition = {
+        type            = "Age"
+        max_age_seconds = 1209600 # 14 days
       }
     },
     {
