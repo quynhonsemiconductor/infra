@@ -7,15 +7,17 @@
 # monitoring-providers.tf; with zero live resource instances tofu never
 # configures those clients — the same rule the two-stack split relies on.
 #
-# DISABLED UNTIL CUTOVER. Every resource is `count = var.opshub_prod_live ? 1 : 0`,
-# so a plan today shows NOTHING (drift-detection does not cover this stack; the
-# PR plan matrix's "Plan observability-alerting — no changes" is the standing
-# proof). ONE flip mechanism: a one-word PR that changes the
-# `opshub_prod_live` default to `true` in the D2 window, SA-reviewed like any
-# change, which also sets `sm_probe_id` (default null; the SM probe id is only
-# knowable with a live SM token) and the Healthchecks channel UUIDs. There is
-# deliberately NO CI variable for the flag — a repo variable would flip five
-# alert resources past review.
+# DISABLED UNTIL CUTOVER. Every resource is gated on `opshub_prod_live`
+# (default false); the Synthetic check and its rule ALSO need
+# `uptime_checks_enabled` and the SM token, because the probe id comes from the
+# SM API data source (uptime-dev.tf:44-47) instead of a hand-set variable — a
+# missing secret degrades to "no check", never a failed plan. A plan today
+# shows NOTHING (drift-detection does not cover this stack; the PR plan
+# matrix's "Plan observability-alerting — no changes" is the standing proof).
+# ONE flip mechanism: a one-word PR that changes the `opshub_prod_live` default
+# to `true` in the D2 window, SA-reviewed like any change, which also sets the
+# Healthchecks channel UUIDs. There is deliberately NO CI variable for the
+# flag — a repo variable would flip five alert resources past review.
 #
 # ── HOW THE JOBS PING (read before wiring CronJobs) ──────────────────────────
 # Jobs ping by PROJECT PING KEY + SLUG, never by check UUID:
@@ -43,16 +45,19 @@
 #     Synthetic Monitoring page — NOT GRAFANA_CLOUD_API_KEY) and
 #     HEALTHCHECKS_API_TOKEN. The workflow mappings already exist, scoped to
 #     this stack only (infra-plan.yml plan matrix, apply-observability-alerting).
-#  2. One PR: opshub_prod_live → true, sm_probe_id → Singapore's id
-#     (GET <sm_url>/api/v1/probes with the SM token), healthchecks_channel_ids →
-#     the Teams + devops@ channel UUIDs. The lifecycle preconditions below make
-#     the plan FAIL if any of these is missing, so the flip cannot half-apply.
+#  2. One PR: opshub_prod_live → true and healthchecks_channel_ids → the
+#     Teams + devops@ channel UUIDs. The HEALTHCHECKS preconditions below make
+#     the plan FAIL if the channels are missing, so the flip cannot half-apply.
+#     (The readyz check needs no id: its probe comes from the SM API data
+#     source, same as rova-prod.tf and kb-prod.tf.)
 #  3. D2.6 uses opshub-prod-dump + opshub-prod-restore as the exit gate.
 #
-# NOTE ON THE SM ALERT ROUTE: alert_sensitivity = "high" turns on SM's managed
-# alerts for the check; its labels (product=opshub, env=production) match the
-# existing grafana_notification_policy.root child policy here (env=production →
-# Teams + devops@), which is §12's routing. No new contact point or rule.
+# NOTE ON THE SM ALERT ROUTE: no alert_sensitivity (SM legacy alerting is
+# forbidden on new installations) and SM check labels do not become alert
+# labels — the real alert is the flag-gated grafana_rule_group below, whose
+# labels (product=opshub, env=production) match the existing
+# grafana_notification_policy.root child policy (env=production → Teams +
+# devops@), which is §12's routing. No new contact point or rule.
 # =============================================================================
 
 variable "opshub_prod_live" {
@@ -63,6 +68,11 @@ variable "opshub_prod_live" {
 
 locals {
   opshub_live = var.opshub_prod_live
+
+  # The readyz check and its rule also need the SM API (probe lookup) — same
+  # pair as uptime-dev.tf:44-47's data source gate, so `.probes["Singapore"]`
+  # is indexed only when that data source exists.
+  opshub_uptime_live = local.opshub_live && var.uptime_checks_enabled && var.grafana_sm_token != ""
 }
 
 # ── Synthetic Monitoring ────────────────────────────────────────────────────
@@ -79,10 +89,10 @@ locals {
 # The opshub-prod slot of §12's SIX-check budget (rova+opshub prod+dev, kb-dev,
 # + one spare) — this PR fills a budgeted slot, it does not grow it. 5-minute
 # HTTP GET per §12. /readyz has no Access on opshub prod (§8.2: "no Access on
-# prod"). alert_sensitivity = "high" records sensitivity on the SM side; the
-# ALERT itself is the flag-gated rule group below.
+# prod", and the /readyz path is the documented bypass when Access is added).
+# The ALERT is the flag-gated rule group below, not an SM-managed one.
 resource "grafana_synthetic_monitoring_check" "opshub_prod_readyz" {
-  count = local.opshub_live ? 1 : 0
+  count = local.opshub_uptime_live ? 1 : 0
   # the sm alias never configures while count is 0 (no instances)
   provider  = grafana.sm
   job       = "opshub-prod-readyz"
@@ -90,7 +100,9 @@ resource "grafana_synthetic_monitoring_check" "opshub_prod_readyz" {
   frequency = 300000 # ms — every 5 min, §12
   timeout   = 5000   # ms — validate against the SM API's cap in the flip PR
   enabled   = true
-  probes    = [var.sm_probe_id]
+  # One public probe from the SM API (the same data source rova-prod.tf and
+  # kb-prod.tf use), pinned by name so the choice is reviewable in git.
+  probes = [data.grafana_synthetic_monitoring_probes.main[0].probes["Singapore"]]
   # No alert_sensitivity: SM legacy alerting is forbidden on new installations
   # ("legacy alerts usage is forbidden"); paging is the grafana_rule_group below
   # on probe_success.
@@ -103,16 +115,12 @@ resource "grafana_synthetic_monitoring_check" "opshub_prod_readyz" {
   settings {
     http {
       method = "GET"
-      # The endpoint answers 200 JSON {"status":"ok",...}. A 200 alone also comes
-      # from the SPA index.html when routing is wrong, so assert the body too.
+      # The endpoint answers 200 {"status":"ok","checks":{…}} —
+      # platform-runtime's enable-health.ts returns `status: 'ok'` (the
+      # readiness report; KB's own /readyz says "ready", opshub's does not).
+      # A 200 alone also comes from the SPA index.html when routing is wrong,
+      # so assert the body too.
       fail_if_body_not_matches_regexp = ["\"status\":\"ok\""]
-    }
-  }
-
-  lifecycle {
-    precondition {
-      condition     = var.sm_probe_id != null
-      error_message = "sm_probe_id is null — the flip PR must set it (GET <sm_url>/api/v1/probes with GRAFANA_SM_TOKEN; §12 caps at 1 probe)."
     }
   }
 }
@@ -124,8 +132,13 @@ resource "grafana_synthetic_monitoring_check" "opshub_prod_readyz" {
 # always — the same policy every other rule in this stack uses. Same datasource
 # (the stack's managed Prometheus, where SM publishes probe_success) as
 # series_near_cap in main.tf.
+#
+# no_data_state = Alerting, NOT OK: the `opshub_prod_live` count gate above is
+# what keeps this silent before go-live; once armed, a VANISHED probe series
+# (SM not publishing, check disabled outside tofu) is a monitoring failure and
+# must page, not read as healthy.
 resource "grafana_rule_group" "opshub_prod_readyz_down" {
-  count            = local.opshub_live ? 1 : 0
+  count            = local.opshub_uptime_live ? 1 : 0
   name             = "opshub (prod readyz)"
   folder_uid       = grafana_folder.alerts.uid
   interval_seconds = 60
@@ -134,7 +147,7 @@ resource "grafana_rule_group" "opshub_prod_readyz_down" {
     name           = "opshub-prod-readyz-down"
     condition      = "B"
     for            = "5m"
-    no_data_state  = "OK"
+    no_data_state  = "Alerting"
     exec_err_state = "Error"
 
     data {
