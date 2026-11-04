@@ -1,5 +1,8 @@
 # Site from zero: rebuild pve01, the VMs, k3s and the gitops layer
 
+This is tier C of [`dr.md`](dr.md). Tiers A (a database) and B (the NVMe, with the PBS mirror
+surviving) are written down there, with their own RTOs and a rehearsal.
+
 An OUTLINE of the order, with the owner of each step. It links to the runbooks and scripts that hold
 the commands; it does not repeat them. Public repo: no addresses, hostnames or keys here (site values
 live in the owner's git-ignored `site.tfvars`, kept as `sa-local/onprem-vm.site.tfvars`, and in the
