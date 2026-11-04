@@ -152,6 +152,7 @@
     checksum_algorithm: sha256
     get_checksum: true
   register: pve_monitoring_alloy_extracted
+  when: not ansible_check_mode
 
 - name: Refuse a binary that does not match the pinned digest
   ansible.builtin.assert:
@@ -160,6 +161,7 @@
       Extracted Alloy binary digest is {{ pve_monitoring_alloy_extracted.stat.checksum }},
       expected {{ pve_monitoring_alloy_binary_sha256 }}. Refusing to install.
     quiet: true
+  when: not ansible_check_mode
 
 - name: Install the Alloy binary
   ansible.builtin.copy:
