@@ -125,13 +125,8 @@ put TF_VAR_opshub_dev_app_role_ids "$ROLES"
 # complete; it never decides which credential belongs where.
 MAIL_TF="$STACK/mail.tf"
 [[ -r "$MAIL_TF" ]] || die "mail.tf not found in $STACK"
-pinned_primary() { # "<slot> <keyId>" lines of local.mail_service_cert_key_ids
-  sed -n '/^  mail_service_cert_key_ids = {/,/^  }/p' "$MAIL_TF" \
-    | grep -oE '^ +[a-z_]+ *= *"[0-9a-f-]{36}"' \
-    | sed -E 's/^ +([a-z_]+) *= *"([0-9a-f-]{36})"/\1 \2/'
-}
-pinned_rotated() { # "<slot> <keyId>" lines of local.mail_service_rotated_cert_key_ids
-  sed -n '/^  mail_service_rotated_cert_key_ids = {/,/^  }/p' "$MAIL_TF" \
+pinned_ids() { # pinned_ids <local name>: "<slot> <keyId>" lines (one entry per line, two-space indent)
+  sed -n "/^  $1 = {/,/^  }/p" "$MAIL_TF" \
     | grep -E '^ +[a-z_]+ *=.*[0-9a-f]{8}-' \
     | while IFS= read -r l; do
         s=$(sed -E 's/^ +([a-z_]+) *=.*/\1/' <<<"$l")
@@ -140,7 +135,8 @@ pinned_rotated() { # "<slot> <keyId>" lines of local.mail_service_rotated_cert_k
       done
 }
 pins_file() { awk -v s="$1" '$1==s{print $2}' <<<"$PINS"; }
-PRIMARY_PINS=$(pinned_primary); ROTATED_PINS=$(pinned_rotated)
+PRIMARY_PINS=$(pinned_ids mail_service_cert_key_ids)
+ROTATED_PINS=$(pinned_ids mail_service_rotated_cert_key_ids)
 [[ -n "$PRIMARY_PINS" ]] || die "no pinned certificate keyIds in $MAIL_TF"
 PINS="$PRIMARY_PINS
 $ROTATED_PINS"

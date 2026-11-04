@@ -24,14 +24,14 @@ addcred() { # addcred <slot> <cert> <keyId> <startDateTime>: append a credential
 }
 pins() { # pins [rotated keyIds for kb_dev ...]: write the pinned maps the kit parses out of mail.tf
   local ids='' id
-  for id in "$@"; do ids="$ids\"$id\", "; done
+  for id in "$@"; do ids="$ids{ key_id = \"$id\" }, "; done
   cat >"$T/stack/mail.tf" <<EOF
 locals {
   mail_service_cert_key_ids = {
-    rova_prod  = "$(g 22 1)"
-    rova_dev   = "$(g 22 2)"
-    opshub_dev = "$(g 22 3)"
-    kb_dev     = "$(g 22 4)"
+    rova_prod  = { key_id = "$(g 22 1)" }
+    rova_dev   = { key_id = "$(g 22 2)" }
+    opshub_dev = { key_id = "$(g 22 3)" }
+    kb_dev     = { key_id = "$(g 22 4)" }
   }
   mail_service_rotated_cert_key_ids = {
     kb_dev = [${ids%, }]

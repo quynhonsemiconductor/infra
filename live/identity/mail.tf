@@ -121,21 +121,25 @@ variable "mail_service_sp_object_ids" {
 # it never decides which credential is which. Values read from Entra on
 # 2026-11-04.
 locals {
+  # Each value is named `key_id` on purpose: the public-repo leak guard allows a
+  # GUID only where the line names it as the value of an allowlisted key
+  # (.github/leak-guard-allowlist.txt, `key:key_id`). Nothing else may be
+  # suppressed.
   mail_service_cert_key_ids = {
-    rova_prod  = "f0b1686d-9eea-47e5-ba16-eb2566ee5709"
-    rova_dev   = "687e178e-feae-4ebc-a881-b5d2f0ae5357"
-    opshub_dev = "ddf98e3f-48f1-43be-9455-5e92b4044312"
-    kb_dev     = "fc90ec3d-d5a4-4747-8c8b-b64a1fd89c30" # the 2026-10-18 credential
+    rova_prod  = { key_id = "f0b1686d-9eea-47e5-ba16-eb2566ee5709" }
+    rova_dev   = { key_id = "687e178e-feae-4ebc-a881-b5d2f0ae5357" }
+    opshub_dev = { key_id = "ddf98e3f-48f1-43be-9455-5e92b4044312" }
+    kb_dev     = { key_id = "fc90ec3d-d5a4-4747-8c8b-b64a1fd89c30" } # the 2026-10-18 credential
   }
 
   mail_service_rotated_cert_key_ids = {
-    kb_dev = ["e967b988-1892-4f56-975a-2ff7d02f0049"] # the 2026-11-04 Key Vault credential
+    kb_dev = [{ key_id = "e967b988-1892-4f56-975a-2ff7d02f0049" }] # the 2026-11-04 Key Vault credential
   }
 
   # Flattened so each credential gets its own address, keyed by keyId.
   mail_service_rotated_credentials = merge([
-    for slot, ids in local.mail_service_rotated_cert_key_ids : {
-      for id in ids : id => { slot = slot, key_id = id }
+    for slot, creds in local.mail_service_rotated_cert_key_ids : {
+      for c in creds : c.key_id => { slot = slot, key_id = c.key_id }
     }
   ]...)
 }
@@ -326,19 +330,19 @@ import {
 # duplicate key credential.
 import {
   to = azuread_application_certificate.mail_service["rova_prod"]
-  id = "${var.mail_service_object_ids.rova_prod}/certificate/${local.mail_service_cert_key_ids.rova_prod}"
+  id = "${var.mail_service_object_ids.rova_prod}/certificate/${local.mail_service_cert_key_ids.rova_prod.key_id}"
 }
 import {
   to = azuread_application_certificate.mail_service["rova_dev"]
-  id = "${var.mail_service_object_ids.rova_dev}/certificate/${local.mail_service_cert_key_ids.rova_dev}"
+  id = "${var.mail_service_object_ids.rova_dev}/certificate/${local.mail_service_cert_key_ids.rova_dev.key_id}"
 }
 import {
   to = azuread_application_certificate.mail_service["opshub_dev"]
-  id = "${var.mail_service_object_ids.opshub_dev}/certificate/${local.mail_service_cert_key_ids.opshub_dev}"
+  id = "${var.mail_service_object_ids.opshub_dev}/certificate/${local.mail_service_cert_key_ids.opshub_dev.key_id}"
 }
 import {
   to = azuread_application_certificate.mail_service["kb_dev"]
-  id = "${var.mail_service_object_ids.kb_dev}/certificate/${local.mail_service_cert_key_ids.kb_dev}"
+  id = "${var.mail_service_object_ids.kb_dev}/certificate/${local.mail_service_cert_key_ids.kb_dev.key_id}"
 }
 # Additional (rotated) credentials: same CertificateID shape, each keyId pinned
 # in local.mail_service_rotated_cert_key_ids. An import of a resource that is
