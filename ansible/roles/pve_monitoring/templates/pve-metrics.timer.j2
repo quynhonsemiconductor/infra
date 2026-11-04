@@ -1,0 +1,12 @@
+# {{ qnsc_ansible_managed }}
+[Unit]
+Description=Refresh the Proxmox host ZFS/NVMe/PBS gauges
+
+[Timer]
+OnBootSec=60s
+OnUnitActiveSec={{ pve_monitoring_interval_minutes }}min
+AccuracySec=30s
+Unit={{ pve_monitoring_service }}
+
+[Install]
+WantedBy=timers.target

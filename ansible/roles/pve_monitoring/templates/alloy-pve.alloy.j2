@@ -1,0 +1,71 @@
+// {{ qnsc_ansible_managed }}
+//
+// One job: scrape the host's node-exporter textfile endpoint, keep ONLY the
+// pve_* families, and push them over OTLP to the cluster's existing
+// alloy-otlp-host receiver. The host's CPU/memory/VM/storage view already
+// arrives through PVE's own OpenTelemetry metric server; this pipeline adds
+// exactly the three things that one cannot see (ZFS, NVMe SMART, PBS fill).
+//
+// The keep filter is also the series budget: node-exporter is started with
+// every default collector disabled, and this drops even its `up`/scrape
+// samples, so the whole host costs a few dozen series rather than ~1,000.
+
+prometheus.scrape "pve_textfile" {
+  targets         = [{ "__address__" = "{{ pve_monitoring_node_exporter_address }}" }]
+  forward_to      = [prometheus.relabel.pve_only.receiver]
+  scrape_interval = "60s"
+  scrape_timeout  = "10s"
+}
+
+prometheus.relabel "pve_only" {
+  forward_to = [otelcol.receiver.prometheus.pve.receiver]
+
+  rule {
+    source_labels = ["__name__"]
+    regex         = "pve_.*"
+    action        = "keep"
+  }
+}
+
+otelcol.receiver.prometheus "pve" {
+  output {
+    metrics = [otelcol.processor.transform.pve.input]
+  }
+}
+
+otelcol.processor.transform "pve" {
+  error_mode = "ignore"
+
+  // Resource context, not datapoint: service.name is what the cluster's
+  // Alloy turns into the Prometheus `job` label (`job="pve-host"`), and the
+  // environment is what its env-label processor copies onto every datapoint
+  // as deployment_environment_name="prod" / env="prod".
+  metric_statements {
+    context = "resource"
+    statements = [
+      // No service.namespace on purpose: the cluster's exporter builds
+      // `job` as "<namespace>/<name>" when a namespace is present, and every
+      // rule here selects job="pve-host" (the PVE plugin's own series carry
+      // no namespace either, so job="proxmox-ve").
+      "set(attributes[\"service.name\"], \"pve-host\")",
+      "set(attributes[\"deployment.environment.name\"], \"prod\")",
+    ]
+  }
+
+  output {
+    metrics = [otelcol.processor.batch.pve.input]
+  }
+}
+
+otelcol.processor.batch "pve" {
+  output {
+    metrics = [otelcol.exporter.otlphttp.pve.input]
+  }
+}
+
+otelcol.exporter.otlphttp "pve" {
+  client {
+    endpoint = "{{ pve_monitoring_otlp_endpoint }}"
+    timeout  = "10s"
+  }
+}

@@ -10,8 +10,9 @@ requirements.yml       pinned collections        requirements-dev.txt   pinned a
 inventory/example/     the shape of the local inventory (documentation addresses)
 group_vars/            values that are NOT site values (pins, hardware model ids)
 ping.yml               reach every host and become root
-roles/, *.yml          wave 1: pve-host.yml (pve_base, pve_gpu, pbs), k3s-server.yml, k3s-agent-gpu.yml,
-                       k3s-agent.yml (vlsi); every k3s playbook first runs vm_guest, apparmor_containerd and kernel
+roles/, *.yml          wave 1: pve-host.yml (pve_base, pve_gpu, pbs, pve_monitoring), k3s-server.yml,
+                       k3s-agent-gpu.yml, k3s-agent.yml (vlsi); every k3s playbook first runs vm_guest,
+                       apparmor_containerd and kernel
 ```
 
 ## Set up (once, on the operator's machine)
@@ -37,6 +38,25 @@ ansible-playbook ping.yml
   a variable per role allows the restart (default off).
 - **No disks, no pools.** Ansible never creates or destroys a pool or a partition.
 - **CI never touches a host.** `.github/workflows/ansible-lint.yml` runs ansible-lint and `--syntax-check` only.
+
+## Proxmox host metrics (`pve_monitoring`)
+
+`pve-host.yml --tags pve_monitoring` installs node-exporter (textfile collector only), a 5-minute ZFS/NVMe/PBS
+script, and Grafana Alloy, which pushes the resulting `pve_*` series over OTLP to the cluster's
+`alloy-otlp-host` NodePort. It needs one site value in the git-ignored local inventory — the endpoint of a k3s
+node on that NodePort:
+
+```yaml
+pve:
+  hosts:
+    pve01:
+      ansible_host: 192.0.2.10
+      ansible_user: root
+      pve_monitoring_otlp_endpoint: "http://192.0.2.20:30418"
+```
+
+The role asserts it rather than installing a collector that sends nowhere. Node-exporter binds to loopback; no new
+port is opened on the host.
 
 ## PBS API token
 

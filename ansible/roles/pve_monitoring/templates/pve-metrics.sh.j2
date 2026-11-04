@@ -1,0 +1,77 @@
+#!/bin/sh
+# Write the Proxmox host gauges node-exporter's textfile collector reads:
+#   pve_zpool_*           pool health / size / allocated / free
+#   pve_nvme_*            NVMe SMART wear, media errors, critical warning
+#   pve_pbs_*             PBS datastore size / used / avail
+# Run by pve-metrics.timer every 5 minutes. Any source that is absent on this
+# host (no PBS, no NVMe) is skipped; it must never abort the whole file.
+set -eu
+
+out_dir="{{ pve_monitoring_textfile_dir }}"
+nvme_glob="{{ pve_monitoring_nvme_glob }}"
+
+umask 022
+mkdir -p "$out_dir"
+tmp="$(mktemp "$out_dir/.pve_metrics.XXXXXX")"
+trap 'rm -f "$tmp"' EXIT
+
+emit() {
+    printf '%s\n' "$*" >> "$tmp"
+}
+
+# ── ZFS pools ──────────────────────────────────────────────────────────────
+# -H: no header, tab separated; -p: exact byte counts. `health` is ONLINE /
+# DEGRADED / FAULTED / OFFLINE / UNAVAIL / REMOVED, so the exported gauge is
+# 1 only for ONLINE and 0 for everything else.
+if command -v zpool >/dev/null 2>&1; then
+    zpool list -Hp -o name,size,alloc,free,health 2>/dev/null |
+    while read -r pool size alloc free health; do
+        if [ "$health" = "ONLINE" ]; then state=1; else state=0; fi
+        emit "pve_zpool_health{pool=\"$pool\"} $state"
+        emit "pve_zpool_size_bytes{pool=\"$pool\"} $size"
+        emit "pve_zpool_allocated_bytes{pool=\"$pool\"} $alloc"
+        emit "pve_zpool_free_bytes{pool=\"$pool\"} $free"
+    done || true
+fi
+
+# ── NVMe SMART ─────────────────────────────────────────────────────────────
+# smartctl -j emits one JSON object. jq runs with an empty input when smartctl
+# fails (e.g. a USB bridge), which is treated as "no values" rather than an
+# error. `percentage_used` is 0-100; media_errors and critical_warning are
+# absolute counts/flags (any non-zero matters).
+for dev in $nvme_glob; do
+    [ -e "$dev" ] || continue
+    json="$(smartctl -j -a "$dev" 2>/dev/null || true)"
+    [ -n "$json" ] || continue
+
+    pct="$(printf '%s' "$json" | jq -r '.nvme_smart_health_information_log.percentage_used // empty' 2>/dev/null || true)"
+    media="$(printf '%s' "$json" | jq -r '.nvme_smart_health_information_log.media_errors // empty' 2>/dev/null || true)"
+    crit="$(printf '%s' "$json" | jq -r '.nvme_smart_health_information_log.critical_warning // empty' 2>/dev/null || true)"
+    passed="$(printf '%s' "$json" | jq -r 'if .smart_status.passed == true then 1 elif .smart_status.passed == false then 0 else empty end' 2>/dev/null || true)"
+
+    [ -n "$pct" ] && emit "pve_nvme_percentage_used{device=\"$dev\"} $pct"
+    [ -n "$media" ] && emit "pve_nvme_media_errors{device=\"$dev\"} $media"
+    [ -n "$crit" ] && emit "pve_nvme_critical_warning{device=\"$dev\"} $crit"
+    [ -n "$passed" ] && emit "pve_nvme_health_ok{device=\"$dev\"} $passed"
+done
+
+# ── PBS datastores ─────────────────────────────────────────────────────────
+# `proxmox-backup-manager datastore list --output-format json` returns one
+# object per datastore with total/used/avail in bytes. A datastore that reports
+# no total is emitted as 0; the alert's `size > 0` gate keeps it out of the
+# ratio instead of paging on a divide-by-zero.
+if command -v proxmox-backup-manager >/dev/null 2>&1; then
+    proxmox-backup-manager datastore list --output-format json 2>/dev/null |
+    jq -r '.[] | [.name, (.total // 0), (.used // 0), (.avail // 0)] | @tsv' 2>/dev/null |
+    while IFS="$(printf '\t')" read -r name total used avail; do
+        [ -n "$name" ] || continue
+        emit "pve_pbs_datastore_size_bytes{datastore=\"$name\"} ${total:-0}"
+        emit "pve_pbs_datastore_used_bytes{datastore=\"$name\"} ${used:-0}"
+        emit "pve_pbs_datastore_avail_bytes{datastore=\"$name\"} ${avail:-0}"
+    done || true
+fi
+
+# Atomic publish: node-exporter ignores a half-written file. The mode must be
+# world-readable because node-exporter runs as the prometheus user.
+chmod 0644 "$tmp"
+mv -f "$tmp" "$out_dir/pve_metrics.prom"

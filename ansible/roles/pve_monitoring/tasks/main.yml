@@ -1,0 +1,169 @@
+---
+- name: Assert a Debian-family Proxmox host
+  ansible.builtin.assert:
+    that: ansible_facts['os_family'] == 'Debian'
+    fail_msg: "pve_monitoring is for a Proxmox VE (Debian) host"
+    quiet: true
+
+# ── gate ────────────────────────────────────────────────────────────────────
+# No endpoint means no push, and installing a collector that silently sends
+# nowhere is the failure this assert exists to prevent. Run with
+# -e pve_monitoring_enabled=false to skip the role entirely.
+- name: Refuse to install without an OTLP endpoint
+  ansible.builtin.assert:
+    that: pve_monitoring_otlp_endpoint is match('^https?://[^/]+$')
+    fail_msg: >-
+      pve_monitoring_otlp_endpoint is empty or not http(s)://host:port — set it in the local
+      inventory (host_vars or group_vars for `pve`), e.g. http://<k3s-node>:30418
+    quiet: true
+  when: pve_monitoring_enabled | bool
+
+# ── packages ────────────────────────────────────────────────────────────────
+- name: Install node-exporter and the textfile/Alloy prerequisites
+  ansible.builtin.apt:
+    name:
+      - prometheus-node-exporter
+      - jq
+      - smartmontools
+      - unzip
+      - ca-certificates
+    state: present
+  when: pve_monitoring_enabled | bool
+
+# ── node-exporter: ONLY the textfile collector ─────────────────────────────
+# The host's CPU/memory/VM/storage view already comes from PVE's own OTLP
+# metric server. Running node-exporter's default collectors would duplicate a
+# large part of it and spend the Grafana Cloud series budget for nothing, so
+# disable every default and enable only textfile. Its web listener is bound to
+# loopback; Alloy is the only client.
+- name: Write the node-exporter flags
+  ansible.builtin.template:
+    src: node-exporter.default.j2
+    dest: /etc/default/prometheus-node-exporter
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart node-exporter
+
+- name: Create the textfile directory
+  ansible.builtin.file:
+    path: "{{ pve_monitoring_textfile_dir }}"
+    state: directory
+    owner: root
+    group: prometheus
+    mode: "0755"
+
+# ── the textfile producer ──────────────────────────────────────────────────
+- name: Create the script directory
+  ansible.builtin.file:
+    path: "{{ pve_monitoring_script | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the textfile metrics script
+  ansible.builtin.template:
+    src: pve-metrics.sh.j2
+    dest: "{{ pve_monitoring_script }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the textfile metrics service
+  ansible.builtin.template:
+    src: pve-metrics.service.j2
+    dest: "/etc/systemd/system/{{ pve_monitoring_service }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install the textfile metrics timer
+  ansible.builtin.template:
+    src: pve-metrics.timer.j2
+    dest: "/etc/systemd/system/{{ pve_monitoring_timer }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Run the textfile producer once and start its timer
+  ansible.builtin.systemd:
+    name: "{{ pve_monitoring_timer }}"
+    state: started
+    enabled: true
+    daemon_reload: true
+
+- name: Seed the first textfile snapshot before Alloy starts
+  ansible.builtin.command: "{{ pve_monitoring_script }}"
+  changed_when: true
+  when: not ansible_check_mode
+
+# ── Alloy ───────────────────────────────────────────────────────────────────
+# Pinned archive, not a distribution package: it is the same binary version the
+# cluster collector runs, and the checksum makes the download reviewable. The
+# archive holds one file, `alloy-linux-amd64`.
+- name: Download the pinned Alloy release
+  ansible.builtin.get_url:
+    url: "{{ pve_monitoring_alloy_url }}"
+    dest: /tmp/alloy-linux-amd64-{{ pve_monitoring_alloy_version }}.zip
+    checksum: "sha256:{{ pve_monitoring_alloy_sha256 }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+# Versioned unpack directory: a version bump cannot reuse the previous
+# binary via `creates`.
+- name: Unpack Alloy
+  ansible.builtin.unarchive:
+    src: /tmp/alloy-linux-amd64-{{ pve_monitoring_alloy_version }}.zip
+    dest: /tmp/alloy-{{ pve_monitoring_alloy_version }}
+    remote_src: true
+    creates: /tmp/alloy-{{ pve_monitoring_alloy_version }}/alloy-linux-amd64
+
+- name: Install the Alloy binary
+  ansible.builtin.copy:
+    src: /tmp/alloy-{{ pve_monitoring_alloy_version }}/alloy-linux-amd64
+    dest: "{{ pve_monitoring_alloy_binary }}"
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Restart Alloy
+
+- name: Create the Alloy config directory
+  ansible.builtin.file:
+    path: "{{ pve_monitoring_alloy_config | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Write the Alloy pipeline
+  ansible.builtin.template:
+    src: alloy-pve.alloy.j2
+    dest: "{{ pve_monitoring_alloy_config }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart Alloy
+
+- name: Install the Alloy unit
+  ansible.builtin.template:
+    src: alloy-pve.service.j2
+    dest: /etc/systemd/system/alloy-pve.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart Alloy
+
+- name: Validate the Alloy config before enabling the unit
+  ansible.builtin.command: "{{ pve_monitoring_alloy_binary }} validate {{ pve_monitoring_alloy_config }}"
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Enable and start Alloy
+  ansible.builtin.systemd:
+    name: alloy-pve.service
+    state: started
+    enabled: true
+    daemon_reload: true

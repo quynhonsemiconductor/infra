@@ -1,0 +1,47 @@
+---
+# Host-level metrics for the Proxmox host (audit C-H1).
+#
+# WHAT AND WHY: PVE's own OpenTelemetry metric server (gitops#151) covers the
+# host's VM/storage/CPU/memory view, but it cannot see the things the single
+# consumer NVMe is risky about: ZFS pool health/fill, NVMe wear and media
+# errors, and PBS datastore fill. This role installs:
+#   * prometheus-node-exporter with ONLY the textfile collector enabled
+#     (Debian package), reading /var/lib/node_exporter/textfile;
+#   * a 5-minute root script that writes those gauges there;
+#   * Grafana Alloy, which scrapes localhost:9100, keeps only `pve_.*`, and
+#     converts/pushes them over OTLP to the cluster's existing
+#     `alloy-otlp-host` receiver.
+#
+# The push is what keeps the PUBLIC GitOps repo free of the host's address:
+# the endpoint is a site value in the git-ignored local inventory, not in
+# gitops' values. Node-exporter binds to loopback only; nothing new is
+# reachable from the LAN.
+pve_monitoring_enabled: true
+
+# Alloy release pinned by version AND checksum. Renovate does not track this
+# file (infra is not in its scan paths yet), so bump both by hand together
+# with gitops versions.yaml; the checksum is from the GitHub release asset.
+pve_monitoring_alloy_version: "1.13.0"
+pve_monitoring_alloy_sha256: "1e4e809917e2a0395b7027012379103fc9112731832508b03ff8aeffa041c977"
+pve_monitoring_alloy_url: "https://github.com/grafana/alloy/releases/download/v{{ pve_monitoring_alloy_version }}/alloy-linux-amd64.zip"
+pve_monitoring_alloy_binary: /usr/local/bin/alloy
+pve_monitoring_alloy_config: /etc/alloy/config.alloy
+
+# OTLP/HTTP endpoint of the in-cluster `alloy-otlp-host` NodePort service,
+# e.g. "http://192.168.10.20:30418". REQUIRED when enabled; it is a site
+# value and belongs in inventory/local/hosts.yml (git-ignored), never in this
+# repo. The role asserts it before installing anything.
+pve_monitoring_otlp_endpoint: ""
+
+pve_monitoring_textfile_dir: /var/lib/node_exporter/textfile
+pve_monitoring_interval_minutes: 5
+pve_monitoring_node_exporter_address: "127.0.0.1:9100"
+
+# smartctl device glob. Only NVMe is scraped: it is the single, no-PLP disk
+# every ZFS pool and VM runs on. The backup HDD mirror is covered by zpool
+# health, and per-disk SMART on HDDs adds series nobody alerts on.
+pve_monitoring_nvme_glob: "/dev/nvme*n1"
+
+pve_monitoring_script: /usr/local/lib/qnsc/pve-metrics.sh
+pve_monitoring_service: pve-metrics.service
+pve_monitoring_timer: pve-metrics.timer

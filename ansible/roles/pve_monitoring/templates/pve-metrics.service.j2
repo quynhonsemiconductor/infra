@@ -1,0 +1,15 @@
+# {{ qnsc_ansible_managed }}
+[Unit]
+Description=Write Proxmox host ZFS/NVMe/PBS gauges for node-exporter
+After=local-fs.target
+Documentation=https://github.com/quynhonsemiconductor/infra
+
+[Service]
+Type=oneshot
+ExecStart={{ pve_monitoring_script }}
+User=root
+Group=root
+# zpool/smartctl/proxmox-backup-manager failures are handled inside the script;
+# a non-zero exit here still leaves the previous snapshot in place, so the
+# timer can retry without taking the file away.
+Nice=10
