@@ -58,8 +58,10 @@ locals {
   #   opshub    : display name "OpsHub Dev" (live); live redirect is the
   #               deployed callback only — the 5174 loopback was REMOVED from
   #               the plan (no local opshub sign-in flow uses it).
-  #   kb        : live host is kb-api-dev (not kb-dev); localhost:8000 already
-  #               live on both callbacks.
+  #   kb        : the ECS live host kb-api-dev is replaced by the in-cluster
+  #               kb-dev host (ONPREM-PLAN §8.2: the tunnel serves /api/* there);
+  #               localhost:8000 is already live on both callbacks. This is the
+  #               one app UPDATE this change makes — named in the PR body.
   signin_apps = {
     rova_prod = {
       display_name = "Rova Prod"
@@ -89,8 +91,8 @@ locals {
     kb_dev = {
       display_name = "KB Dev"
       redirect_uris = [
-        "https://kb-api-dev.qnsc.vn/api/v1/auth/entra/callback", # live (kb-api host)
-        "https://kb-api-dev.qnsc.vn/api/v1/connectors/oauth/callback",
+        "https://kb-dev.qnsc.vn/api/v1/auth/entra/callback", # in-cluster host (ONPREM-PLAN §8.2)
+        "https://kb-dev.qnsc.vn/api/v1/connectors/oauth/callback",
         "http://localhost:8000/api/v1/auth/entra/callback", # live
         "http://localhost:8000/api/v1/connectors/oauth/callback",
       ]
