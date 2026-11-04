@@ -80,6 +80,14 @@ resource "azuread_application" "opshub_prod" {
       condition     = var.opshub_prod_service_certificate != null
       error_message = "set TF_VAR_opshub_prod_service_certificate: expected plan is 12 add"
     }
+
+    # The seven roles are managed one object at a time by
+    # azuread_application_app_role.opshub_prod (the id is derived, the same
+    # shape the dev app carries inline). azuread 3.10 reads them back into the
+    # APPLICATION, and as app_roles are not Computed it plans their removal on
+    # every run (seen on 2026-11-04, after the first apply) — an apply would
+    # delete the live roles. The inline view is not authoritative here.
+    ignore_changes = [app_role]
   }
 }
 
@@ -135,6 +143,22 @@ locals {
   ]
 }
 
+variable "opshub_prod_service_graph_grant_ids" {
+  type        = map(string)
+  default     = {}
+  description = "Assignment id of each Graph application-role grant 'OpsHub Prod Service' ALREADY holds, keyed by role value (local.opshub_prod_service_graph_roles). Built by scripts/owner/identity-env/identity-env.sh from the live appRoleAssignments (read-only); the grants exist since the 2026-11-04 admin-consent, so importing them before the first apply is mandatory (README). Empty in CI: the read-only plan shows three creates, which never apply."
+}
+
+# Same adoption rule as mail.tf: the grants are live, the import is mandatory,
+# and a key that does not match a declared role fails the plan. Gated on the
+# certificate because the app (and so its grant addresses) does not exist
+# without it.
+import {
+  for_each = var.opshub_prod_service_certificate == null ? {} : var.opshub_prod_service_graph_grant_ids
+  to       = azuread_app_role_assignment.opshub_prod_service[each.key]
+  id       = "/servicePrincipals/${data.azuread_service_principal.msgraph.object_id}/appRoleAssignedTo/${each.value}"
+}
+
 resource "azuread_application" "opshub_prod_service" {
   count = var.opshub_prod_service_certificate == null ? 0 : 1
 
@@ -181,10 +205,9 @@ resource "azuread_service_principal" "opshub_prod_service" {
 # the RESOURCE service principal (Microsoft Graph), so requiredResourceAccess
 # alone does not manage them: on 2026-11-04 the owner's admin-consent created
 # all three while the app's requiredResourceAccess read empty, i.e. Terraform
-# saw nothing. Managing them here makes a revoked or extra grant show up in
-# the plan. The three ALREADY EXIST in the tenant — import them BEFORE applying
-# (README "Pre-apply check": it prints the assignment ids); a create would add
-# a duplicate grant.
+# saw nothing. Managing them here means a REVOKED grant shows as a create in the
+# plan (STOP). The three ALREADY EXIST in the tenant — the import block below
+# adopts them; a create would add a duplicate grant.
 resource "azuread_app_role_assignment" "opshub_prod_service" {
   for_each = toset(var.opshub_prod_service_certificate == null ? [] : local.opshub_prod_service_graph_roles)
 

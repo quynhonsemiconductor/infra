@@ -19,6 +19,16 @@
 # hand-made app already has it; README). ignore_changes on value/encoding keeps the imported certs
 # imported (see the resource comment).
 #
+# ADDITIONAL credentials (rotation) are adopted the same way, one resource per
+# credential, keyed by its keyId: TF_VAR_mail_service_rotated_certificates.
+# "KB Dev Service" carries TWO today: the 2026-10-18 credential imported above
+# and a Key Vault-generated one appended by the owner on 2026-11-04
+# (sa-notes/kb-dev-secrets.sh; the vault keeps the private key, Entra the
+# public half). Both are imported, exactly as the old one is: a plan that
+# CREATES a certificate, or replaces one, would add a third credential or
+# drop the one the worker authenticates with — STOP (README go/no-go). The
+# set is empty for every other app.
+#
 # Certificate auth ONLY (§7.2): the PUBLIC half is terraformed from
 # TF_VAR_mail_service_certificates (a private key never passes validation —
 # tests/static.sh guards the same invariant); the combined PEM (key + cert)
@@ -127,6 +137,31 @@ variable "mail_service_certificates" {
   }
 }
 
+variable "mail_service_rotated_certificates" {
+  type = map(object({
+    app_slot    = string
+    certificate = string
+  }))
+  default     = {}
+  description = "ADDITIONAL live certificate credentials per service app, keyed by the credential's keyId (public identifier): { \"<keyId>\" = { app_slot = \"kb_dev\", certificate = \"<PEM>\" } }. One entry per credential appended to an app that ALREADY has one imported under azuread_application_certificate.mail_service — today only KB Dev Service, whose 2026-11-04 Key Vault-generated certificate is the second. Built by scripts/owner/identity-env/identity-env.sh from the Entra app itself (public halves only); never a private key, never committed. Empty means every app carries exactly the one adopted credential."
+
+  validation {
+    condition = alltrue([
+      for id, c in var.mail_service_rotated_certificates :
+      can(regex("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", id)) &&
+      can(regex("-----BEGIN CERTIFICATE-----", c.certificate)) &&
+      !can(regex("PRIVATE KEY", c.certificate))
+    ])
+    error_message = "mail_service_rotated_certificates keys must be credential keyIds (GUIDs) and every certificate a PEM PUBLIC certificate (BEGIN CERTIFICATE); a private key is never accepted."
+  }
+}
+
+variable "mail_service_graph_grant_ids" {
+  type        = map(string)
+  default     = {}
+  description = "Assignment id of every Graph application-role grant the service apps ALREADY hold, keyed like local.mail_service_graph_grants (\"<slot>/<role value>\"). Built by scripts/owner/identity-env/identity-env.sh from the live appRoleAssignments (read-only). The grants exist (admin consent); importing them before the first apply is mandatory, or the plan adds duplicates. Empty in CI (no live read): the read-only plan then shows the grants as creates, which never apply."
+}
+
 resource "azuread_application" "mail_service" {
   for_each = local.mail_service_apps
 
@@ -177,10 +212,54 @@ resource "azuread_application_certificate" "mail_service" {
   }
 }
 
+resource "azuread_application_certificate" "mail_service_rotated" {
+  for_each = var.mail_service_rotated_certificates
+
+  application_id = azuread_application.mail_service[each.value.app_slot].id
+  type           = "AsymmetricX509Cert"
+  value          = each.value.certificate
+  encoding       = "pem"
+
+  # Same write-only shape as the primary certificate above: the credential is
+  # ADOPTED (import block below), so a plan must never create or replace it.
+  lifecycle {
+    create_before_destroy = true
+    ignore_changes        = [value, encoding]
+  }
+}
+
 resource "azuread_service_principal" "mail_service" {
   for_each = azuread_application.mail_service
 
   client_id = each.value.client_id
+}
+
+# ── Graph application-role grants: declared AND managed ─────────────────────
+# required_resource_access DECLARES a role; the grant (an appRoleAssignment on
+# the Microsoft Graph service principal) is a separate object. Admin consent
+# created the grants for rova_prod (User.Invite.All) and opshub_dev (the three
+# read roles) before this stack managed them — see the 2026-11-04 audit in the
+# README. One resource per declared role: a REVOKED grant shows as a create in
+# the plan (STOP — the app needs it), and the declaration and the grant cannot
+# drift. A live grant that is NOT declared stays invisible here; the README's
+# read-only audit is what finds those.
+locals {
+  mail_service_graph_grants = merge([
+    for slot, app in local.mail_service_apps : {
+      for role in app.graph_app_role_values : "${slot}/${role}" => {
+        slot = slot
+        role = role
+      }
+    }
+  ]...)
+}
+
+resource "azuread_app_role_assignment" "mail_service" {
+  for_each = local.mail_service_graph_grants
+
+  app_role_id         = data.azuread_service_principal.msgraph.app_role_ids[each.value.role]
+  principal_object_id = azuread_service_principal.mail_service[each.value.slot].object_id
+  resource_object_id  = data.azuread_service_principal.msgraph.object_id
 }
 
 # ── Adoption: import the existing registrations, do not create new ones ─────
@@ -238,6 +317,24 @@ import {
 import {
   to = azuread_application_certificate.mail_service["kb_dev"]
   id = "${var.mail_service_object_ids.kb_dev}/certificate/${var.mail_service_cert_key_ids.kb_dev}"
+}
+# Additional (rotated) credentials: same CertificateID shape, keyed by keyId.
+# KEEP LAST: an import block for a resource that is already in state stops the
+# plan, so this set stays empty for an app whose extra credential was already
+# adopted.
+import {
+  for_each = var.mail_service_rotated_certificates
+  to       = azuread_application_certificate.mail_service_rotated[each.key]
+  id       = "${var.mail_service_object_ids[each.value.app_slot]}/certificate/${each.key}"
+}
+# The GRANTS that admin consent already created. The id is the ASSIGNMENT id
+# (not the role id) under the Graph service principal, the resource of every
+# one of these grants. A key with no matching declared role fails the plan on
+# the resource address — reconcile mail.tf instead of guessing.
+import {
+  for_each = var.mail_service_graph_grant_ids
+  to       = azuread_app_role_assignment.mail_service[each.key]
+  id       = "/servicePrincipals/${data.azuread_service_principal.msgraph.object_id}/appRoleAssignedTo/${each.value}"
 }
 
 # Client ids are public identifiers — rova #727 records the rova_prod one as

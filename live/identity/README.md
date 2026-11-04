@@ -489,6 +489,15 @@ app already carries it (2026-11-01; its combined PEM is
 `kv-qnsc-prod/rova-prod-graph-cert`), so nothing is created in this stack.
 Import id form (azuread 3.10 parser): EXACTLY
 `<app OBJECT id>/certificate/<keyId>` — no `/applications/` prefix.
+**Additional credentials** (rotation) are adopted the same way, one
+`azuread_application_certificate.mail_service_rotated` per credential, keyed by
+its keyId (`TF_VAR_mail_service_rotated_certificates`). **KB Dev Service carries
+two today**: the 2026-10-18 credential above and a Key Vault-generated one the
+owner appended on 2026-11-04 (`sa-notes/kb-dev-secrets.sh`; the vault holds the
+private key, Entra the public half, `kv-qnsc-dev/kb-dev-graph-cert`). The OLDEST
+credential stays the managed `mail_service["<slot>"]`; every newer one is
+`mail_service_rotated["<keyId>"]`. Both are imported, so the plan shows an
+IMPORT and never a create or replace.
 NO opshub/kb PROD apps in this section: opshub prod's service app is CREATED
 in `prod_apps.tf` (below); kb prod's service app comes with its own prod PR,
 after its hostnames and permissions are decided. rova_prod carries the ONE Graph permission
@@ -543,8 +552,13 @@ the invite to the Service cert — a rova-track change, not this stack's).
      ```;
    - `TF_VAR_mail_service_sp_object_ids` — the SP object ids
      (`id` field of each `*-sp.json`);
-   - `TF_VAR_mail_service_cert_key_ids` — the four `keyId`s (each app has exactly
-     one certificate credential; the check below fails otherwise):
+   - `TF_VAR_mail_service_cert_key_ids` — the four `keyId`s. Each app carries
+     at least one certificate credential; the OLDEST (by `startDateTime`) is
+     the one adopted under `mail_service["<slot>"]`, any newer one is adopted
+     under `mail_service_rotated`. `KB Dev Service` has two since 2026-11-04.
+     `scripts/owner/identity-env/identity-env.sh` builds both maps from Entra
+     and reads only public halves; two credentials sharing a startDateTime stop
+     the run (they cannot be told apart). Manual check:
 
      ```sh
      for f in rova-prod rova-dev opshub-dev kb-dev; do
@@ -626,6 +640,24 @@ the invite to the Service cert — a rova-track change, not this stack's).
    ```sh
    az ad app permission admin-consent --id <rova_prod service app id>
    ```
+
+   **State after the 2026-11-04 identity apply:** the 4 applications, their 4
+   service principals and their 4 primary certificates are IN STATE, and the
+   four Graph grants the audit found (rova_prod `User.Invite.All`, opshub_dev's
+   three read roles) are modelled but not yet imported. The next plan
+   (`scripts/owner/identity-env/identity-env.sh -- tofu plan`, which also
+   supplies the grant ids and KB Dev's second certificate) must read EXACTLY
+   **8 to import, 0 to add, 0 to change, 0 to destroy**:
+
+   - `azuread_application_certificate.mail_service_rotated["e967b988-…"]` (KB
+     Dev's 2026-11-04 credential);
+   - `azuread_app_role_assignment.mail_service["rova_prod/User.Invite.All"]`,
+     `["opshub_dev/DeviceManagementManagedDevices.Read.All"]`,
+     `["opshub_dev/SecurityEvents.Read.All"]`, `["opshub_dev/User.Read.All"]`;
+   - `azuread_app_role_assignment.opshub_prod_service["…Read.All"]` ×3.
+
+   Any `create` on those addresses means the id map is wrong (STOP); a
+   `destroy` or a certificate `must be replaced` is STOP, always.
 
 5. After apply: record `mail_service_client_ids` (rova_prod's is the value
    rova's Graph config records; the dev values land in the dev bundles). The
@@ -729,58 +761,62 @@ az ad app list --display-name "OpsHub Prod Service" --query "[].appId" -o tsv
   writes it. The gitops owner is correcting that comment; the README is the
   source of truth until then.
 
+The seven app roles of "OpsHub Prod" are managed one object at a time
+(`azuread_application_app_role.opshub_prod`, derived ids), so
+`azuread_application.opshub_prod` **ignores its inline `app_role` view**:
+azuread 3.10 reads the roles back into the application and, as `app_roles` are
+not Computed, would otherwise plan them REMOVED on every run (seen on
+2026-11-04 right after the first apply: `1 to change`). A plan that removes app
+roles — or replaces a certificate — is STOP.
+
 ### Graph permission grants — import the existing ones, never create
 
-The three application roles are declared in `required_resource_access` AND
-managed as `azuread_app_role_assignment` (a grant is a separate object on the
-Microsoft Graph service principal; on 2026-11-04 admin-consent created all
-three while the app's `requiredResourceAccess` read empty). The grants already
-exist — importing them first is mandatory, or the plan adds duplicates.
+A grant (`appRoleAssignment`) is a separate object on the Microsoft Graph
+service principal; `required_resource_access` only DECLARES the role. A plan
+that creates a grant without importing it first adds a DUPLICATE. Every role
+declared in this stack is therefore also managed as
+`azuread_app_role_assignment`: `mail_service` (keyed `<slot>/<role>`, from
+`local.mail_service_graph_grants`) and `opshub_prod_service` (keyed `<role>`).
+
+The DIRECTION matters: `servicePrincipals/<sp id>/appRoleAssignments` lists the
+grants that app HOLDS. `appRoleAssignedTo` is the opposite one (who holds a role
+ON this app) and shows nothing useful here — an earlier revision of this
+section named the wrong endpoint.
+
+The owner kit builds the import id maps — `TF_VAR_mail_service_graph_grant_ids`
+and `TF_VAR_opshub_prod_service_graph_grant_ids` — from that endpoint (read
+only; assignment ids are public identifiers, never pasted). With them set,
+`tofu plan` shows the grants as IMPORTS; **0 to add**. A planned create means
+the map is wrong: STOP.
+
+Read-only audit of every service app (2026-11-04):
 
 ```sh
 GRAPH_APP_ID="00000003-0000-0000-c000-000000000000"   # Microsoft Graph, well-known, not a secret
-SVC=$(az ad sp list --display-name "OpsHub Prod Service" --query "[0].id" -o tsv)
 GRAPH=$(az ad sp show --id "$GRAPH_APP_ID" --query id -o tsv)
-az ad sp show --id "$GRAPH_APP_ID" \
-  --query "appRoles[?value=='DeviceManagementManagedDevices.Read.All' || value=='SecurityEvents.Read.All' || value=='User.Read.All'].{value:value,id:id}" -o table
-az rest --method get \
-  --url "https://graph.microsoft.com/v1.0/servicePrincipals/$SVC/appRoleAssignedTo" \
-  --query "value[].{assignment:id,appRoleId:appRoleId}" -o table
-```
-
-Match each `appRoleId` in the second table to a `value` in the first, then
-import that assignment by its ASSIGNMENT id (not the role id):
-
-```sh
-tofu import 'azuread_app_role_assignment.opshub_prod_service["DeviceManagementManagedDevices.Read.All"]' \
-  "/servicePrincipals/$GRAPH/appRoleAssignedTo/<assignment id>"
-tofu import 'azuread_app_role_assignment.opshub_prod_service["SecurityEvents.Read.All"]' \
-  "/servicePrincipals/$GRAPH/appRoleAssignedTo/<assignment id>"
-tofu import 'azuread_app_role_assignment.opshub_prod_service["User.Read.All"]' \
-  "/servicePrincipals/$GRAPH/appRoleAssignedTo/<assignment id>"
-```
-
-Then `tofu plan`: the three assignments show **0 to add**. A planned create
-means the import key/appRoleId pairing is wrong — STOP. A grant in Entra that
-is NOT one of the three shows as a Terraform destroy; that is the drift this
-change exists to surface — reconcile by hand first.
-
-**Other service apps (owner, read-only):** check whether Rova Prod Service,
-Rova Dev Service, OpsHub Dev Service and KB Dev Service have the same gap
-(grants present while `requiredResourceAccess` is empty):
-
-```sh
-for n in "Rova Prod Service" "Rova Dev Service" "OpsHub Dev Service" "KB Dev Service"; do
+for n in "Rova Prod Service" "Rova Dev Service" "OpsHub Dev Service" "KB Dev Service" "OpsHub Prod Service"; do
   sp=$(az ad sp list --display-name "$n" --query "[0].id" -o tsv)
   echo "$n"
-  az rest --method get --url "https://graph.microsoft.com/v1.0/servicePrincipals/$sp/appRoleAssignedTo" \
-    --query "value[].{assignment:id,appRoleId:appRoleId}" -o table
+  az rest --method get --url "https://graph.microsoft.com/v1.0/servicePrincipals/$sp/appRoleAssignments" \
+    --query "value[?resourceId=='$GRAPH'].{assignment:id,appRoleId:appRoleId}" -o table
 done
 ```
 
-If one shows grants not declared in `mail.tf`, that app gets the same
-assignment resources + import ids in its own follow-up PR (not guessed here).
-`rova_prod`'s `User.Invite.All` is already declared in `mail.tf`.
+Result on 2026-11-04: Rova Prod Service **1** (`User.Invite.All`), OpsHub Dev
+Service **3** (`DeviceManagementManagedDevices.Read.All`,
+`SecurityEvents.Read.All`, `User.Read.All`), OpsHub Prod Service **3** (the same
+three), Rova Dev and KB Dev **0**. Every granted role is declared in `mail.tf` /
+`prod_apps.tf`, and this stack now manages every one of those grants. A live
+grant that is NOT declared, or a role declared with no grant, is a STOP:
+reconcile `mail.tf`'s `graph_app_role_values` first, then re-run the kit.
+
+Manual fallback (only if the kit cannot run; the id is the ASSIGNMENT id, the
+resource is Microsoft Graph):
+
+```sh
+tofu import 'azuread_app_role_assignment.opshub_prod_service["User.Read.All"]' \
+  "/servicePrincipals/$GRAPH/appRoleAssignedTo/<assignment id>"
+```
 
 ### Owner steps
 
@@ -995,6 +1031,9 @@ product-docs), so the owner reads the rest from Entra or `az` as shown.
 | `TF_VAR_mail_service_sp_object_ids` | JSON, 4 service SP object ids | mail export `*-sp.json` `.id` |
 | `TF_VAR_mail_service_cert_key_ids` | JSON, 4 key GUIDs (rova_prod included) | `.keyCredentials[0].keyId` of each service app export |
 | `TF_VAR_mail_service_certificates` | JSON, 4 PEM public certs | dev: 1Password "Entra mail cert – <product>-dev – certificate"; rova_prod: `az keyvault secret show ... | openssl x509` (mail step 3) |
+| `TF_VAR_mail_service_rotated_certificates` | JSON map `{keyId: {app_slot, certificate}}`; default `{}` | the kit builds it from Entra (`appRoleAssignments`/`keyCredentials`); today one entry: KB Dev's 2026-11-04 credential. Never hand-built |
+| `TF_VAR_mail_service_graph_grant_ids` | JSON map `{"<slot>/<role>": <assignment id>}`; default `{}` | built by the kit from each service app's live `appRoleAssignments` (README "Graph permission grants") |
+| `TF_VAR_opshub_prod_service_graph_grant_ids` | JSON map `{<role>: <assignment id>}`; default `{}` | built by the kit from "OpsHub Prod Service" `appRoleAssignments` |
 | `TF_VAR_opshub_prod_service_certificate` | PEM PUBLIC cert (one string), optional | `$HOME/keys/opshub-prod-cert.pem` from "Prod identity: OpsHub" step 1. Unset = the prod service app is not created |
 
 The `existing_*` and `mail_service_*` ids are public identifiers, not secrets,
