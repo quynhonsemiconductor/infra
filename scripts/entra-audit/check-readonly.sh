@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CI guard: the audit scripts must stay read-only. Fails when entra-audit.sh or exchange-rbac-audit.ps1 contain anything
+# CI guard: the audit scripts must stay read-only. Fails when entra-audit.sh, exchange-rbac-audit.ps1 or tenant-consents.sh contain anything
 # that could change the tenant: an HTTP verb other than GET, a second `az rest` call site, an `az` sub-command other than
 # `rest` / `account`, or a PowerShell cmdlet whose verb is not read-only.
 #
@@ -8,7 +8,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ $# -eq 0 ]]; then set -- "$HERE/entra-audit.sh" "$HERE/exchange-rbac-audit.ps1"; fi
+if [[ $# -eq 0 ]]; then set -- "$HERE/entra-audit.sh" "$HERE/exchange-rbac-audit.ps1" "$HERE/tenant-consents.sh"; fi
 
 bad=0
 fail() { echo "READ-ONLY GUARD: $1: $2" >&2; bad=1; }
