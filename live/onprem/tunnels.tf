@@ -6,7 +6,8 @@
 # less than Node's 65 s / uvicorn's 65 s, so no request lands on a socket the
 # origin is closing.
 #
-# The one host per app (§8.2): a Worker serves the SPA at the edge; the API
+# The one host per app (§8.2): the SPA is either a Worker at the edge or (P3, chart 0.18+) the in-cluster web
+# component behind a host catch-all rule (`path = null`, LAST for its host: first match wins). Where it is a Worker, the API
 # paths BELOW are "no-Worker routes" — Workers routes in live/edge negate them,
 # and they fall through to this Tunnel and straight to the Service. The browser
 # sees one origin: no CORS, no cross-site cookies, CF-Connecting-IP is
@@ -35,6 +36,14 @@ locals {
     # /mcp: the rova-prod MCP Access app (Managed OAuth) is in front; cloudflared checks ITS JWT.
     { hostname = "rova.qnsc.vn", path = "^/mcp(/|$)", service = "http://api.rova-prod.svc:3000", access_app = "rova-prod MCP server" },
 
+    # opshub prod (P3, owner decisions 2026-11-04): staff + MFA Access app on the host (live/edge, infra#343), SPA
+    # from the cluster, no door terminal route at launch. Inert until edge publishes DNS for the host. The host
+    # joins access_jwt_hosts in a follow-up, once its Access app exists (the data lookup needs it).
+    { hostname = "opshub.qnsc.vn", path = "^/api/auth/", service = "http://api.opshub-prod.svc:3000" },
+    { hostname = "opshub.qnsc.vn", path = "^/v1/", service = "http://api.opshub-prod.svc:3000" },
+    { hostname = "opshub.qnsc.vn", path = "^/readyz$", service = "http://api.opshub-prod.svc:3000", bypass = true },
+    { hostname = "opshub.qnsc.vn", path = null, service = "http://web.opshub-prod.svc:8080" },
+
     # rova dev — one Access app on the host (live/edge); the webhook bypass
     # lives in live/edge too, this file only routes what reaches the origin
     # The webhook rule MUST come before ^/v1/ (first match wins) and carries
@@ -44,6 +53,10 @@ locals {
     { hostname = "rova-dev.qnsc.vn", path = "^/v1/", service = "http://api.rova-dev.svc:3000" },
     { hostname = "rova-dev.qnsc.vn", path = "^/readyz$", service = "http://api.rova-dev.svc:3000", bypass = true },
     { hostname = "rova-dev.qnsc.vn", path = "^/mcp(/|$)", service = "http://api.rova-dev.svc:3000", access_app = "rova-dev MCP server" },
+    # Everything else on the host is the SPA, served by the chart's web component (chart 0.19.1+, gitops#204/#218).
+    # Inert while the host's Workers SPA route exists (live/edge, web = "worker"): the Worker answers first. The
+    # edge PR that sets web = "cluster" removes that route; THIS rule must be applied before it.
+    { hostname = "rova-dev.qnsc.vn", path = null, service = "http://web.rova-dev.svc:8080" },
 
     # opshub dev
     # The door terminal rule is before ^/v1/ for the same reason (bearer token
@@ -52,11 +65,14 @@ locals {
     { hostname = "opshub-dev.qnsc.vn", path = "^/v1/door/terminal/", service = "http://api.opshub-dev.svc:3000", bypass = true },
     { hostname = "opshub-dev.qnsc.vn", path = "^/v1/", service = "http://api.opshub-dev.svc:3000" },
     { hostname = "opshub-dev.qnsc.vn", path = "^/readyz$", service = "http://api.opshub-dev.svc:3000", bypass = true },
+    { hostname = "opshub-dev.qnsc.vn", path = null, service = "http://web.opshub-dev.svc:8080" },
 
     # kb dev — everything under /api (incl. /api/v1/auth/entra/callback) plus
     # /readyz, the alias of /health/ready that Synthetic Monitoring probes
     { hostname = "kb-dev.qnsc.vn", path = "^/api/", service = "http://api.kb-dev.svc:8000" },
-    { hostname = "kb-dev.qnsc.vn", path = "^/readyz$", service = "http://api.kb-dev.svc:8000" },
+    { hostname = "kb-dev.qnsc.vn", path = "^/readyz$", service = "http://api.kb-dev.svc:8000", bypass = true },
+    # The SPA: the chart's in-cluster web component (kb has no Workers SPA; live/edge web = "cluster").
+    { hostname = "kb-dev.qnsc.vn", path = null, service = "http://web.kb-dev.svc:8080" },
   ]
 }
 

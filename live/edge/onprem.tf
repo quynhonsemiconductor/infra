@@ -17,7 +17,7 @@ locals {
     "rova.qnsc.vn"       = { product = "rova", env = "prod" }
     "rova-dev.qnsc.vn"   = { product = "rova", env = "dev" }
     "opshub-dev.qnsc.vn" = { product = "opshub", env = "dev" }
-    "kb-dev.qnsc.vn"     = { product = "kb", env = "dev" }
+    "kb-dev.qnsc.vn"     = { product = "kb", env = "dev", web = "cluster" }
   }
 
   # The ONLY Access bypasses (plan §8.2): /readyz per dev host + the rova-dev
@@ -45,10 +45,14 @@ locals {
   # api on k3s (gitops#75/#76), SPA Worker opshub-dev-web (opshub#521).
   # 2026-11-01 rova prod (owner fast track): rova.qnsc.vn moves off AWS on the
   # move night. Merge ONLY on the night of the move — this line is the switch.
-  cutover = ["rova-dev.qnsc.vn", "opshub-dev.qnsc.vn", "rova.qnsc.vn"]
+  cutover = ["rova-dev.qnsc.vn", "opshub-dev.qnsc.vn", "rova.qnsc.vn", "kb-dev.qnsc.vn"]
 
   # Nothing goes live before the tunnels exist (DNS targets them).
   cutover_live = var.tunnels_exist ? local.cutover : []
+
+  # Hosts whose SPA is the product's in-cluster web component (chart 0.18+), not a Workers script: the tunnel
+  # sends every path to the cluster, so they get no Workers routes at all.
+  worker_web_live = [for h in local.cutover_live : h if try(local.app_hosts[h].web, "worker") == "worker"]
 }
 
 # A typo in local.cutover must fail the plan, not silently create nothing.
@@ -282,7 +286,7 @@ resource "cloudflare_zero_trust_access_policy" "dev_bypass" {
 # omitted — the route exists with no script, so the traffic falls through to
 # the tunnel). v5 renamed `script_name` to `script`.
 resource "cloudflare_workers_route" "spa" {
-  for_each = { for h, v in local.app_hosts : h => v if contains(local.cutover_live, h) }
+  for_each = { for h, v in local.app_hosts : h => v if contains(local.worker_web_live, h) }
 
   zone_id = var.cloudflare_zone_id
   pattern = "${each.key}/*"
@@ -292,7 +296,7 @@ resource "cloudflare_workers_route" "spa" {
 resource "cloudflare_workers_route" "api_no_worker" {
   for_each = {
     for pair in flatten([
-      for h in local.cutover_live : [
+      for h in local.worker_web_live : [
         for p in local.api_paths : { host = h, path = p }
       ]
     ]) : "${pair.host}${pair.path}" => pair
