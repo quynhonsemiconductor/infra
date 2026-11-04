@@ -199,6 +199,30 @@ resource "grafana-adaptive-metrics_rule" "db_client_operation_duration" {
 # saturation alerting wants the per-pod ceiling → max:gauge. The provider's
 # own example already mixes families in one list; acceptance of both gauge
 # functions together is verified at flip (see AGGREGATION NAMES).
+# Node CPU per mode, WITHOUT the `cpu` label. The node-exporter emits 32
+# cpus x 8 modes (~256 series) per node; nothing alerts or graphs on a single
+# core, so sum the cores away and keep the mode (user/system/iowait/...). This
+# is an AM rule rather than a collector relabel on purpose: dropping `cpu`
+# alone would create duplicate label sets, and relabel cannot aggregate.
+# node_cpu_guest_seconds_total is dropped at the collector (gitops PR) and is
+# therefore not covered here.
+resource "grafana-adaptive-metrics_rule" "node_cpu" {
+  count      = local.am_live ? 1 : 0
+  metric     = "node_cpu_seconds_total"
+  match_type = "prefix"
+
+  keep_labels = ["job", "instance", "mode"]
+
+  aggregations = ["sum:counter"]
+
+  lifecycle {
+    precondition {
+      condition     = var.adaptive_metrics_api_key != ""
+      error_message = "adaptive_metrics_api_key is empty — the owner must add repo secret GRAFANA_ADAPTIVE_METRICS_API_TOKEN (access policy terraform-adaptive-metrics, scope adaptive-metrics-config:read+write, value '<metrics-instance-id>:<token>') before the flip."
+    }
+  }
+}
+
 resource "grafana-adaptive-metrics_rule" "db_client_connection" {
   count      = local.am_live ? 1 : 0
   metric     = "db_client_connection"

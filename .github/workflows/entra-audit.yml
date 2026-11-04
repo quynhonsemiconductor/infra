@@ -45,7 +45,7 @@ jobs:
         run: bash scripts/entra-audit/check-readonly.sh
 
       - name: shellcheck
-        run: shellcheck -x scripts/entra-audit/entra-audit.sh scripts/entra-audit/check-readonly.sh
+        run: shellcheck -x scripts/entra-audit/entra-audit.sh scripts/entra-audit/tenant-consents.sh scripts/entra-audit/check-readonly.sh
 
       - name: PSScriptAnalyzer
         shell: pwsh
@@ -56,4 +56,4 @@ jobs:
           if ($findings) { exit 1 }
 
       - name: Tests
-        run: python3 -m unittest scripts/entra-audit/test_entra_audit.py -v
+        run: python3 -m unittest scripts/entra-audit/test_entra_audit.py scripts/entra-audit/test_tenant_consents.py -v
