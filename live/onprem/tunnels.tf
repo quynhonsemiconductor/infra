@@ -36,6 +36,14 @@ locals {
     # /mcp: the rova-prod MCP Access app (Managed OAuth) is in front; cloudflared checks ITS JWT.
     { hostname = "rova.qnsc.vn", path = "^/mcp(/|$)", service = "http://api.rova-prod.svc:3000", access_app = "rova-prod MCP server" },
 
+    # opshub prod (P3, owner decisions 2026-11-04): staff + MFA Access app on the host (live/edge, infra#343), SPA
+    # from the cluster, no door terminal route at launch. Inert until edge publishes DNS for the host. The host
+    # joins access_jwt_hosts in a follow-up, once its Access app exists (the data lookup needs it).
+    { hostname = "opshub.qnsc.vn", path = "^/api/auth/", service = "http://api.opshub-prod.svc:3000" },
+    { hostname = "opshub.qnsc.vn", path = "^/v1/", service = "http://api.opshub-prod.svc:3000" },
+    { hostname = "opshub.qnsc.vn", path = "^/readyz$", service = "http://api.opshub-prod.svc:3000", bypass = true },
+    { hostname = "opshub.qnsc.vn", path = null, service = "http://web.opshub-prod.svc:8080" },
+
     # rova dev — one Access app on the host (live/edge); the webhook bypass
     # lives in live/edge too, this file only routes what reaches the origin
     # The webhook rule MUST come before ^/v1/ (first match wins) and carries
