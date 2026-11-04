@@ -6,5 +6,8 @@ k3s_server_oidc_issuer_enabled: false
 k3s_server_oidc_issuer: ""
 k3s_server_oidc_issuer_old: "https://kubernetes.default.svc.cluster.local"
 
+# kube-controller-manager: keep at most this many terminated pods cluster-wide (upstream default 12500).
+k3s_server_terminated_pod_gc_threshold: 100
+
 # A config change needs a k3s restart, which interrupts every workload on the node. Default: report only.
 k3s_server_allow_restart: false
