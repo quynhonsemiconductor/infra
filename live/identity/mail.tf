@@ -24,9 +24,9 @@
 # local.mail_service_rotated_cert_key_ids; the PEM map
 # (TF_VAR_mail_service_rotated_certificates) supplies values only.
 # "KB Dev Service" carries TWO today: the 2026-10-18 credential imported above
-# and a Key Vault-generated one appended by the owner on 2026-11-04
-# (sa-notes/kb-dev-secrets.sh; the vault keeps the private key, Entra the
-# public half). Both are imported, exactly as the old one is: a plan that
+# and a Key Vault-generated one the owner appended on 2026-11-04 with
+# `az ad app credential reset --cert --append` (the vault keeps the private
+# key, Entra the public half). Both are imported, exactly as the old one is: a plan that
 # CREATES a certificate, or replaces one, would add a third credential or
 # drop the one the worker authenticates with — STOP (README go/no-go). The
 # set is empty for every other app.
@@ -121,25 +121,25 @@ variable "mail_service_sp_object_ids" {
 # it never decides which credential is which. Values read from Entra on
 # 2026-11-04.
 locals {
-  # Each value is named `key_id` on purpose: the public-repo leak guard allows a
+  # Each value is named `pinned_key_id` on purpose: the public-repo leak guard allows a
   # GUID only where the line names it as the value of an allowlisted key
-  # (.github/leak-guard-allowlist.txt, `key:key_id`). Nothing else may be
+  # (.github/leak-guard-allowlist.txt, `key:pinned_key_id`). Nothing else may be
   # suppressed.
   mail_service_cert_key_ids = {
-    rova_prod  = { key_id = "f0b1686d-9eea-47e5-ba16-eb2566ee5709" }
-    rova_dev   = { key_id = "687e178e-feae-4ebc-a881-b5d2f0ae5357" }
-    opshub_dev = { key_id = "ddf98e3f-48f1-43be-9455-5e92b4044312" }
-    kb_dev     = { key_id = "fc90ec3d-d5a4-4747-8c8b-b64a1fd89c30" } # the 2026-10-18 credential
+    rova_prod  = { pinned_key_id = "f0b1686d-9eea-47e5-ba16-eb2566ee5709" }
+    rova_dev   = { pinned_key_id = "687e178e-feae-4ebc-a881-b5d2f0ae5357" }
+    opshub_dev = { pinned_key_id = "ddf98e3f-48f1-43be-9455-5e92b4044312" }
+    kb_dev     = { pinned_key_id = "fc90ec3d-d5a4-4747-8c8b-b64a1fd89c30" } # the 2026-10-18 credential
   }
 
   mail_service_rotated_cert_key_ids = {
-    kb_dev = [{ key_id = "e967b988-1892-4f56-975a-2ff7d02f0049" }] # the 2026-11-04 Key Vault credential
+    kb_dev = [{ pinned_key_id = "e967b988-1892-4f56-975a-2ff7d02f0049" }] # the 2026-11-04 Key Vault credential
   }
 
   # Flattened so each credential gets its own address, keyed by keyId.
   mail_service_rotated_credentials = merge([
     for slot, creds in local.mail_service_rotated_cert_key_ids : {
-      for c in creds : c.key_id => { slot = slot, key_id = c.key_id }
+      for c in creds : c.pinned_key_id => { slot = slot, pinned_key_id = c.pinned_key_id }
     }
   ]...)
 }
@@ -179,7 +179,7 @@ variable "mail_service_rotated_certificates" {
 
 variable "mail_service_graph_grant_ids" {
   type        = map(string)
-  description = "Assignment id of every Graph application-role grant the service apps ALREADY hold, keyed like local.mail_service_graph_grants (\"<slot>/<role value>\"). Built by scripts/owner/identity-env/identity-env.sh from the live appRoleAssignments (read-only). The grants exist (admin consent); importing them is mandatory, or the plan adds duplicates. REQUIRED and with no default: once imported, a missing map would empty the for_each and DROP the grants, so a plan without it must stop instead."
+  description = "Assignment id of every Graph application-role grant the service apps ALREADY hold, keyed like local.mail_service_graph_grants (\"<slot>/<role value>\"). Built by scripts/owner/identity-env/identity-env.sh from the live appRoleAssignments (read-only); the grants exist (admin consent). These ids feed the IMPORT blocks ONLY: the resources themselves are declared from the role list, so a missing entry cannot drop a grant — it plans a CREATE that Entra rejects as a duplicate (HTTP 409) at apply. Required (no default) so that foot-gun stops at plan time, where nothing has been sent to Entra."
 }
 
 resource "azuread_application" "mail_service" {
@@ -224,15 +224,17 @@ resource "azuread_application_certificate" "mail_service" {
   # source of truth. Any plan showing a certificate "must be replaced" is a
   # STOP (README go/no-go).
   #
-  # Rotation is still deliberate: issue the NEW credential (apply) before the
-  # old one is removed, then swap the worker's PEM (README "Rotation").
+  # ROTATION does NOT happen through an apply: value is ignored (write-only) and
+  # prevent_destroy refuses a replace. The owner appends the new credential in
+  # Entra (`az ad app credential reset --cert --append`), pins its keyId in
+  # local.mail_service_rotated_cert_key_ids and the kit exports the public PEM;
+  # the plan then IMPORTS it — 0 create, 0 replace (README "Rotation").
   lifecycle {
     create_before_destroy = true
     ignore_changes        = [value, encoding]
     # The credential is LIVE and read by the worker: no plan may ever drop it.
-    # Retiring one is the reviewed procedure in the README (removed block with
-    # destroy = false, then the Entra delete by hand), never an apply of this
-    # resource.
+    # Retiring one is the README procedure (forget from state first, then the
+    # Entra delete by hand), never an apply of this resource.
     prevent_destroy = true
   }
 }
@@ -330,19 +332,19 @@ import {
 # duplicate key credential.
 import {
   to = azuread_application_certificate.mail_service["rova_prod"]
-  id = "${var.mail_service_object_ids.rova_prod}/certificate/${local.mail_service_cert_key_ids.rova_prod.key_id}"
+  id = "${var.mail_service_object_ids.rova_prod}/certificate/${local.mail_service_cert_key_ids.rova_prod.pinned_key_id}"
 }
 import {
   to = azuread_application_certificate.mail_service["rova_dev"]
-  id = "${var.mail_service_object_ids.rova_dev}/certificate/${local.mail_service_cert_key_ids.rova_dev.key_id}"
+  id = "${var.mail_service_object_ids.rova_dev}/certificate/${local.mail_service_cert_key_ids.rova_dev.pinned_key_id}"
 }
 import {
   to = azuread_application_certificate.mail_service["opshub_dev"]
-  id = "${var.mail_service_object_ids.opshub_dev}/certificate/${local.mail_service_cert_key_ids.opshub_dev.key_id}"
+  id = "${var.mail_service_object_ids.opshub_dev}/certificate/${local.mail_service_cert_key_ids.opshub_dev.pinned_key_id}"
 }
 import {
   to = azuread_application_certificate.mail_service["kb_dev"]
-  id = "${var.mail_service_object_ids.kb_dev}/certificate/${local.mail_service_cert_key_ids.kb_dev.key_id}"
+  id = "${var.mail_service_object_ids.kb_dev}/certificate/${local.mail_service_cert_key_ids.kb_dev.pinned_key_id}"
 }
 # Additional (rotated) credentials: same CertificateID shape, each keyId pinned
 # in local.mail_service_rotated_cert_key_ids. An import of a resource that is
@@ -352,7 +354,7 @@ import {
 import {
   for_each = local.mail_service_rotated_credentials
   to       = azuread_application_certificate.mail_service_rotated[each.key]
-  id       = "${var.mail_service_object_ids[each.value.slot]}/certificate/${each.value.key_id}"
+  id       = "${var.mail_service_object_ids[each.value.slot]}/certificate/${each.value.pinned_key_id}"
 }
 # The GRANTS that admin consent already created. The id is the ASSIGNMENT id
 # (not the role id) under the Graph service principal, the resource of every

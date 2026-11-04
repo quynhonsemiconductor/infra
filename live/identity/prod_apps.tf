@@ -162,7 +162,7 @@ locals {
 
 variable "opshub_prod_service_graph_grant_ids" {
   type        = map(string)
-  description = "Assignment id of each Graph application-role grant 'OpsHub Prod Service' ALREADY holds, keyed by role value (local.opshub_prod_service_graph_roles). Built by scripts/owner/identity-env/identity-env.sh from the live appRoleAssignments (read-only); the grants exist since the 2026-11-04 admin-consent, so importing them is mandatory (README). REQUIRED and with no default: once imported, a missing map would empty the for_each and DROP the grants, so a plan without it must stop instead."
+  description = "Assignment id of each Graph application-role grant 'OpsHub Prod Service' ALREADY holds, keyed by role value (local.opshub_prod_service_graph_roles). Built by scripts/owner/identity-env/identity-env.sh from the live appRoleAssignments (read-only); the grants exist since the 2026-11-04 admin-consent. These ids feed the IMPORT blocks ONLY: the resources are declared from the role list, so a missing entry cannot drop a grant — it plans a CREATE that Entra rejects as a duplicate (HTTP 409) at apply. Required (no default) so that foot-gun stops at plan time."
 }
 
 # Same adoption rule as mail.tf: the grants are live, the import is mandatory,
@@ -204,10 +204,13 @@ resource "azuread_application_certificate" "opshub_prod_service" {
   value          = var.opshub_prod_service_certificate
   encoding       = "pem"
 
-  # Rotation issues the NEW credential before the old one is removed; the
-  # worker's PEM in the vault is swapped right after apply (README). The
-  # credential is live: no plan may drop it (retirement = the README's removed
-  # block + Entra delete, never an apply of this resource).
+  # Rotation does NOT happen through an apply: this resource keeps the one
+  # credential it created from this public half. A new credential is appended
+  # in Entra (`az ad app credential reset --cert --append`) and adopted as a
+  # reviewed pin + import (README "Rotation"); prevent_destroy refuses a
+  # replace, so a changed value is a hard error, not a silent rotation. The
+  # credential is live: no plan may drop it (retirement = forget from state
+  # first, then the Entra delete by hand).
   lifecycle {
     create_before_destroy = true
     prevent_destroy       = true
@@ -246,10 +249,12 @@ output "opshub_prod_client_ids" {
 output "opshub_prod_object_ids" {
   description = "Object ids the owner needs for the follow-up steps: signin_app is the argument of scripts/rotate-signin-secret.sh, service_app is the service app-registration object id, the two *_sp ids are the enterprise-application object ids (Exchange New-ServicePrincipal takes the app id AND the SP object id). Not secrets."
   value = {
-    signin_app       = azuread_application.opshub_prod.id
-    signin_sp        = azuread_service_principal.opshub_prod.object_id
-    service_app      = one(azuread_application.opshub_prod_service[*].id)
-    service_sp       = one(azuread_service_principal.opshub_prod_service[*].object_id)
-    signin_app_roles = local.opshub_prod_app_role_ids
+    signin_app  = azuread_application.opshub_prod.id
+    signin_sp   = azuread_service_principal.opshub_prod.object_id
+    service_app = one(azuread_application.opshub_prod_service[*].id)
+    service_sp  = one(azuread_service_principal.opshub_prod_service[*].object_id)
+    # Read from the LIVE application (not from the derived local) so the
+    # README's "existing role ids must EQUAL the derived ones" check is real.
+    signin_app_roles = { for r in azuread_application.opshub_prod.app_role : r.value => r.id }
   }
 }
