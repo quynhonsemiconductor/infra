@@ -63,7 +63,7 @@
 variable "opshub_prod_live" {
   description = "Flip via a PR changing this default in the Stage D2 window (CUTOVER-2026-11) — the ONLY flip mechanism. false = every resource below is culled and plans show nothing."
   type        = bool
-  default     = false
+  default     = true # 2026-11-04: opshub.qnsc.vn live (gitops#205/#264, infra#343)
 }
 
 locals {
