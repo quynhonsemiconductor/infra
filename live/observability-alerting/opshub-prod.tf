@@ -131,7 +131,7 @@ resource "grafana_synthetic_monitoring_check" "opshub_prod_readyz" {
 # route it through grafana_notification_policy.root — Teams for prod, devops@
 # always — the same policy every other rule in this stack uses. Same datasource
 # (the stack's managed Prometheus, where SM publishes probe_success) as
-# series_near_cap in main.tf.
+# the billable-series cap rules in billable-alert.tf.
 #
 # no_data_state = Alerting, NOT OK: the `opshub_prod_live` count gate above is
 # what keeps this silent before go-live; once armed, a VANISHED probe series
