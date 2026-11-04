@@ -19,22 +19,22 @@
 # and the alert are built from mcp_tool_calls_total{outcome="error"} instead —
 # that series is emitted on every call and was verified live.
 #
-# ── NO `env` LABEL ON THESE SERIES — THE JOIN IS DELIBERATE ─────────────────
-# Verified live: the MCP series carry only cluster, instance, job="rova/rova-api",
-# k8s_cluster_name, tool and outcome. The resource attributes that DO identify
-# the environment (deployment_environment_name, service_namespace,
-# k8s_namespace_name) reach Prometheus only on the `target_info` series — the
-# collector does not convert resource attributes into metric labels. Both envs
-# also share the same job label. So every env split below joins target_info on
-# `instance`:
-#     ... * on(instance) group_left(k8s_namespace_name) target_info
-# This is verified working for prod (its live prod pod instance resolves to rova-prod) and
-# returns empty for dev today (rova-dev has served no MCP call in the window).
-# CAVEAT: the join depends on `instance` not being aggregated away. The
-# Adaptive Metrics rules (live/adaptive-metrics) keep it intact for these
-# metrics today; if a future rule aggregates instance for mcp_*, these panels
-# and the rule go blind (NoData -> OK, so silent). Adding an env label at the
-# collector is the durable fix and is NOT part of this change.
+# ── `env` LABEL (gitops#242) ───────────────────────────────────────────────
+# Earlier this dashboard joined `target_info` on `instance`, because the MCP
+# series carried no environment and both envs share job="rova/rova-api". The
+# durable fix landed in gitops platform/alloy (`env-label` data processor): the
+# collector now copies the `deployment.environment.name` resource attribute onto
+# the app metric datapoints, so the series carry `env="dev"|"prod"` directly and
+# every panel groups by `env` with no join.
+#
+# ORDERING: until that collector change is synced, the label does not exist. The
+# panels then collapse to one unlabelled series (harmless), and the alert —
+# which filters on the label — has no series and stays OK (no_data_state).
+# Verify with `count by (env) (mcp_tool_calls_total)` before relying on it.
+#
+# Adaptive Metrics aggregates labels that are not in a rule's `keep_labels`, and
+# no rule covers `mcp_*` today, so `env` survives here. If an `mcp_*` rule is
+# added later it MUST keep `env`, or these panels and the alert go blind.
 #
 # ── WRITE TOOLS ────────────────────────────────────────────────────────────
 # The regexp below is the v2.0 write catalogue's 14 tool names, by prefix; no
@@ -51,10 +51,6 @@
 
 locals {
   mcp_write_tools = "rova_(create|update|add|plan|link|label|log|save|record|mark|delete).*"
-
-  # Per-env identification, shared by every panel and both rules. See the
-  # NO `env` LABEL note above for why this is a join and not a label selector.
-  mcp_env_join = "on(instance) group_left(k8s_namespace_name) target_info"
 }
 
 resource "grafana_dashboard" "rova_mcp" {
@@ -97,14 +93,14 @@ resource "grafana_dashboard" "rova_mcp" {
         targets = [{
           expr = join("", [
             "(",
-            "sum by (k8s_namespace_name) (rate(mcp_tool_calls_total{outcome=\"error\"}[5m]) * ${local.mcp_env_join})",
+            "sum by (env) (rate(mcp_tool_calls_total{outcome=\"error\"}[5m]))",
             " or ",
-            "sum by (k8s_namespace_name) (rate(mcp_tool_calls_total[5m]) * ${local.mcp_env_join}) * 0",
+            "sum by (env) (rate(mcp_tool_calls_total[5m])) * 0",
             ")",
             " / ",
-            "sum by (k8s_namespace_name) (rate(mcp_tool_calls_total[5m]) * ${local.mcp_env_join})",
+            "sum by (env) (rate(mcp_tool_calls_total[5m]))",
           ])
-          legendFormat = "{{k8s_namespace_name}}"
+          legendFormat = "{{env}}"
           refId        = "A"
         }]
       },
@@ -116,8 +112,8 @@ resource "grafana_dashboard" "rova_mcp" {
         datasource  = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
         fieldConfig = { defaults = { unit = "ms" } }
         targets = [{
-          expr         = "histogram_quantile(0.95, sum by (le, k8s_namespace_name) (rate(mcp_tool_duration_milliseconds_bucket[5m]) * ${local.mcp_env_join}))"
-          legendFormat = "{{k8s_namespace_name}}"
+          expr         = "histogram_quantile(0.95, sum by (le, env) (rate(mcp_tool_duration_milliseconds_bucket[5m])))"
+          legendFormat = "{{env}}"
           refId        = "A"
         }]
       },
@@ -140,13 +136,13 @@ resource "grafana_dashboard" "rova_mcp" {
         datasource = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
         targets = [
           {
-            expr         = "sum by (k8s_namespace_name) (rate(mcp_tool_calls_total{tool=~\"${local.mcp_write_tools}\"}[5m]) * ${local.mcp_env_join})"
-            legendFormat = "writes {{k8s_namespace_name}}"
+            expr         = "sum by (env) (rate(mcp_tool_calls_total{tool=~\"${local.mcp_write_tools}\"}[5m]))"
+            legendFormat = "writes {{env}}"
             refId        = "A"
           },
           {
-            expr         = "sum by (k8s_namespace_name) (rate(mcp_tool_calls_total{tool!~\"${local.mcp_write_tools}\"}[5m]) * ${local.mcp_env_join})"
-            legendFormat = "reads {{k8s_namespace_name}}"
+            expr         = "sum by (env) (rate(mcp_tool_calls_total{tool!~\"${local.mcp_write_tools}\"}[5m]))"
+            legendFormat = "reads {{env}}"
             refId        = "B"
           },
         ]
@@ -162,10 +158,10 @@ resource "grafana_dashboard" "rova_mcp" {
 # outside normal use while sitting 20× under one person's 60/min MCP cap — it
 # catches a runaway retry loop early instead of after the cap is drained.
 #
-# Two rules, not one grouped rule: the metric has no env label, so each rule
-# filters on its own namespace through the join above, and carries the env
-# label the notification policy routes on (prod -> Teams via the root policy;
-# dev -> Teams only via the opt-in `paging = "teams"` child).
+# Two rules, not one grouped rule: each selects its own metrics with
+# `env="dev"` / `env="prod"` and carries the `env` RULE label the notification
+# policy routes on (prod -> Teams via the root policy; dev -> Teams only via
+# the opt-in `paging = "teams"` child).
 resource "grafana_rule_group" "rova_mcp_write_spike_dev" {
   name             = "rova mcp (writes — dev)"
   folder_uid       = grafana_folder.alerts.uid
@@ -189,14 +185,9 @@ resource "grafana_rule_group" "rova_mcp_write_spike_dev" {
       }
 
       model = jsonencode({
-        refId      = "A"
-        datasource = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
-        expr = join("\n", [
-          "sum(",
-          "  increase(mcp_tool_calls_total{tool=~\"${local.mcp_write_tools}\"}[10m])",
-          "  and on(instance) target_info{k8s_namespace_name=\"rova-dev\"}",
-          ")",
-        ])
+        refId         = "A"
+        datasource    = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
+        expr          = "sum(increase(mcp_tool_calls_total{tool=~\"${local.mcp_write_tools}\", env=\"dev\"}[10m]))"
         instant       = true
         range         = false
         intervalMs    = 1000
@@ -240,7 +231,7 @@ resource "grafana_rule_group" "rova_mcp_write_spike_dev" {
 
     annotations = {
       summary     = "rova dev: more than 30 MCP write calls in 10 minutes (≈3/min, sustained 5m). Normal dogfooding is a few writes per person per day — suspect a runaway model retry loop. Check the rova MCP dashboard's writes-vs-reads panel and the mcp.tool_call audit lines before raising MCP_WRITES_ENABLED further."
-      description = "sum(increase(mcp_tool_calls_total{tool=~write catalogue}[10m])) for namespace rova-dev is above 30."
+      description = "sum(increase(mcp_tool_calls_total{tool=~write catalogue}[10m])) for env=dev is above 30."
     }
   }
 }
@@ -268,14 +259,9 @@ resource "grafana_rule_group" "rova_mcp_write_spike_prod" {
       }
 
       model = jsonencode({
-        refId      = "A"
-        datasource = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
-        expr = join("\n", [
-          "sum(",
-          "  increase(mcp_tool_calls_total{tool=~\"${local.mcp_write_tools}\"}[10m])",
-          "  and on(instance) target_info{k8s_namespace_name=\"rova-prod\"}",
-          ")",
-        ])
+        refId         = "A"
+        datasource    = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
+        expr          = "sum(increase(mcp_tool_calls_total{tool=~\"${local.mcp_write_tools}\", env=\"prod\"}[10m]))"
         instant       = true
         range         = false
         intervalMs    = 1000
@@ -318,7 +304,7 @@ resource "grafana_rule_group" "rova_mcp_write_spike_prod" {
 
     annotations = {
       summary     = "rova prod: more than 30 MCP write calls in 10 minutes (≈3/min, sustained 5m). If this is not a planned bulk action, suspect a runaway model retry loop; reconcile the mcp.tool_call audit lines (who, which target keys) before any further writes."
-      description = "sum(increase(mcp_tool_calls_total{tool=~write catalogue}[10m])) for namespace rova-prod is above 30."
+      description = "sum(increase(mcp_tool_calls_total{tool=~write catalogue}[10m])) for env=prod is above 30."
     }
   }
 }
