@@ -100,11 +100,18 @@ def main() -> int:
         print(f"cannot list SLOs: {error}", file=sys.stderr)
         return 1
 
-    slos = [slo for slo in _slos(payload) if slo.get("name") == SLO_NAME]
+    slos = [
+        slo
+        for slo in _slos(payload)
+        if (slo.get("name") or slo.get("title")) == SLO_NAME
+    ]
     print(f"SLO {SLO_NAME!r}: {len(slos)} match(es)")
     for slo in slos:
         uuid = slo.get("uuid") or slo.get("id")
-        print(f"  {'DELETE' if apply else 'would delete'} {slo.get('name')} (uuid={uuid})")
+        print(
+            f"  {'DELETE' if apply else 'would delete'} "
+            f"{slo.get('name') or slo.get('title')} (uuid={uuid})"
+        )
         if apply and uuid:
             try:
                 _request("DELETE", f"{base}/api/v1/slo/{uuid}", token)
