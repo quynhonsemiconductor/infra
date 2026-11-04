@@ -43,16 +43,24 @@ module "edge" {
 
   zone_id = var.cloudflare_zone_id
 
-  # Conservative per-IP rate limit on the product API surface. The free plan's
-  # single included rate-limiting rule only permits a 10s counting period, a 10s
-  # mitigation timeout, and simple expression operators (no `matches` regex —
-  # that needs Advanced Rate Limiting). Raise/split once on Pro+.
+  # Per-IP limit on the AUTH paths only (audit N-M7). The free plan allows one
+  # rate rule with a 10s counting period, a 10s mitigation timeout and simple
+  # expression operators (no `matches` regex — that needs Advanced Rate
+  # Limiting), so the one rule is spent on the only route class that is both
+  # unauthenticated and expensive: /api/auth/* (sign-in, token exchange,
+  # password reset). 30 requests per 10s per client IP is ~3/s, above a person
+  # signing in and well below a credential-stuffing run.
+  #
+  # Everything else is limited in the apps, in Valkey (per account and per IP),
+  # which counts by identity rather than by NAT'd office IP. The old rule was
+  # 300/10s across all /v1/ and /api/ — too loose to stop an attack and wide
+  # enough to throttle a busy dashboard.
   rate_limit_rules = [{
-    ref                 = "api_default"
-    description         = "Rate-limit product API endpoints per client IP"
-    expression          = "(starts_with(http.request.uri.path, \"/v1/\") or starts_with(http.request.uri.path, \"/api/\"))"
+    ref                 = "auth_default"
+    description         = "Rate-limit authentication endpoints per client IP"
+    expression          = "starts_with(http.request.uri.path, \"/api/auth/\")"
     period              = 10
-    requests_per_period = 300
+    requests_per_period = 30
     mitigation_timeout  = 10
   }]
 
