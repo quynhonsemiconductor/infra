@@ -283,6 +283,22 @@ case "$(jq 'length' <<<"$OPS_SIGNIN")" in
      fi ;;
   *) die "expected at most 1 app named 'OpsHub Prod'" ;;
 esac
+# KB Prod sign-in app (kb_prod_apps.tf): optional; it exists after the kb prod apply. Its grant is created
+# tenant-wide by the same resource, so a later run must import the live grant instead of planning a duplicate.
+KB_SIGNIN=$(az ad app list --filter "displayName eq 'KB Prod'" -o json 2>/dev/null) \
+  || die "az lookup failed: KB Prod"
+case "$(jq 'length' <<<"$KB_SIGNIN")" in
+  0) ;;
+  1) kbapp=$(jq -r '.[0].appId // empty' <<<"$KB_SIGNIN"); need_guid "KB Prod appId" "$kbapp"
+     kbsp=$(az_json "service principal of KB Prod" ad sp list --filter "appId eq '$kbapp'")
+     [[ "$(jq 'length' <<<"$kbsp")" == "1" ]] || die "expected exactly 1 service principal for 'KB Prod'"
+     dg=$(delegated_grant "$(jq -r '.[0].id' <<<"$kbsp")")
+     if [[ -n "$dg" ]]; then
+       SIGNIN_GRANTS=$(jq -c --arg k kb_prod --arg v "$(jq -r '.id' <<<"$dg")" '.[$k]=$v' <<<"$SIGNIN_GRANTS")
+       SIGNIN_GRANT_SCOPES=$(jq -c --arg k kb_prod --argjson v "$(jq -c '.scopes' <<<"$dg")" '.[$k]=$v' <<<"$SIGNIN_GRANT_SCOPES")
+     fi ;;
+  *) die "expected at most 1 app named 'KB Prod'" ;;
+esac
 [[ "$SIGNIN_GRANTS" == "{}" ]] || put TF_VAR_signin_delegated_grant_ids "$SIGNIN_GRANTS"
 [[ "$SIGNIN_GRANT_SCOPES" == "{}" ]] || put TF_VAR_signin_delegated_grant_scopes "$SIGNIN_GRANT_SCOPES"
 
