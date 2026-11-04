@@ -12,14 +12,30 @@
 #     server (gitops#151), job="proxmox-ve". Host RAM was already being
 #     exported; it simply had no rule.
 #
-# GATED like the rest of the on-prem set (`onprem_alerts_enabled`). No-data is
-# OK on every rule: the textfile push is being rolled out, and a host whose
-# collector is not installed yet must not page. Once the role has run, the
-# pve-metrics-absent rule below turns a dead collector into an alert.
+# GATED TWICE: `onprem_alerts_enabled` (the rest of the on-prem set) AND
+# `pve_host_metrics_live` below, which stays false until the owner has run the
+# Ansible role. Without the second gate, pve-host-metrics-absent would fire
+# immediately on merge — the collector does not exist yet, and absence is
+# exactly what that rule detects. No-data is OK on every presence rule.
 # =============================================================================
 
+# ROLLOUT GATE: the textfile producer only exists after the owner runs the
+# Ansible role. `pve-host-metrics-absent` uses absent_over_time, which would
+# otherwise fire from the moment this merges (absence is exactly the state
+# before the play runs). Flip `pve_host_metrics_live` in the PR that records
+# the play; until then every rule in this file is culled.
+variable "pve_host_metrics_live" {
+  description = "Arms the pve01 host rules (onprem-host.tf). Flip to true AFTER `ansible-playbook pve-host.yml --tags pve_monitoring` has installed the textfile producer; false = all host rules culled."
+  type        = bool
+  default     = false
+}
+
+locals {
+  pve_host_live = local.onprem_live && var.pve_host_metrics_live
+}
+
 resource "grafana_rule_group" "onprem_pve_risk" {
-  count            = local.onprem_live ? 1 : 0
+  count            = local.pve_host_live ? 1 : 0
   name             = "onprem (pve — disk and pool)"
   folder_uid       = grafana_folder.alerts.uid
   interval_seconds = 300
@@ -383,7 +399,7 @@ resource "grafana_rule_group" "onprem_pve_risk" {
 # `absent_over_time` shape as pve-metrics-absent: the empty result is the
 # healthy case (no_data OK); the alert fires on the synthesized 1.
 resource "grafana_rule_group" "onprem_pve_textfile_absent" {
-  count            = local.onprem_live ? 1 : 0
+  count            = local.pve_host_live ? 1 : 0
   name             = "onprem (pve — host collector)"
   folder_uid       = grafana_folder.alerts.uid
   interval_seconds = 300
