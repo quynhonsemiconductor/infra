@@ -1,5 +1,6 @@
 # =============================================================================
-# prod CNPG backup age — pg-opshub and pg-kb (P3 launch, 2026-11-04).
+# prod CNPG backup age + exporter health — pg-rova, pg-opshub, pg-kb
+# (P3 launch, 2026-11-04).
 #
 # WHY NOT A 5xx RULE: SA verified in Grafana Cloud (2026-11-04) that NO
 # `http_server_*` series exist for any product, dev or prod — the app HTTP
@@ -16,11 +17,23 @@
 # The fallback branch is `(cnpg_collector_up{…} == 1) * 0 + 1e9`: it exists
 # only while the exporter reports UP. Without `== 1` an exporter that is down
 # (metric present with value 0) would look like "cluster exists, no backup"
-# and page for the wrong reason — a down exporter is the Postgres-readiness
-# rule's signal, not this one's. So:
+# and page for the wrong reason — that specific symptom is the
+# prod-cnpg-exporter-down rule's job (below), not this one's. So:
 #   cluster absent   → no series at all      → no data → OK
-#   exporter down    → comparison filters it → no data → OK (readiness pages)
+#   exporter down    → comparison filters it → no data → OK (exporter-down pages)
 #   exporter up, no backup metric → 1e9 s > 26 h → pages
+#
+# ── EXPORTER DOWN IS TESTED SEPARATELY ─────────────────────────────────────
+# `cnpg_collector_up` is the exporter's own up gauge. When it goes 0 (or the
+# exporter stops scraping) EVERY other series in this file goes quiet and
+# no_data_state = OK would read as healthy, so `prod-cnpg-exporter-down`
+# makes that state explicit: it covers every prod CNPG cluster (pg-rova,
+# pg-opshub, pg-kb) in one rule. It does NOT replace the pod-Ready rules —
+# those read `kube_pod_status_ready` from kube-state-metrics, an independent
+# signal for the same pods.
+# data-dev is deliberately outside it: the exporter-down alert is
+# env=production (Teams + devops@), and pg-dev stays email-only through the
+# dev rules.
 #
 # ── DAY-0 (`immediate: true`) ──────────────────────────────────────────────
 # pg-opshub's ScheduledBackup sets `immediate: true`
@@ -93,11 +106,29 @@ locals {
       severity  = "critical"
       summary   = "pg-kb reports UP but no base-backup metric has ever appeared. The Backup/ObjectStore wiring is broken — restores have no source."
     }
+    cnpg_exporter_down = {
+      name = "prod-cnpg-exporter-down"
+      # The up gauge is 1 per instance pod; `== 0` keeps only the down ones
+      # (0 < 1 at the threshold below). Every prod cluster in one rule —
+      # pg-rova, pg-opshub, pg-kb — because exporter-down silences every
+      # backup-age and replication series at once (see header). An absent
+      # cluster has no series and therefore stays quiet.
+      # `namespace="data-prod"`: the dev cluster (pg-dev) is not a prod
+      # signal and stays email-only through the dev rules.
+      expr      = "cnpg_collector_up{cluster=\"qnsc-onprem\", namespace=\"data-prod\"} == 0"
+      op        = "lt"
+      threshold = 1
+      for       = "15m"
+      no_data   = "OK"
+      product   = "platform"
+      severity  = "critical"
+      summary   = "CNPG exporter on {{ $labels.cnpg_cluster }} ({{ $labels.namespace }}/{{ $labels.pod }}) has reported down for 15 minutes; backup-age and replication series are silent while it is down."
+    }
   }
 }
 
 resource "grafana_rule_group" "prod_cnpg_backup_age" {
-  name             = "prod (CNPG — backup age)"
+  name             = "prod (CNPG — backup age and exporter)"
   folder_uid       = grafana_folder.alerts.uid
   interval_seconds = 60
 
