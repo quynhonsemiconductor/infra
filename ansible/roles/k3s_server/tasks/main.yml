@@ -15,6 +15,43 @@
     mode: "0755"
   tags: [k3s_server_config]
 
+# A live config has the ESO issuer because ESO workload identity depends on it. Rendering the
+# template with the issuer disabled would remove it on the next restart and break every
+# ExternalSecret, so refuse instead of silently downgrading a working cluster.
+- name: Read the existing k3s server configuration
+  ansible.builtin.slurp:
+    src: /etc/rancher/k3s/config.yaml
+  register: k3s_server_existing
+  failed_when: false
+
+- name: Refuse to remove the ESO issuer from a live configuration
+  ansible.builtin.assert:
+    that: >-
+      k3s_server_oidc_issuer_enabled | bool or
+      'service-account-issuer' not in (k3s_server_existing.content | default('') | b64decode)
+    fail_msg: >-
+      /etc/rancher/k3s/config.yaml already sets service-account-issuer, but
+      k3s_server_oidc_issuer_enabled is false: writing this template would remove it and every
+      ExternalSecret would lose workload identity after the restart. Set
+      k3s_server_oidc_issuer and k3s_server_oidc_issuer_enabled=true in the local inventory.
+    quiet: true
+
+- name: Read the issuer the live configuration signed with
+  ansible.builtin.set_fact:
+    k3s_server_live_issuer: >-
+      {{ (k3s_server_existing.content | default('') | b64decode)
+         | regex_search('service-account-issuer=([^\s]+)', '\1') | default([], true) | first | default('') }}
+
+- name: Refuse to change the issuer of a live cluster
+  ansible.builtin.assert:
+    that: k3s_server_live_issuer == '' or k3s_server_live_issuer == k3s_server_oidc_issuer
+    fail_msg: >-
+      The live issuer is {{ k3s_server_live_issuer }} but k3s_server_oidc_issuer is
+      '{{ k3s_server_oidc_issuer }}'. Changing it invalidates every token ESO and the apps hold;
+      reconcile the inventory with the published issuer (https://oidc.qnsc.vn/k3s-onprem) first.
+    quiet: true
+  when: k3s_server_oidc_issuer_enabled | bool
+
 - name: Write the k3s server configuration
   ansible.builtin.template:
     src: config.yaml.j2
