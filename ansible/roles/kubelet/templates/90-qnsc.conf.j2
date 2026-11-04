@@ -1,0 +1,22 @@
+---
+# Merge settings (the drop-in is merged over k3s's generated KubeletConfiguration).
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+
+# System daemons get CPU and memory before pods; see defaults/main.yml for why.
+systemReserved:
+  cpu: "{{ kubelet_profiles[kubelet_profile].cpu }}"
+  memory: "{{ kubelet_profiles[kubelet_profile].memory }}"
+
+evictionHard:
+  memory.available: "500Mi"
+  nodefs.available: "10%"
+  nodefs.inodesFree: "5%"
+  imagefs.available: "15%"
+
+# kubelet may spend up to 120 s shutting pods down, 60 s of it on critical pods. Matches the
+# server's previous hand-written drop-in and the host's NUT down_delay.
+shutdownGracePeriod: 120s
+shutdownGracePeriodCriticalPods: 60s
+
+imageMaximumGCAge: "{{ kubelet_image_maximum_gc_age }}"
