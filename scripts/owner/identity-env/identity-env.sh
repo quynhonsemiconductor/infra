@@ -118,6 +118,36 @@ jq -e 'keys==["admin","auditor","helpdesk","hr","it-admin","manager","security"]
 put TF_VAR_opshub_dev_app_role_ids "$ROLES"
 
 # --- mail service certificates: public PEM per app, bound to the keyId and thumbprint Entra holds -----------
+# --- mail service certificates: the PINNED keyIds are the source of truth; the kit only ASSERTS ----------------
+# The keyIds live in mail.tf (two-space indent, one entry per line) because a value arriving through a variable can
+# be missing or mistyped, and that empties a resource's for_each: the apply would DESTROY the live credential.
+# Here the kit only checks that every pinned credential is live, that nothing unknown is live, and that the data is
+# complete; it never decides which credential belongs where.
+MAIL_TF="$STACK/mail.tf"
+[[ -r "$MAIL_TF" ]] || die "mail.tf not found in $STACK"
+pinned_ids() { # pinned_ids <local name>: "<slot> <keyId>" lines (one entry per line, two-space indent)
+  sed -n "/^  $1 = {/,/^  }/p" "$MAIL_TF" \
+    | grep -E '^ +[a-z_]+ *=.*[0-9a-f]{8}-' \
+    | while IFS= read -r l; do
+        s=$(sed -E 's/^ +([a-z_]+) *=.*/\1/' <<<"$l")
+        grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' <<<"$l" \
+          | while read -r i; do echo "$s $i"; done
+      done
+}
+pins_file() { awk -v s="$1" '$1==s{print $2}' <<<"$PINS"; }
+PRIMARY_PINS=$(pinned_ids mail_service_cert_key_ids)
+ROTATED_PINS=$(pinned_ids mail_service_rotated_cert_key_ids)
+[[ -n "$PRIMARY_PINS" ]] || die "no pinned certificate keyIds in $MAIL_TF"
+PINS="$PRIMARY_PINS
+$ROTATED_PINS"
+want=$(printf '%s\n' "${KEYS[@]}" | sort | tr '\n' ' ')
+have=$(awk 'NF{print $1}' <<<"$PRIMARY_PINS" | sort | tr '\n' ' ')
+[[ "$want" == "$have" ]] || die "mail_service_cert_key_ids must pin exactly these slots: ${KEYS[*]}"
+while read -r slot id; do
+  [[ -n "$slot" ]] || continue
+  case " ${KEYS[*]} " in *" $slot "*) ;; *) die "mail_service_rotated_cert_key_ids pins an unknown slot: $slot" ;; esac
+done <<<"$ROTATED_PINS"
+
 thumb_of_pem() { openssl x509 -noout -fingerprint -sha1 2>/dev/null | sed 's/.*=//; s/://g' | tr 'A-F' 'a-f'; }
 # key_pem <base64 key> <out file>: Graph's keyCredentials[].key is base64 of whatever was uploaded: DER (portal, az)
 # or the PEM text itself (the azuread provider with encoding = "pem"). PEM is kept byte for byte (trailing newline
@@ -128,30 +158,92 @@ key_pem() {
   else openssl x509 -inform DER -outform PEM -in "$2.raw" -out "$2" 2>/dev/null || return 1; rm -f "$2.raw"; fi
   ! grep -q 'PRIVATE KEY' "$2" && openssl x509 -in "$2" -noout 2>/dev/null
 }
-KEYIDS='{}'; CERTS='{}'
+CERTS='{}'; ROTATED='{}'
 for k in "${KEYS[@]}"; do
   f="$APPS_DIR/service-$k.json"
-  [[ "$(jq '.keyCredentials|length' "$f")" == "1" ]] || die "service app $k must carry exactly 1 key credential"
-  kid=$(jq -r '.keyCredentials[0].keyId // empty' "$f"); need_guid "service $k keyId" "$kid"
-  # customKeyIdentifier is normally base64 of the SHA-1 bytes; a cert added with the HEX thumbprint where base64 was
-  # expected (rova-prod, by hand) comes back as those 40 hex characters. Accept both forms.
-  cki=$(jq -r '.keyCredentials[0].customKeyIdentifier // empty' "$f")
-  if [[ "$cki" =~ ^[0-9A-Fa-f]{40}$ ]]; then want=$(tr 'A-F' 'a-f' <<<"$cki")
-  else want=$(printf '%s' "$cki" | base64 -d 2>/dev/null | xxd -p | tr -d '\n'); fi
-  [[ -n "$want" ]] || die "service $k has no customKeyIdentifier (thumbprint)"
-  # The PUBLIC certificate comes from Entra itself: Graph returns keyCredentials[].key (base64 DER) only on a single-object
-  # GET with $select=keyCredentials. No Key Vault (the prod entry also holds the private key), no 1Password copy to drift.
   oid=$(jq -r '.id // empty' "$f"); need_guid "service $k object id" "$oid"
-  key=$(az_json "mail cert $k" rest --method get --url "https://graph.microsoft.com/v1.0/applications/$oid?\$select=keyCredentials" \
-    | jq -r '.keyCredentials[0].key // empty')
-  if [[ -z "$key" ]] || ! key_pem "$key" "$APPS_DIR/mail-$k.pem"; then die "lookup failed: mail cert $k"; fi
-  have=$(thumb_of_pem <"$APPS_DIR/mail-$k.pem")
-  [[ -n "$have" && "$have" == "$want" ]] || die "mail cert $k thumbprint differs from the certificate live on the app (a replace would be planned)"
-  KEYIDS=$(jq -c --arg k "$k" --arg v "$kid" '.[$k]=$v' <<<"$KEYIDS")
-  CERTS=$(jq -c --arg k "$k" --rawfile v "$APPS_DIR/mail-$k.pem" '.[$k]=$v' <<<"$CERTS")
+  # ALL credentials at once, key bytes included: Graph returns keyCredentials[].key only on a single-object GET
+  # with $select=keyCredentials. No Key Vault (the prod entry also holds the private key), no 1Password copy to drift.
+  kc=$(az_json "mail certs $k" rest --method get --url "https://graph.microsoft.com/v1.0/applications/$oid?\$select=keyCredentials" \
+    | jq -c '.keyCredentials')
+  n=$(jq 'length' <<<"$kc")
+  [[ "$n" -ge 1 ]] || die "service app $k carries no key credential"
+  : >"$APPS_DIR/ids-$k"
+  j=0
+  # Non-whitespace IFS: a whitespace IFS collapses empty fields, which would shift a null startDateTime into `key`.
+  while IFS='|' read -r kid cki start key; do
+    j=$((j+1))
+    need_guid "service $k keyId" "$kid"
+    [[ -n "$start" ]] || die "service app $k credential $j has no startDateTime"
+    # customKeyIdentifier is normally base64 of the SHA-1 bytes; a cert added with the HEX thumbprint where base64
+    # was expected (rova-prod, by hand) comes back as those 40 hex characters. Accept both forms.
+    if [[ "$cki" =~ ^[0-9A-Fa-f]{40}$ ]]; then want=$(tr 'A-F' 'a-f' <<<"$cki")
+    else want=$(printf '%s' "$cki" | base64 -d 2>/dev/null | xxd -p | tr -d '\n'); fi
+    [[ -n "$want" ]] || die "service $k credential $j has no customKeyIdentifier (thumbprint)"
+    pem="$APPS_DIR/cred-$kid.pem"
+    if [[ -z "$key" ]] || ! key_pem "$key" "$pem"; then die "lookup failed: mail cert $k"; fi
+    have=$(thumb_of_pem <"$pem")
+    [[ -n "$have" && "$have" == "$want" ]] || die "mail cert $k thumbprint differs from the certificate live on the app (a replace would be planned)"
+    printf '%s\n' "$kid" >>"$APPS_DIR/ids-$k"
+  done < <(jq -r '.[] | [.keyId, (.customKeyIdentifier // ""), (.startDateTime // ""), (.key // "")] | join("|")' <<<"$kc")
+  # Every pinned credential must be on this app...
+  while read -r id; do
+    [[ -n "$id" ]] || continue
+    grep -qx "$id" "$APPS_DIR/ids-$k" || die "a credential pinned for $k is not on the app (check mail.tf)"
+  done < <(pins_file "$k")
+  # ...and nothing unpinned may be live: adding a credential is a reviewed mail.tf change, never a silent extra.
+  while read -r id; do
+    awk 'NF{print $2}' <<<"$PINS" | grep -qx "$id" \
+      || die "service app $k carries an UNPINNED credential $id — add its keyId to mail.tf (local.mail_service_rotated_cert_key_ids) before planning"
+  done <"$APPS_DIR/ids-$k"
+  primary=$(pins_file "$k" | head -1)
+  CERTS=$(jq -c --arg k "$k" --rawfile v "$APPS_DIR/cred-$primary.pem" '.[$k]=$v' <<<"$CERTS")
 done
-put TF_VAR_mail_service_cert_key_ids "$KEYIDS"
+while read -r slot id; do
+  [[ -n "$id" ]] || continue
+  ROTATED=$(jq -c --arg id "$id" --rawfile v "$APPS_DIR/cred-$id.pem" '.[$id]=$v' <<<"$ROTATED")
+done <<<"$ROTATED_PINS"
 put TF_VAR_mail_service_certificates "$CERTS"
+put TF_VAR_mail_service_rotated_certificates "$ROTATED"
+
+# --- Graph application-role grants already created by admin consent ------------------------------------------
+# A grant lives on the Microsoft Graph service principal, not on the app: a plan that CREATES one without
+# importing it first adds a DUPLICATE. The direction is appRoleAssignments ("grants THIS SP holds");
+# appRoleAssignedTo is the opposite one (who holds a role ON this SP) and returns nothing useful here.
+GRAPH_APP_ID=00000003-0000-0000-c000-000000000000   # Microsoft Graph, well-known
+GRAPH_SP=$(az_json "graph service principal" ad sp show --id "$GRAPH_APP_ID" | jq -r '.id // empty')
+need_guid "Microsoft Graph SP object id" "$GRAPH_SP"
+GRAPH_ROLES=$(az_json "graph app roles" rest --method get \
+    --url "https://graph.microsoft.com/v1.0/servicePrincipals/$GRAPH_SP/appRoles" \
+  | jq -c '[.value[] | {(.id): .value}] | add // {}')
+grants_of() { # <sp object id>: JSON object {role value: assignment id} for the Graph grants this SP holds
+  az_json "app role assignments" rest --method get \
+      --url "https://graph.microsoft.com/v1.0/servicePrincipals/$1/appRoleAssignments" \
+    | jq -c --argjson m "$GRAPH_ROLES" --arg g "$GRAPH_SP" \
+        '[.value[] | select(.resourceId == $g and $m[.appRoleId] != null) | {($m[.appRoleId]): .id}] | add // {}'
+}
+MAIL_GRANTS='{}'
+for k in "${KEYS[@]}"; do
+  g=$(grants_of "$(<"$APPS_DIR/service-$k.sp")")
+  while IFS=$'\t' read -r role aid; do
+    MAIL_GRANTS=$(jq -c --arg k "$k/$role" --arg v "$aid" '.[$k]=$v' <<<"$MAIL_GRANTS")
+  done < <(jq -r 'to_entries[] | [.key,.value] | @tsv' <<<"$g")
+done
+[[ "$MAIL_GRANTS" == "{}" ]] || put TF_VAR_mail_service_graph_grant_ids "$MAIL_GRANTS"
+
+# OpsHub Prod Service (prod_apps.tf): same grants, keyed by role value. Optional app: it exists only once the
+# 2026-11-04 prod apply created it. The stack gates its import block on the certificate variable.
+OPS=$(az ad app list --filter "displayName eq 'OpsHub Prod Service'" -o json 2>/dev/null) \
+  || die "az lookup failed: OpsHub Prod Service"
+case "$(jq 'length' <<<"$OPS")" in
+  0) ;;
+  1) opsapp=$(jq -r '.[0].appId // empty' <<<"$OPS"); need_guid "OpsHub Prod Service appId" "$opsapp"
+     opssp=$(az_json "service principal of OpsHub Prod Service" ad sp list --filter "appId eq '$opsapp'")
+     [[ "$(jq 'length' <<<"$opssp")" == "1" ]] || die "expected exactly 1 service principal for 'OpsHub Prod Service'"
+     OPSIDS=$(grants_of "$(jq -r '.[0].id' <<<"$opssp")")
+     [[ "$OPSIDS" == "{}" ]] || put TF_VAR_opshub_prod_service_graph_grant_ids "$OPSIDS" ;;
+  *) die "expected at most 1 app named 'OpsHub Prod Service'" ;;
+esac
 
 # --- ESO certificates: only while the stack still declares the variable (removed by the #254 PR) -------------
 # The PUBLIC certificate live on each ESO app, from Graph like the mail certs: a file on disk can be stale (rotation)
