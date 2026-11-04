@@ -63,7 +63,7 @@
 variable "opshub_prod_live" {
   description = "Flip via a PR changing this default in the Stage D2 window (CUTOVER-2026-11) — the ONLY flip mechanism. false = every resource below is culled and plans show nothing."
   type        = bool
-  default     = false
+  default     = true # 2026-11-04: opshub.qnsc.vn live (gitops#205/#264, infra#343)
 }
 
 locals {
@@ -131,7 +131,7 @@ resource "grafana_synthetic_monitoring_check" "opshub_prod_readyz" {
 # route it through grafana_notification_policy.root — Teams for prod, devops@
 # always — the same policy every other rule in this stack uses. Same datasource
 # (the stack's managed Prometheus, where SM publishes probe_success) as
-# series_near_cap in main.tf.
+# the billable-series cap rules in billable-alert.tf.
 #
 # no_data_state = Alerting, NOT OK: the `opshub_prod_live` count gate above is
 # what keeps this silent before go-live; once armed, a VANISHED probe series
@@ -217,7 +217,9 @@ resource "grafana_rule_group" "opshub_prod_readyz_down" {
 # Ping: /start then success (or /fail) from the CronJob, by ping key + slug
 # (see header — never by the UUID this resource's id/ping_url carry).
 resource "healthchecksio_check" "opshub_prod_dump" {
-  count    = local.opshub_live ? 1 : 0
+  # Created only once the Healthchecks channel UUIDs are set (owner, Healthchecks.io → Integrations); until then the
+  # Grafana backup-age / failed-backup rules (prod-cnpg-backup.tf) are the backup signal.
+  count    = local.opshub_live && length(var.healthchecks_channel_ids) > 0 ? 1 : 0
   name     = "opshub-prod-dump"
   slug     = "opshub-prod-dump"
   tags     = ["opshub", "prod", "backup"]
@@ -226,13 +228,6 @@ resource "healthchecksio_check" "opshub_prod_dump" {
   schedule = "45 1 * * *"
   timezone = "Asia/Ho_Chi_Minh"
   grace    = 7200
-
-  lifecycle {
-    precondition {
-      condition     = length(var.healthchecks_channel_ids) > 0
-      error_message = "healthchecks_channel_ids is empty — the flip PR must set the Teams + devops@ channel UUIDs (§12 routing)."
-    }
-  }
 }
 
 # Weekly restore test, SECOND pass (§10.4: ONE Sun 04:00 job, rova pass then
@@ -243,7 +238,9 @@ resource "healthchecksio_check" "opshub_prod_dump" {
 # responsibility; this check covers "failed or missed". CUTOVER D2.6: green
 # BEFORE any announcement.
 resource "healthchecksio_check" "opshub_prod_restore" {
-  count    = local.opshub_live ? 1 : 0
+  # Created only once the Healthchecks channel UUIDs are set (owner, Healthchecks.io → Integrations); until then the
+  # Grafana backup-age / failed-backup rules (prod-cnpg-backup.tf) are the backup signal.
+  count    = local.opshub_live && length(var.healthchecks_channel_ids) > 0 ? 1 : 0
   name     = "opshub-prod-restore"
   slug     = "opshub-prod-restore"
   tags     = ["opshub", "prod", "restore-test"]
@@ -252,20 +249,15 @@ resource "healthchecksio_check" "opshub_prod_restore" {
   schedule = "0 4 * * 0"
   timezone = "Asia/Ho_Chi_Minh"
   grace    = 2700 # 45 min, §10.4
-
-  lifecycle {
-    precondition {
-      condition     = length(var.healthchecks_channel_ids) > 0
-      error_message = "healthchecks_channel_ids is empty — the flip PR must set the Teams + devops@ channel UUIDs (§12 routing)."
-    }
-  }
 }
 
 # Sunday Azure Blob copy of the pg-opshub dumps (§10.3: weekly, locked 14 d).
 # 03:15 = rova's 03:00 Sunday slot + 15 min. Grace 1 d on the weekly schedule
 # ≈ §12's "Azure copy > 8 d" alert.
 resource "healthchecksio_check" "opshub_prod_azure_copy" {
-  count    = local.opshub_live ? 1 : 0
+  # Created only once the Healthchecks channel UUIDs are set (owner, Healthchecks.io → Integrations); until then the
+  # Grafana backup-age / failed-backup rules (prod-cnpg-backup.tf) are the backup signal.
+  count    = local.opshub_live && length(var.healthchecks_channel_ids) > 0 ? 1 : 0
   name     = "opshub-prod-azure-copy"
   slug     = "opshub-prod-azure-copy"
   tags     = ["opshub", "prod", "backup", "azure"]
@@ -274,13 +266,6 @@ resource "healthchecksio_check" "opshub_prod_azure_copy" {
   schedule = "15 3 * * 0"
   timezone = "Asia/Ho_Chi_Minh"
   grace    = 86400
-
-  lifecycle {
-    precondition {
-      condition     = length(var.healthchecks_channel_ids) > 0
-      error_message = "healthchecks_channel_ids is empty — the flip PR must set the Teams + devops@ channel UUIDs (§12 routing)."
-    }
-  }
 }
 
 # Door-terminal liveness (ADR ATTENDANCE-DEVICE §4, verbatim design): an
@@ -289,7 +274,8 @@ resource "healthchecksio_check" "opshub_prod_azure_copy" {
 # 10 minutes. timeout 300 = the 5-min job cadence; grace 600 = the 10-min
 # freshness bound. Healthchecks.io alerts on the missed ping and on recovery.
 resource "healthchecksio_check" "door_terminal" {
-  count    = local.opshub_live ? 1 : 0
+  # Door terminals are not routed to prod yet (owner decision 1); same channel gate as the checks above.
+  count    = local.opshub_live && length(var.healthchecks_channel_ids) > 0 ? 1 : 0
   name     = "door-terminal" # the exact name ADR §4 specifies
   slug     = "door-terminal"
   tags     = ["opshub", "prod", "door"]
@@ -297,11 +283,4 @@ resource "healthchecksio_check" "door_terminal" {
   channels = var.healthchecks_channel_ids
   timeout  = 300
   grace    = 600
-
-  lifecycle {
-    precondition {
-      condition     = length(var.healthchecks_channel_ids) > 0
-      error_message = "healthchecks_channel_ids is empty — the flip PR must set the Teams + devops@ channel UUIDs (§12 routing)."
-    }
-  }
 }
