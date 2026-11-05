@@ -149,6 +149,24 @@ resource "grafana_rule_group" "onprem_incident_20261103" {
 # The collector ships ONLY kernel/audit journal lines matching
 # apparmor="DENIED" (gitops#141), so any line here is a denial. Beyla
 # (comm="beyla") is excluded: its denials are known and get their own fix.
+#
+# HOST COREUTILS NOISE IS EXCLUDED BY PROFILE **AND PATH** (triaged
+# 2026-11-04). The firing rule was 100% these, measured on k3s-01 over 24 h:
+#   profile="who"      357  open /etc/passwd and /etc/nsswitch.conf (who
+#                            cannot resolve names; it still prints sessions)
+#   profile="hostname"  19  file_inherit /tmp/mat-debug-1.log (a test writing
+#                            its output through `hostname`)
+# Both are Ubuntu's apparmor-profiles coreutils profiles, loaded by
+# apparmor.service. The exclusion names the DENIED PATH as well as the profile,
+# deliberately: excluding on `profile="who"` alone would also hide a same-named
+# profile doing something else. Any other path under either profile still
+# pages. This is not a cri-containerd profile gap and is not actionable by the
+# k3s/containerd override.
+#
+# The `hostname` line is still not a containment failure, but note its fsuid
+# 1001 / temp path: the process may be inside a container. The exclusion is
+# path-exact so that only this known benign write is silenced.
+#
 # for = 0m: count_over_time over 10m already is the window; one denial is the
 # signal. Absence is normal (no_data OK).
 resource "grafana_rule_group" "onprem_apparmor" {
@@ -177,7 +195,7 @@ resource "grafana_rule_group" "onprem_apparmor" {
       model = jsonencode({
         refId      = "A"
         datasource = { type = "loki", uid = data.grafana_data_source.logs.uid }
-        expr       = "sum by (instance) (count_over_time({cluster=\"qnsc-onprem\", job=\"integrations/kubernetes/journal\"} |= `apparmor=\"DENIED\"` != `comm=\"beyla\"` [10m]))"
+        expr       = "sum by (instance) (count_over_time({cluster=\"qnsc-onprem\", job=\"integrations/kubernetes/journal\"} |= `apparmor=\"DENIED\"` != `comm=\"beyla\"` != `profile=\"who\" name=\"/etc/passwd\"` != `profile=\"who\" name=\"/etc/nsswitch.conf\"` != `profile=\"hostname\" name=\"/tmp/mat-debug-1.log\"` [10m]))"
         queryType  = "instant"
         instant    = true
         intervalMs = 1000
@@ -236,7 +254,7 @@ resource "grafana_rule_group" "onprem_apparmor" {
     }
 
     annotations = {
-      summary = "AppArmor denied {{ $values.B }} operation(s) on node {{ $labels.instance }} in the last 10 minutes (Beyla excluded). Explore: {cluster=\"qnsc-onprem\", job=\"integrations/kubernetes/journal\"}."
+      summary = "AppArmor denied {{ $values.B }} operation(s) on node {{ $labels.instance }} in the last 10 minutes (Beyla and three profile+path pairs — who reading passwd/nsswitch, hostname writing /tmp/mat-debug-1.log — excluded; see the rule comment). Explore: {cluster=\"qnsc-onprem\", job=\"integrations/kubernetes/journal\"}."
     }
   }
 }
