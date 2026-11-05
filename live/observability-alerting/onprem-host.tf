@@ -13,21 +13,27 @@
 #     exported; it simply had no rule.
 #
 # GATED TWICE: `onprem_alerts_enabled` (the rest of the on-prem set) AND
-# `pve_host_metrics_live` below, which stays false until the owner has run the
-# Ansible role. Without the second gate, pve-host-metrics-absent would fire
-# immediately on merge — the collector does not exist yet, and absence is
-# exactly what that rule detects. No-data is OK on every presence rule.
+# `pve_host_metrics_live` below. The second gate existed only because
+# pve-host-metrics-absent would fire from the moment this merged, before the
+# collector existed (absence is exactly what that rule detects). It is ARMED
+# since 2026-11-05:
+#   * the owner ran `ansible-playbook pve-host.yml --tags pve_monitoring`;
+#   * Grafana has the series under job="pve-host" — both ZFS pools (rpool,
+#     backup), NVMe wear/health, the PBS datastore and the textfile heartbeat —
+#     i.e. every family the rules below select, not just node-exporter's
+#     endpoint answering on the host.
 # =============================================================================
 
-# ROLLOUT GATE: the textfile producer only exists after the owner runs the
-# Ansible role. `pve-host-metrics-absent` uses absent_over_time, which would
-# otherwise fire from the moment this merges (absence is exactly the state
-# before the play runs). Flip `pve_host_metrics_live` in the PR that records
-# the play; until then every rule in this file is culled.
+# ROLLOUT GATE: flipped to true on 2026-11-05, in the PR that records the play.
+# The textfile producer exists on pve01 (checked by the role's own
+# "Assert Alloy is exporting metric points" task) and its series are in
+# Grafana, which is what `pve-host-metrics-absent` needs before it can tell
+# "collector stopped" from "collector never existed". Set false to cull every
+# rule in this file.
 variable "pve_host_metrics_live" {
-  description = "Arms the pve01 host rules (onprem-host.tf). Flip to true AFTER `ansible-playbook pve-host.yml --tags pve_monitoring` has installed the textfile producer; false = all host rules culled."
+  description = "Arms the pve01 host rules (onprem-host.tf). TRUE since 2026-11-05: `ansible-playbook pve-host.yml --tags pve_monitoring` has installed the textfile producer and its series are in Grafana under job=\"pve-host\". false = all host rules culled."
   type        = bool
-  default     = false
+  default     = true
 }
 
 locals {
