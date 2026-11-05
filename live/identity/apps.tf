@@ -311,7 +311,7 @@ resource "azuread_service_principal" "signin" {
 variable "signin_delegated_grant_ids" {
   type        = map(string)
   default     = {}
-  description = "AllPrincipals oauth2PermissionGrant ids already live, keyed as local.signin_delegated_grant_targets (rova_prod, rova_dev, opshub_dev, kb_dev, opshub_prod). Built by scripts/owner/identity-env/identity-env.sh; never committed."
+  description = "AllPrincipals oauth2PermissionGrant ids already live, keyed as local.signin_delegated_grant_targets (rova_prod, rova_dev, opshub_dev, kb_dev, opshub_prod, kb_prod). Built by scripts/owner/identity-env/identity-env.sh; never committed."
 
   validation {
     condition     = alltrue([for id in values(var.signin_delegated_grant_ids) : can(regex("^[A-Za-z0-9_=-]+$", id))])
@@ -336,7 +336,10 @@ variable "signin_delegated_grant_scopes" {
 locals {
   signin_delegated_grant_targets = merge(
     { for k, sp in azuread_service_principal.signin : k => sp.object_id },
-    { opshub_prod = azuread_service_principal.opshub_prod.object_id },
+    {
+      opshub_prod = azuread_service_principal.opshub_prod.object_id
+      kb_prod     = azuread_service_principal.kb_prod.object_id
+    },
   )
 
   # The kit-built import map. Kept as a local so the variable is a declared
@@ -346,7 +349,7 @@ locals {
   # A grant can only carry scopes the app REQUESTS; setting a fixed five-scope
   # list would strip KB's Files.*/Sites.* delegated scopes on an apply. Derive
   # the delegated scope names from local.signin_apps (User.Invite.All is an
-  # application Role, not a delegated scope) and give the prod app the same set
+  # application Role, not a delegated scope) and give each prod app the same set
   # as its dev sibling.
   signin_delegated_scopes = merge(
     {
@@ -355,7 +358,10 @@ locals {
         if local.graph_scopes[scope].type == "Scope"
       ]
     },
-    { opshub_prod = ["openid", "profile", "email", "offline_access", "User.Read"] },
+    {
+      opshub_prod = ["openid", "profile", "email", "offline_access", "User.Read"]
+      kb_prod     = ["openid", "profile", "email", "offline_access", "User.Read", "Files.Read", "Files.Read.All", "Sites.Read.All"]
+    },
   )
 }
 

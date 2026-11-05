@@ -41,10 +41,13 @@ ansible-playbook ping.yml
 
 ## Proxmox host metrics (`pve_monitoring`)
 
-`pve-host.yml --tags pve_monitoring` installs node-exporter (textfile collector only), a 5-minute ZFS/NVMe/PBS
-script, and Grafana Alloy, which pushes the resulting `pve_*` series over OTLP to the cluster's
-`alloy-otlp-host` NodePort. It needs one site value in the git-ignored local inventory — the endpoint of a k3s
-node on that NodePort:
+`pve-host.yml --tags pve_monitoring` installs node-exporter (textfile collector only), a 5-minute
+ZFS/NVMe/PBS/apt script, and Grafana Alloy, which pushes the resulting `pve_*` series over OTLP to the
+cluster's `alloy-otlp-host` NodePort. Besides ZFS, NVMe, PBS fill and the heartbeat, the script exports
+`pve_apt_updates_pending`, `pve_apt_security_updates_pending` (`-1` = apt simulation failed, unknown) and
+`pve_apt_reboot_required` (1 = `/run/reboot-required` exists, or the newest installed kernel is not the
+running one). It needs one site value in the git-ignored
+local inventory — the endpoint of a k3s node on that NodePort:
 
 ```yaml
 pve:

@@ -3,6 +3,7 @@
 #   pve_zpool_*           pool health / size / allocated / free
 #   pve_nvme_*            NVMe SMART wear, media errors, critical warning
 #   pve_pbs_*             PBS datastore size / used / avail
+#   pve_apt_*             pending updates / security updates / reboot required
 # Run by pve-metrics.timer every 5 minutes. Any source that is absent on this
 # host (no PBS, no NVMe) is skipped; it must never abort the whole file.
 set -eu
@@ -70,6 +71,39 @@ if command -v proxmox-backup-manager >/dev/null 2>&1; then
         emit "pve_pbs_datastore_avail_bytes{datastore=\"$name\"} ${avail:-0}"
     done || true
 fi
+
+# ── pending package updates and reboot ─────────────────────────────────────
+# `apt-get -s` only simulates: it reads the lists, downloads nothing and, with
+# NoLocking, takes no dpkg/apt lock, so it is safe next to unattended-upgrades.
+# PVE/PBS packages are deliberately NOT auto-installed (52qnsc-unattended-upgrades
+# limits unattended-upgrades to Debian security and never reboots), so the count
+# here is what a maintenance window would do. -1 means the simulation failed
+# (lists missing, apt error): unknown, never a silent 0.
+if apt_out="$(timeout 20 apt-get -s -o Debug::NoLocking=true dist-upgrade 2>/dev/null)"; then
+    updates="$(printf '%s\n' "$apt_out" | grep -c '^Inst ' || true)"
+    security="$(printf '%s\n' "$apt_out" | grep '^Inst ' | grep -ci 'security' || true)"
+else
+    updates=-1
+    security=-1
+fi
+emit "pve_apt_updates_pending ${updates:-0}"
+emit "pve_apt_security_updates_pending ${security:-0}"
+
+# /run/reboot-required is what update-notifier/apt writes after a kernel or a
+# core library update. The kernel comparison is the fallback for a host without
+# update-notifier-common: PVE keeps the previous kernels in /boot, so a newest
+# vmlinuz that is not the running one means the pending kernel needs a reboot.
+# Nothing reboots this host automatically.
+reboot_required=0
+if [ -e /run/reboot-required ] || [ -e /var/run/reboot-required ]; then
+    reboot_required=1
+fi
+running_kernel="$(uname -r)"
+newest_kernel="$(find /boot -maxdepth 1 -name 'vmlinuz-*' -printf '%f\n' 2>/dev/null | sed 's|^vmlinuz-||' | sort -V | tail -1 || true)"
+if [ -n "$newest_kernel" ] && [ "$newest_kernel" != "$running_kernel" ]; then
+    reboot_required=1
+fi
+emit "pve_apt_reboot_required $reboot_required"
 
 # Heartbeat: the file was rewritten by a COMPLETED run. The alert uses
 # `time() - this > 900` to catch a timer/script that stopped updating the
