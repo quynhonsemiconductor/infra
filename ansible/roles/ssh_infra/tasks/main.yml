@@ -79,7 +79,7 @@
           - ssh_infra_admin_users is sequence
           - >-
             alltrue([
-              for u in ssh_infra_admin_users :
+              for u in ssh_infra_admin_users
               u.name is defined and u.name is match('^[a-z_][a-z0-9_-]{0,31}$')
               and u.name not in ssh_infra_reserved_users
               and u.hosts is defined and u.hosts is sequence
