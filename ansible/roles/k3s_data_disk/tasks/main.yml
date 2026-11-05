@@ -237,14 +237,19 @@
         quiet: true
       when: not ansible_check_mode
 
-    - name: Install rsync and psmisc for the copy and the open-file check
+    - name: Install rsync and lsof for the copy and the open-file check
       ansible.builtin.apt:
-        name: [rsync, psmisc]
+        name: [rsync, lsof]
         state: present
       when: not ansible_check_mode
 
-    - name: No process may hold the volume path open
-      ansible.builtin.command: "fuser -m {{ k3s_data_disk_mount }}"
+    # Files open UNDER the path, not `fuser -m`: before the move the path is a plain directory on
+    # the root filesystem, and -m reports every process using that filesystem (all of them, ai-01
+    # 2026-11-05). Stopping k3s-agent does NOT stop running containers (KillMode=process), so the
+    # owner drains the node first (README "Agent data disk"); a pod still writing here is refused.
+    # lsof exits 1 with no output when nothing is open.
+    - name: No process may hold a file open under the volume path
+      ansible.builtin.command: "lsof -w +D {{ k3s_data_disk_mount }}"
       register: k3s_data_disk_fuser
       changed_when: false
       failed_when: false
@@ -253,9 +258,9 @@
 
     - name: Refuse when a process still holds the volume path
       ansible.builtin.assert:
-        that: k3s_data_disk_fuser.rc | default(1) == 1
+        that: k3s_data_disk_fuser.rc | default(1) == 1 and (k3s_data_disk_fuser.stdout | default('')) | length == 0
         fail_msg: >-
-          fuser still reports processes on {{ k3s_data_disk_mount }} (exit {{ k3s_data_disk_fuser.rc | default('?') }}:
+          files are still open under {{ k3s_data_disk_mount }} (drain the node first) (exit {{ k3s_data_disk_fuser.rc | default('?') }}:
           {{ k3s_data_disk_fuser.stdout | default('') }}). Stop them before moving the volumes.
         quiet: true
       when: not ansible_check_mode

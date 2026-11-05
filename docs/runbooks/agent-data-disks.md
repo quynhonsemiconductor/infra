@@ -17,8 +17,8 @@ Run from `ansible/`, with `op run` for the join token, in a maintenance window: 
   type, no partition table and no `wipefs` signature at all.
 - It refuses to mount over a non-empty `/var/lib/rancher/k3s/storage` unless
   `-e k3s_data_disk_allow_move=true`. Mounting over that directory would hide every existing PV.
-- With the move opt-in it stops `k3s-agent`, asserts the unit is stopped and no process holds the
-  volume path (`fuser -m`), copies with `rsync -aHAX --numeric-ids`, proves a second dry run has no
+- With the move opt-in it stops `k3s-agent`, asserts the unit is stopped and no file is open under the
+  volume path (`lsof +D`), copies with `rsync -aHAX --numeric-ids`, proves a second dry run has no
   differences, mounts, and **always** starts the agent again (a `block`/`always`, even on failure).
 - fstab uses `defaults,noatime,nofail,x-systemd.device-timeout=30`.
 
@@ -27,7 +27,16 @@ Run from `ansible/`, with `op run` for the join token, in a maintenance window: 
 The cache PV (`tei-e5-model-cache`) already exists under the root. The copy keeps its directory
 name, so the existing PersistentVolume and the pod's mount are unchanged; nothing re-downloads.
 
-First find the disk's stable id **inside ai-01** (never pass `/dev/sdb`):
+**Drain the node first.** Stopping `k3s-agent` does not stop running containers (k3s uses
+`KillMode=process`), so TEI would keep its cache files open and the role refuses the move
+(`files are still open under ...`). Drain moves the workloads off; DaemonSets stay but do not use the
+storage path. The TEI pod stays Pending while drained (its PV is pinned to ai-01) — that is the window.
+
+```sh
+kubectl drain ai-01 --ignore-daemonsets --delete-emptydir-data --timeout=5m
+```
+
+Then find the disk's stable id **inside ai-01** (never pass `/dev/sdb`):
 
 ```sh
 ls -l /dev/disk/by-id/ | grep -i virtio     # pick the 300G scsi1, not the 40G scsi0
@@ -44,6 +53,12 @@ op run --env-file=<local template> -- \
   ansible-playbook k3s-agent-gpu.yml --tags k3s_data_disk \
   -e k3s_data_disk_enabled=true -e k3s_data_disk_device=/dev/disk/by-id/<id> \
   -e k3s_data_disk_format=true -e k3s_data_disk_allow_move=true
+```
+
+Then let the workloads back:
+
+```sh
+kubectl uncordon ai-01
 ```
 
 Verify on ai-01:
