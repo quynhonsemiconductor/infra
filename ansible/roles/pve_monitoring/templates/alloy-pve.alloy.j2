@@ -27,13 +27,29 @@ prometheus.relabel "pve_only" {
     action        = "keep"
   }
 
-  // The scrape adds job/instance labels (job defaults to "pve_textfile").
-  // If they reach OTLP as datapoint attributes they can win over the
-  // resource service.name that the cluster exporter maps to `job`, and every
-  // rule here selects job="pve-host". Drop them; service.name is the identity.
+  // KEEP job and instance, and pin both. These two labels are not decoration:
+  // `otelcol.receiver.prometheus` builds the batch resource from them
+  // (CreateResource: job -> service.name, instance -> service.instance.id),
+  // and when a sample carries neither, transaction.getJobAndInstance returns
+  // errNoJobInstance and the append is REJECTED. The failure is silent on the
+  // host: the scrape still reads up=1, while
+  // `otelcol_exporter_sent_metric_points` never increments and nothing leaves
+  // the machine. An earlier `labeldrop job|instance` here was exactly that bug
+  // (2026-11-05: 16 pve_* series on node-exporter, zero series in Grafana).
+  //
+  // Both are set to the same FIXED value so the identity is ours: job becomes
+  // service.name, which is what the cluster exporter renders as the Prometheus
+  // `job` label, and the infra rules select job="pve-host". instance feeds
+  // service.instance.id and, via CreateResource's host parsing, server.address
+  // — a fixed token keeps the host's own name and address out of the metric
+  // resource. The transform below still pins service.name for the same reason.
   rule {
-    regex  = "job|instance"
-    action = "labeldrop"
+    target_label = "job"
+    replacement  = "pve-host"
+  }
+  rule {
+    target_label = "instance"
+    replacement  = "pve-host"
   }
 }
 

@@ -34,7 +34,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  TOFU_VERSION: "1.9.1"
+  TOFU_VERSION: "1.13.2"
 
 jobs:
   drift:
