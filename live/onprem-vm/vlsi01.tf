@@ -1,9 +1,12 @@
 # ── vlsi-01 — the VLSI / EDA workspace node (Phase 3) ───────────────────────
 #
-# A third k3s agent for the per-user workspaces (JupyterLab + EDA tools): 12 vCPU,
-# 20 GiB, no GPU. It joins the existing cluster (lane D's Ansible role `k3s-agent`,
+# A third k3s agent for the per-user workspaces (JupyterLab + EDA tools): 4 vCPU,
+# 4 GiB, no GPU. It joins the existing cluster (lane D's Ansible role `k3s-agent`,
 # docs/runbooks/phase3-window.md step 5) with the label `qnsc.vn/pool=vlsi` and the
 # taint `qnsc.vn/pool=vlsi:NoSchedule`, so only workloads that tolerate it land there.
+# Small on purpose: the VLSI team has not started, so the RAM and cores sit with ai-01
+# and k3s-01 until it does; grow both when the workspaces get real users (a plain
+# size increase, same window/stop-start rules as the other VMs).
 #
 # ── PRODUCTION WINS UNDER CONTENTION ────────────────────────────────────────
 # Compute jobs are CPU-bound and the host is shared with k3s-01 (rova prod, pg-rova).
@@ -34,9 +37,10 @@ variable "vlsi01_vm_name" {
 }
 
 variable "vlsi01_cores" {
-  type        = number
-  default     = 12
-  description = "vCPUs. With k3s-01 (28) and ai-01 (8) the host is deliberately oversubscribed in cores: the VMs rarely peak together, and cpu.units decides who wins when they do."
+  type = number
+  # 4 vCPU, down from 12: the node used ~0.7 GiB and no meaningful CPU before the team starts.
+  default     = 4
+  description = "vCPUs. Re-balance target: 4 (grow when the VLSI team starts; validation allows up to 16)."
 
   validation {
     condition     = var.vlsi01_cores >= 4 && var.vlsi01_cores <= 16
@@ -45,9 +49,12 @@ variable "vlsi01_cores" {
 }
 
 variable "vlsi01_memory_mb" {
-  type        = number
-  default     = 20480
-  description = "20 GiB, ballooning off (like the other nodes: predictable, and k3s counts on the memory it sees). With k3s-01 24 + ai-01 12 + vlsi-01 20 = 56 GiB the host keeps ~4-8 GiB for itself and the ZFS ARC; check `free -g` on the host first."
+  type = number
+  # 4 GiB (4096 MiB), down from 20 GiB: the workspaces have no users yet, and ai-01 takes the
+  # spare. With k3s-01 24 + ai-01 28 + vlsi-01 4 = 56 GiB the host keeps ~6 GiB for itself and
+  # the ZFS ARC.
+  default     = 4096
+  description = "4 GiB after the re-balance (was 20 GiB), ballooning off (like the other nodes: predictable, and k3s counts on the memory it sees). Stop/start applies it."
 }
 
 variable "vlsi01_cpu_units" {
