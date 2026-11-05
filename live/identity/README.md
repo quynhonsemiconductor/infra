@@ -687,13 +687,23 @@ Entra the public half, `kv-qnsc-dev/kb-dev-graph-cert`). Both are imported, so t
 IMPORT and never a create or replace.
 
 NO opshub/kb PROD apps in this section: opshub prod's service app is CREATED
-in `prod_apps.tf` (below); kb prod's service app comes with its own prod PR,
-after its hostnames and permissions are decided. rova_prod carries the ONE Graph permission
-the plan gives the rova Service app — tenant-wide guest invite
-(`User.Invite.All`, §7.3/H-D14, backlog P0-7), admin-consented on apply; the
-rova SIGN-IN apps keep NO application permissions of their own (the dev
-sign-in apps still hold `User.Invite.All` today until rova's P0-7 code moves
-the invite to the Service cert — a rova-track change, not this stack's).
+in `prod_apps.tf` (below); kb prod's service app comes with its own prod PR.
+Guest invitation is **prod-only** in this sense: the ONE Entra tenant is
+shared by dev and prod, and only the **PROD service app** ("Rova Prod
+Service") holds the `User.Invite.All` grant (tenant-wide, §7.3/H-D14, backlog
+P0-7), admin-consented on apply. rova's sign-in apps must hold NO Graph
+application permission or assignment. N-M10 removes the `User.Invite.All`
+role both sign-in apps still declare **and** the live assignments they carry:
+a sign-in app DOES have a client secret, so it can mint an app-only token —
+the control is "no `User.Invite.All` assignment on any sign-in SP", proven by
+the pre-apply GET gate below. rova#763 moved the only Graph invitation call
+to `EntraGuestInviteClient` on the SERVICE certificate (`MAIL_GRAPH_CLIENT_ID`).
+
+**Dev must NOT hold the grant.** A dev-vault certificate must not be able to
+invite guests into that shared production tenant (SA decision 2026-11-05), so
+"Rova Dev Service" stays empty. **The absent grant is the security control;
+the `ENTRA_GUEST_INVITE_ENABLED=false` flag is not** — it only stops new
+enqueues (see `mail.tf`). Dev tests the invitation with the feature off.
 
 **The keyIds are PINNED in `mail.tf`** (`local.mail_service_cert_key_ids` and
 `local.mail_service_rotated_cert_key_ids`), not derived and not passed as
@@ -865,24 +875,63 @@ to destroy the object — and `prevent_destroy` makes that a hard error.
 
 4. `tofu plan` go/no-go — the mail part of the plan must read EXACTLY: **8
    imports** (4 applications + 4 service principals) + **4 certificate
-   imports** (rova_prod and the three dev certs) — and at most ONE application
-   update, on rova_prod only: the wizard-default delegated `User.Read` REMOVED
-   and/or the `User.Invite.All` application role ADDED, whichever the export
-   shows is not yet in line (the role is already consented on the live app, so
-   the plan may show no permission line at all). NO certificate create. A
-   plan that creates a certificate means the keyId is missing from the pinned
-   map in `mail.tf`: STOP.
-   Any change on an imported app — a permission add or removal, a redirect
-   URI, a secret credential — is NO-GO, and **any certificate showing
-   "must be replaced" is STOP** (the certs are imported write-only; see the
-   `mail.tf` resource comment). opshub_dev's three application roles are
-   in the code; a different live set is STOP and reconcile `mail.tf` first.
+   imports** (rova_prod and the three dev certs). The only application
+   updates allowed are the two named here, and BOTH are the removal of the
+   wizard-default delegated `User.Read` (the code models no delegated
+   permission on a service app):
+   - "Rova Prod Service": delegated `User.Read` REMOVED if the live export
+     still shows it; `User.Invite.All` is already declared, consented and
+     imported, so no role line.
+   - "Rova Dev Service": delegated `User.Read` REMOVED if the live export
+     still shows it. NO role is added — guest invitation is prod-only.
+
+   NO certificate create. A plan that creates a certificate means the keyId is
+   missing from the pinned map in `mail.tf`: STOP.
+   Any OTHER change on an imported app — a permission add, a redirect URI, a
+   secret credential — is NO-GO, and **any certificate showing "must be
+   replaced" is STOP** (the certs are imported write-only; see the `mail.tf`
+   resource comment). opshub_dev's three application roles are in the code; a
+   different live set is STOP and reconcile `mail.tf` first.
    The `User.Invite.All` ADMIN CONSENT is a separate manual step right after
    apply (the plan only updates the app):
 
    ```sh
    az ad app permission admin-consent --id <rova_prod service app id>
    ```
+
+   **N-M10 delta (this PR; it does not change the paragraph above).** The
+   plan now also shows:
+   - an UPDATE on the "Rova Prod" and "Rova Dev" SIGN-IN apps removing the
+     `User.Invite.All` application role. Removing `required_resource_access`
+     does NOT revoke a live assignment, and both sign-in apps carry client
+     secrets, so they can mint app-only tokens and invite guests TODAY (the
+     assignments were created 2026-08-16/17). The owner deletes both live
+     assignments by hand (SA commands, 2026-11-05), then runs this gate; it
+     must pass before the plan is approved:
+
+     ```sh
+     for app in "Rova Prod" "Rova Dev"; do
+       apps=$(az ad app list --filter "displayName eq '$app'" -o json) || exit 1
+       [ "$(jq 'length' <<<"$apps")" = 1 ] || { echo "STOP: expected exactly 1 app named '$app'"; exit 1; }
+       appId=$(jq -r '.[0].appId' <<<"$apps")
+       sps=$(az ad sp list --filter "appId eq '$appId'" -o json) || exit 1
+       [ "$(jq 'length' <<<"$sps")" = 1 ] || { echo "STOP: expected exactly 1 SP for $app"; exit 1; }
+       sp=$(jq -r '.[0].id' <<<"$sps")
+       left=$(az rest --method get -o json \
+         --url "https://graph.microsoft.com/v1.0/servicePrincipals/$sp/appRoleAssignments") || exit 1
+       [ "$(jq '.value | length' <<<"$left")" = 0 ] || {
+         echo "STOP: $app still holds app-role assignments — delete them before the apply"
+         jq '.value[] | {assignment: .id, appRoleId, principalId}' <<<"$left"
+         exit 1
+       }
+     done
+     echo "gate OK: no app-role assignment on either rova sign-in SP"
+     ```
+
+     The gate stops on a missing/duplicate app or SP and on ANY remaining
+     assignment (not only `User.Invite.All`). No role is added to "Rova Dev
+     Service", and no grant is created there.
+   - no change to "Rova Prod Service".
 
    **State after the 2026-11-04 identity apply:** the 4 applications, their 4
    service principals and their 4 primary certificates are IN STATE, and the
@@ -1102,9 +1151,9 @@ Result on 2026-11-04: Rova Prod Service **1** (`User.Invite.All`), OpsHub Dev
 Service **3** (`DeviceManagementManagedDevices.Read.All`,
 `SecurityEvents.Read.All`, `User.Read.All`), OpsHub Prod Service **3** (the same
 three), Rova Dev and KB Dev **0**. Every granted role is declared in `mail.tf` /
-`prod_apps.tf`, and this stack now manages every one of those grants. A live
-grant that is NOT declared, or a role declared with no grant, is a STOP:
-reconcile `mail.tf`'s `graph_app_role_values` first, then re-run the kit.
+`prod_apps.tf`, and this stack manages every one of those grants. A live grant
+that is NOT declared, or a role declared with no grant, is a STOP: reconcile
+`mail.tf`'s `graph_app_role_values` first, then re-run the kit.
 
 Manual fallback (only if the kit cannot run; the id is the ASSIGNMENT id, the
 resource is Microsoft Graph):
@@ -1399,10 +1448,10 @@ the owner.
    steps 2 and 3 above, plus the sign-in export in "Sign-in apps" step 1.
 3. **No new keypair**: the app already has its certificate. Extract the public
    half from the vault (mail step 3) for `TF_VAR_mail_service_certificates`.
-4. **`tofu plan`** with the full variable set below. Mail go/no-go: 8 imports
-   (apps + SPs), 4 certificate imports, at most 1 application update (rova_prod,
-   see step 4 above), no certificate create, nothing replaced. This stack also carries `proxmox.tf` and the sign-in apps: read
-   their sections for their expected lines. Any "must be replaced" is a STOP.
+4. **`tofu plan`** with the full variable set below. The go/no-go is the ONE
+   canonical list in "Mail service apps" step 4 (the mail side); `proxmox.tf`
+   and the sign-in apps have their own sections. Do not re-derive a second
+   count here. Any "must be replaced" is a STOP.
 5. **`tofu apply`** (owner, local, `--profile`/`az login` as in "First apply").
 6. **Admin consent** for `User.Invite.All`:
    `az ad app permission admin-consent --id <rova prod service app id>`.

@@ -9,8 +9,13 @@
 # opshub's offline_access + User.Read, KB's email, the owners).
 #
 # Rules (§7.2):
-#   - delegated Graph scopes + (rova) the User.Invite.All APPLICATION role for
-#     the guest-invite flow — never Mail.Send (§7.2).
+#   - DELEGATED Graph scopes only — never Mail.Send, and NO application role
+#     on a sign-in app. rova's guest invite is app-only on its SERVICE app's
+#     certificate (mail.tf, User.Invite.All) since rova#763. The two sign-in
+#     apps DO carry client secrets, so they can mint app-only tokens: the
+#     control is that NO sign-in SP holds a User.Invite.All assignment, not
+#     the absence of a credential. This PR removes the declared role; the
+#     pre-apply GET gate proves both sign-in SPs hold zero assignments.
 #   - callbacks are SERVER-side code flows → web.redirect_uris only; dev
 #     loopbacks use the org's fixed dev-stack ports from
 #     .github/docs/LOCAL-DEVELOPMENT.md (rova 5175, KB 8000 —
@@ -36,18 +41,17 @@ data "azuread_service_principal" "msgraph" {
 locals {
   # Scope names → { name, type } on the msgraph SP. Ids are resolved at plan
   # time from the SP data source (no literal UUIDs): Scope → the delegated
-  # oauth2 permission ids, Role → the app-role ids (User.Invite.All for the
-  # rova guest-invite flow, §7.2).
+  # oauth2 permission ids. The sign-in apps hold delegated scopes only; the
+  # application roles live on the service apps (mail.tf / prod_apps.tf).
   graph_scopes = {
-    openid          = { name = "openid", type = "Scope" }
-    profile         = { name = "profile", type = "Scope" }
-    email           = { name = "email", type = "Scope" }
-    offline_access  = { name = "offline_access", type = "Scope" }
-    User_Read       = { name = "User.Read", type = "Scope" }
-    Files_Read      = { name = "Files.Read", type = "Scope" }
-    Files_Read_All  = { name = "Files.Read.All", type = "Scope" }
-    Sites_Read_All  = { name = "Sites.Read.All", type = "Scope" }
-    User_Invite_All = { name = "User.Invite.All", type = "Role" }
+    openid         = { name = "openid", type = "Scope" }
+    profile        = { name = "profile", type = "Scope" }
+    email          = { name = "email", type = "Scope" }
+    offline_access = { name = "offline_access", type = "Scope" }
+    User_Read      = { name = "User.Read", type = "Scope" }
+    Files_Read     = { name = "Files.Read", type = "Scope" }
+    Files_Read_All = { name = "Files.Read.All", type = "Scope" }
+    Sites_Read_All = { name = "Sites.Read.All", type = "Scope" }
   }
 
   # Reconciled to ~/signin-export/*.json (2026-10-27):
@@ -70,8 +74,8 @@ locals {
         "https://rova.qnsc.vn/v1/bff/callback",             # live; v7 rollback until day 7
         "https://rova.qnsc.vn/api/auth/callback/microsoft", # ADDED (v8 cutover)
       ]
-      scopes          = ["openid", "profile", "email", "offline_access", "User_Read", "User_Invite_All"]
-      optional_claims = ["email", "upn"] # live idToken claims (added at the v8 prod cutover)
+      scopes          = ["openid", "profile", "email", "offline_access", "User_Read"] # N-M10: User.Invite.All removed (service-app, app-only)
+      optional_claims = ["email", "upn"]                                              # live idToken claims (added at the v8 prod cutover)
     }
     rova_dev = {
       display_name = "Rova Dev"
@@ -80,8 +84,8 @@ locals {
         "https://rova-dev.qnsc.vn/v1/bff/callback",             # live
         "http://localhost:5175/api/auth/callback/microsoft",    # ADDED (dev loopback)
       ]
-      scopes          = ["openid", "profile", "email", "offline_access", "User_Read", "User_Invite_All"]
-      optional_claims = ["email", "upn", "preferred_username"] # live idToken claims
+      scopes          = ["openid", "profile", "email", "offline_access", "User_Read"] # N-M10: User.Invite.All removed (service-app, app-only)
+      optional_claims = ["email", "upn", "preferred_username"]                        # live idToken claims
     }
     opshub_dev = {
       display_name    = "OpsHub Dev"
@@ -230,8 +234,7 @@ resource "azuread_application" "signin" {
     }
   }
 
-  # Delegated Graph scopes (+ rova's User.Invite.All application role); ids
-  # resolved from the msgraph SP (no literals).
+  # Delegated Graph scopes only; ids resolved from the msgraph SP (no literals).
   required_resource_access {
     resource_app_id = data.azuread_service_principal.msgraph.client_id
     dynamic "resource_access" {
@@ -348,9 +351,8 @@ locals {
 
   # A grant can only carry scopes the app REQUESTS; setting a fixed five-scope
   # list would strip KB's Files.*/Sites.* delegated scopes on an apply. Derive
-  # the delegated scope names from local.signin_apps (User.Invite.All is an
-  # application Role, not a delegated scope) and give each prod app the same set
-  # as its dev sibling.
+  # the delegated scope names from local.signin_apps (sign-in apps hold no
+  # application role) and give each prod app the same set as its dev sibling.
   signin_delegated_scopes = merge(
     {
       for k, app in local.signin_apps : k => [
