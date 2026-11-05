@@ -11,6 +11,8 @@
   roles:
     - role: vm_guest
       tags: [vm_guest]
+    - role: ssh_infra
+      tags: [ssh_infra]
     - role: k3s_registries
       vars:
         k3s_registries_service: k3s

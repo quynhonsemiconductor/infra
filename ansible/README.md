@@ -152,6 +152,87 @@ cat /sys/module/zfs/parameters/zfs_arc_max                # 8589934592
 ```
 
 `--check` reports the pending file line and live change; `pve-host.yml --tags pve_base_zfs` converges just this.
+## SSH for people (`ssh_infra`): Cloudflare Access for Infrastructure
+
+Owner decision 2026-11-05: no shared passwords and no long-lived personal
+keys. A platform admin enables WARP (`live/edge/warp.tf` already mirrors the
+office range into the tunnel: `admin_private_cidr` is removed from the default
+split-tunnel excludes), runs `ssh <user>@<node address>`, and Cloudflare's
+Gateway SSH proxy checks Entra + MFA and issues a **short-lived SSH
+certificate**. The node trusts the account's Access SSH CA; the CA public key
+is the only trust anchor.
+
+**Free-plan check.** Cloudflare's docs list Access for Infrastructure under
+Zero Trust plans **All plans** (<https://developers.cloudflare.com/cloudflare-one/access-controls/applications/non-http/infrastructure-apps/>).
+Confirm it is enabled in the account's Zero Trust dashboard before applying;
+if it is not offered, STOP and report — the fallback is Ansible-managed public
+keys, not a downgrade to passwords.
+
+### 1. Cloudflare (IaC, `live/edge/ssh_infra.tf`)
+
+Targets and usernames come from the `TF_VAR_ssh_infra_targets` JSON (a repo
+secret / owner env file; no address or person name is committed):
+
+```json
+{
+  "ai-01": { "hostname": "ai-01", "ipv4": "<ai-01 address>", "usernames": ["<admin login>"] }
+}
+```
+
+Apply `live/edge`: one `cloudflare_zero_trust_access_infrastructure_target`
+per node and one infrastructure application (SSH/22) per target. Its policy
+allows `grp-qnsc-platform-admins`, requires `amr=mfa`, and restricts the UNIX
+usernames. The provider has no gateway-CA resource, so the account CA is read
+or created once with the owner script:
+
+```sh
+CLOUDFLARE_ACCOUNT_ID=<account-id> CLOUDFLARE_API_TOKEN=<token> \
+  scripts/owner/cloudflare-ssh-ca.sh
+```
+
+The token needs **Access: SSH Auditing — Edit**. The printed public key goes
+into the LOCAL inventory as `node_ssh_ca_public_key` (a public key, not a
+secret; still never committed). The script uses `POST /accounts/<id>/access/gateway_ca`
+only when no CA exists; a per-app `zero_trust_access_short_lived_certificate`
+CA is **not** compatible with the Gateway SSH proxy.
+
+### 2. Nodes (Ansible role `ssh_infra`)
+
+Local inventory (git-ignored; names and addresses stay here):
+
+```yaml
+node_ssh_ca_public_key: "ssh-ed25519 AAAA... "
+node_admin_users:
+  # hosts = VM names in this inventory; sudo = passwordless sudo (identity + MFA happen at Cloudflare)
+  - { name: <admin login>, sudo: true, hosts: [ai-01] }
+```
+
+The role (tags `ssh_infra`, included by `k3s-server.yml`, `k3s-agent.yml` and
+`k3s-agent-gpu.yml`) writes `/etc/ssh/ca.pub` and a `sshd_config.d` drop-in
+with `TrustedUserCAKeys`, validates the merged config with `sshd -t`, then
+reloads sshd (never restarts). For each listed account it creates the user
+with **no password and no authorized_keys**, adds `video,render` on the GPU
+node, and writes a `sudoers.d` file when `sudo: true`. Removed from the list →
+the account is locked (expiry in the past) and its sudoers file removed; the
+home stays. The break-glass operator account (`qnsc`/`ubuntu` + its key) is
+never touched.
+
+```sh
+ansible-playbook k3s-agent-gpu.yml --tags ssh_infra --check --diff   # plan
+ansible-playbook k3s-agent-gpu.yml --tags ssh_infra                  # apply
+```
+
+Re-run the same command: `changed=0`.
+
+### 3. Verify
+
+1. Owner: WARP connected, `warp-cli status`; then `ssh <admin login>@<ai-01 address>`
+   (no password prompt, no local key prompt; `ssh -v` shows the certificate).
+2. Cloudflare dashboard → Access → Logs shows the SSH session for the user.
+3. On the node: `getent passwd <login>`, `sudo -n true` works for a sudo
+   account, and `nvidia-smi` works on ai-01 (the single 16 GiB GPU is shared
+   with kb prod TEI: check it is not mid-job before testing, and never start a
+   model to "test" access).
 
 ## PBS API token
 
