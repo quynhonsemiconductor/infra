@@ -34,3 +34,22 @@ pbs_pve_role: DatastoreBackup
 # Where the owner stores the token secret (the role prints the command; it never handles the secret itself).
 pbs_onepassword_vault: QNSC
 pbs_onepassword_item_title: "PBS - pve backup - API token"
+
+# ── Entra OpenID login ──────────────────────────────────────────────────────
+# The same "QNSC Proxmox" app as the PVE realm (one client id, one secret). PBS's OpenID realm has NO
+# group-claim option: authorization is one ACL per pre-created <email>@<realm> user. The list is a site
+# value (LOCAL inventory, git-ignored) and must mirror the app's direct assignments and the platform-admins
+# group. The client secret comes from the environment of the run:
+#   PROXMOX_OIDC_CLIENT_SECRET   (kv-qnsc-admin/admin-proxmox-oidc-secret; ansible/README.md)
+# root@pam remains the break-glass account (LAN only, password + TOTP).
+pbs_entra_enabled: true
+pbs_entra_cli_path: /usr/sbin/proxmox-backup-manager
+pbs_entra_realm: entra
+pbs_entra_issuer_url: "{{ proxmox_oidc_issuer_url | default('') }}"
+pbs_entra_client_id: "{{ proxmox_oidc_client_id | default('') }}"
+pbs_entra_client_secret: "{{ lookup('ansible.builtin.env', 'PROXMOX_OIDC_CLIENT_SECRET') }}"
+pbs_entra_username_claim: email
+pbs_entra_scopes: "openid email profile"
+pbs_entra_admin_emails: []
+# The username claim is fixed at realm creation: a different value stops the role.
+pbs_entra_rotate_client_key: false

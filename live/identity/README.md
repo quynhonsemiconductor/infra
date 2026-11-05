@@ -424,42 +424,55 @@ owner exports the live shape first and the plan is a hard go/no-go.
 4. After apply: record `signin_app_client_ids`; rotate/land client secrets
    with `scripts/rotate-signin-secret.sh` (≤ 6 months, into the vault).
 
-## Proxmox login (`proxmox.tf`): app "QNSC Proxmox", plan, secret
+## Proxmox VE + PBS login (`proxmox.tf`): app "QNSC Proxmox", plan, secret
 
-Adds the Entra half of Proxmox's OpenID realm; the Proxmox half is the
-platform runbook (server-setup §3.2.1, product-docs, private). The tenant has
-NO Entra ID P1, so group-based app assignment and `ApplicationGroup` claims
-are unavailable: the admin USERS are assigned directly and the ID token
-carries security-group object ids (`SecurityGroup`).
+Adds the Entra half of the Proxmox VE and Proxmox Backup Server OpenID realms;
+ONE app backs both, so there is one client id, one client secret, one
+direct-assignment list and one consent grant. The Proxmox half is the platform
+runbook (server-setup §3.2.1, product-docs, private) and the `pve_base`/`pbs`
+Ansible roles (ansible/README.md), run by the owner. The tenant has NO Entra ID
+P1, so group-based app assignment and `ApplicationGroup` claims are unavailable:
+the admin USERS are assigned directly and the ID token carries security-group
+object ids (`SecurityGroup`).
+
+Proxmox VE reads the `groups` claim (group `<group-object-id>-entra`). PBS has
+no group-claim option in its OpenID realm, so PBS authorization is one ACL per
+pre-created `<email>@entra` user; the app's assignment list still gates sign-in
+on both.
 
 **Adding or removing an admin = edit `TF_VAR_proxmox_admin_object_ids` (and
-re-apply) AND the Entra group `grp-qnsc-platform-admins` (Cloudflare Access
-and the Proxmox ACL key on it).** Keep the two in step.
+re-apply), the Entra group `grp-qnsc-platform-admins` (Cloudflare Access and the
+Proxmox VE ACL key on it), AND `pbs_entra_admin_emails` in the local Ansible
+inventory. Keep all three in step.**
 
-1. Export the two new variables on top of the existing ones (the Proxmox
-   origin is an admin-door hostname, so it stays out of the repo):
+1. Export the two new variables on top of the existing ones (the admin-door
+   origins are hostnames, so they stay out of the repo) — one URI per door:
 
    ```sh
-   export TF_VAR_proxmox_redirect_uris='["https://<proxmox-host>/"]'   # trailing slash REQUIRED (azuread 3.10)
+   export TF_VAR_proxmox_redirect_uris='["https://<proxmox-host>/", "https://<pbs-host>/"]'   # trailing slash REQUIRED (azuread 3.10)
    export TF_VAR_proxmox_admin_object_ids='["<user-object-id>", "<user-object-id>"]'
    ```
 
-   pve-manager sends `location.origin` (no slash) and Entra normalises the
-   root. The FIRST login must confirm there is no `AADSTS50011` (redirect URI
-   mismatch); if there is, STOP and tell the SA.
-2. Plan and apply as in the sections above, locally. Expected: **adds only**:
-   `azuread_application.proxmox`, `azuread_service_principal.proxmox`, one
-   `azuread_app_role_assignment.proxmox_admins[...]` per listed user, and
+   pve-manager and the PBS UI send `location.origin` (no slash) and Entra
+   normalises the root. The FIRST login on each door must confirm there is no
+   `AADSTS50011` (redirect URI mismatch); if there is, STOP and tell the SA.
+2. Plan and apply as in the sections above, locally. On a first apply: **adds
+   only** — `azuread_application.proxmox`, `azuread_service_principal.proxmox`,
+   one `azuread_app_role_assignment.proxmox_admins[...]` per listed user, and
    `azuread_service_principal_delegated_permission_grant.proxmox`; 0 to change,
-   0 to destroy, 0 to replace; two new outputs. ANY change or destroy on an
-   existing resource is NO-GO: stop and reconcile in a reviewed PR.
+   0 to destroy, 0 to replace; two new outputs. If the app already exists (it may
+   have been applied for PVE alone), the ONLY accepted change is an in-place
+   update of its `redirect_uris` to the two origins. ANY destroy or replace is
+   NO-GO: stop and reconcile in a reviewed PR.
 3. Record `proxmox_oidc_client_id` and `proxmox_oidc_issuer_url` from the
-   outputs (the runbook needs them). Neither is a secret.
+   outputs (the runbook and the local Ansible inventory need them). Neither is a
+   secret.
 4. Create the client secret OUT OF BAND (never in state; same shape as
    `scripts/rotate-signin-secret.sh`) straight into the admin vault, nothing
    printed, 6 months (sign-in app policy), then set a calendar reminder to
    rotate. The new credential's `keyId` goes to stderr so an orphaned
-   credential can be revoked if the vault write fails:
+   credential can be revoked if the vault write fails. BOTH realms use this
+   secret, so a rotation updates both (ansible/README.md, "Entra OpenID login"):
 
    ```sh
    new=$(az ad app credential reset --id <proxmox_oidc_client_id> --append \
@@ -1250,7 +1263,7 @@ product-docs), so the owner reads the rest from Entra or `az` as shown.
 | `TF_VAR_opshub_dev_app_role_ids` | JSON, 7 role GUIDs | `opshub-dev-app.json` `.appRoles[].id` |
 | `TF_VAR_owner_operator_object_id` | user object id | Entra, Users, the owner, Object ID |
 | `TF_VAR_second_owner_object_id` | user object id | Entra, Users, the second owner, Object ID |
-| `TF_VAR_proxmox_redirect_uris` | JSON list, `https://<host>/` (trailing slash) | the Proxmox realm host (product-docs) |
+| `TF_VAR_proxmox_redirect_uris` | JSON list, one `https://<host>/` per door (trailing slash) | the PVE and PBS admin hosts (product-docs) |
 | `TF_VAR_proxmox_admin_object_ids` | JSON list of user object ids | Entra, Users, Object ID; keep equal to the platform admins group |
 | `TF_VAR_mail_service_object_ids` | JSON, 4 service app object ids | mail export `*-app.json` `.id` |
 | `TF_VAR_mail_service_sp_object_ids` | JSON, 4 service SP object ids | mail export `*-sp.json` `.id` |
