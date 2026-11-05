@@ -70,12 +70,16 @@ module "edge" {
   #            STRICT 60/60s, AI 10/60s, UPLOAD 30/60s
   rate_limit_rules = [{
     ref                 = "auth_default"
-    description         = "Count authentication requests per client IP (log for 7 days, then block)"
+    # `log` is not available on this zone's plan (apply 2026-11-05: "failed to use the log action in
+    # ratelimiting"). Block instead, at a threshold the whole office behind one NAT IP cannot reach by signing
+    # in normally (a sign-in is 2-4 /api/auth calls; 20 people at 9am ≈ 80 per minute, not per 10 s) while a
+    # credential-stuffing burst still trips it.
+    description         = "Block an IP that sends more than 100 authentication requests in 10 seconds"
     expression          = "(starts_with(http.request.uri.path, \"/api/auth/\") or starts_with(http.request.uri.path, \"/api/v1/auth/\"))"
     period              = 10
-    requests_per_period = 30
+    requests_per_period = 100
     mitigation_timeout  = 10
-    action              = "log"
+    action              = "block"
   }]
 
   # Managed + OWASP rulesets — requires Pro+. Keep false until the zone plan is
