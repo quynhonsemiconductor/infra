@@ -8,13 +8,19 @@ export IDENTITY_SECOND_OWNER_UPN='<second owner UPN>'
 # redirect URI https://<host>/ is registered for each admin door
 export IDENTITY_PROXMOX_HOST='<Proxmox VE admin host>'
 export IDENTITY_PBS_HOST='<Proxmox Backup Server admin host>'
+# optional: extra owners for DEV sign-in apps only, comma-separated app=MemberUPN
+export IDENTITY_DEV_APP_EXTRA_OWNERS='opshub_dev=<developer UPN>'
 scripts/owner/identity-env/identity-env.sh                            # names + lengths only
 scripts/owner/identity-env/identity-env.sh -- tofu plan -out=tfplan   # runs in live/identity, env only in the child
 ```
 
-All three are required: both admin doors are registered on the ONE "QNSC Proxmox" app (runbook
+All three of the first are required: both admin doors are registered on the ONE "QNSC Proxmox" app (runbook
 server-setup §3.2.1), so a missing `IDENTITY_PBS_HOST` stops the kit before any plan. Each value is a bare
 hostname; the kit builds `TF_VAR_proxmox_redirect_uris` with the trailing slash azuread 3.10 requires.
+
+`IDENTITY_DEV_APP_EXTRA_OWNERS` is optional. It resolves each UPN to a **Member** user and builds
+`TF_VAR_dev_app_extra_owner_object_ids` (keys limited to `rova_dev`, `opshub_dev`, `kb_dev`; prod keys stop the
+kit). Unset = empty map. An app owner can add client credentials and redirect URIs, so extras are DEV-only.
 
 `tfplan` / `*.tfplan` are git-ignored (root `.gitignore`) but a plan file holds the values: delete it after the apply (`rm live/identity/tfplan`).
 
