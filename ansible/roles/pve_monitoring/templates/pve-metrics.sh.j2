@@ -2,8 +2,9 @@
 # Write the Proxmox host gauges node-exporter's textfile collector reads:
 #   pve_zpool_*           pool health / size / allocated / free
 #   pve_nvme_*            NVMe SMART wear, media errors, critical warning
-#   pve_pbs_*             PBS datastore size / used / avail, last backup
-#                         success timestamp and last backup status
+#   pve_pbs_*             PBS datastore size / used / avail; per-target
+#                         (worker_id) last usable backup timestamp and last
+#                         backup status; collector_ok
 #   pve_apt_*             pending updates / security updates / reboot required
 # Run by pve-metrics.timer every 5 minutes. Any source that is absent on this
 # host (no PBS, no NVMe) is skipped; it must never abort the whole file.
@@ -76,20 +77,43 @@ fi
 # ── PBS backup jobs ────────────────────────────────────────────────────────
 # The nightly VM backup is the restore source for everything on pve01; before
 # this, a failed or skipped run was visible only in the PBS web UI. PBS records
-# every task with worker_type/status/endtime, so export the two facts an alert
-# needs: the newest SUCCESSFUL backup (age) and the status of the newest
-# finished backup (failure). `--all` is deliberate — the default view is the
-# current day, which would hide a night that was skipped entirely. The timeout
-# keeps a large task history from stalling the oneshot; no metric is emitted
-# when the list is empty, so the alert's no-data policy owns "never ran".
+# one task per guest, so export PER TARGET (the task's worker_id, e.g. vm/100)
+# rather than one newest-overall value — otherwise a single VM failing every
+# night is masked by another VM's OK.
+#
+# `--limit 1000` is explicit on purpose: `task list` defaults to 50 tasks even
+# with `--all` (the CLI documents 1-1000), and 50 would be only a few nights at
+# this guest count. 1000 is the documented maximum; re-check the installed
+# version with `proxmox-backup-manager task list --help` (owner-run:
+# `proxmox-backup-manager task list --all --output-format json | jq length`
+# shows how many the current default returns).
+#
+# `pve_pbs_collector_ok` makes a failed fetch loud instead of looking like
+# "never ran": 1 only when the task list came back as a JSON array.
+#
+# `WARNINGS: n` is a COMPLETED backup with warnings — a usable restore point —
+# so it counts as status 1 (same as OK), not as a failure.
 if command -v proxmox-backup-manager >/dev/null 2>&1; then
-    tasks="$(timeout 30 proxmox-backup-manager task list --all --output-format json 2>/dev/null || true)"
-    if [ -n "$tasks" ]; then
-        last_ok="$(printf '%s' "$tasks" | jq -r '[.[] | select(.worker_type == "backup" and .status == "OK" and ((.endtime // 0) > 0))] | max_by(.endtime) | .endtime // empty' 2>/dev/null || true)"
-        last_status="$(printf '%s' "$tasks" | jq -r '[.[] | select(.worker_type == "backup" and ((.endtime // 0) > 0))] | if length == 0 then empty else (max_by(.endtime) | if .status == "OK" then 1 else 0 end) end' 2>/dev/null || true)"
-        [ -n "$last_ok" ] && emit "pve_pbs_backup_last_success_timestamp_seconds $last_ok"
-        [ -n "$last_status" ] && emit "pve_pbs_backup_last_status $last_status"
+    tasks="$(timeout 30 proxmox-backup-manager task list --all --limit 1000 --output-format json 2>/dev/null || true)"
+    if [ -n "$tasks" ] && printf '%s' "$tasks" | jq -e 'type == "array"' >/dev/null 2>&1; then
+        emit "pve_pbs_collector_ok 1"
+        printf '%s' "$tasks" | jq -r '
+          def usable: ((.status // "") == "OK") or (((.status // "") | startswith("WARNINGS")));
+          [ .[] | select(.worker_type == "backup" and ((.endtime // 0) > 0) and ((.worker_id // "") != "")) ]
+          | group_by(.worker_id)[]
+          | (sort_by(.endtime)) as $g
+          | ($g | last) as $last
+          | ($g | map(select(usable)) | last) as $ok
+          | "pve_pbs_backup_last_status{target=\"\($last.worker_id)\"} \(if ($last | usable) then 1 else 0 end)",
+            (if $ok then "pve_pbs_backup_last_success_timestamp_seconds{target=\"\($last.worker_id)\"} \($ok.endtime)" else empty end)
+        ' >> "$tmp" 2>/dev/null || true
+    else
+        emit "pve_pbs_collector_ok 0"
     fi
+else
+    # pve01 runs PBS itself (the datastore rules above depend on it); a missing
+    # binary means the collection path is broken, not that backups are absent.
+    emit "pve_pbs_collector_ok 0"
 fi
 
 # ── pending package updates and reboot ─────────────────────────────────────

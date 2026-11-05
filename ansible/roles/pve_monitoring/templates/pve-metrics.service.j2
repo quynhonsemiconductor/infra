@@ -10,9 +10,12 @@ ExecStart={{ pve_monitoring_script }}
 User=root
 Group=root
 # zpool/smartctl/proxmox-backup-manager failures are handled inside the script
-# (each command has its own `timeout 20`); this is the outer bound, so a wedged
+# (each command has its own `timeout`); this is the outer bound, so a wedged
 # unit can never leave the timer's next tick queued behind it.
-TimeoutStartSec=60s
+# 180 s >= the worst-case sum of the inner timeouts: zpool 20 + smartctl 20 per
+# NVMe (2 disks = 40) + PBS datastore 20 + PBS task list 30 + apt 20 = 130 s,
+# plus the final `find /boot` — 50 s of headroom.
+TimeoutStartSec=180s
 Nice=10
 # The script needs root only to read SMART/PBS/ZFS. It writes exactly one
 # directory, so give it read-only everything else and no new privileges.
