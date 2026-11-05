@@ -31,8 +31,12 @@
 #     four SPs (the old opshub-users/employee gate never shipped: the group
 #     does not exist and opshub has no `employee` role — SA decision, YAGNI).
 #   - owners: the owner operator + one SECOND company owner only (ADDED on
-#     apply — live has none; named in the PR body). NO CI identity — an owner
-#     could add credentials/redirects to these apps; CI must never be able to.
+#     apply — live has none; named in the PR body), plus, for DEV sign-in apps
+#     ONLY, the per-app extras in var.dev_app_extra_owner_object_ids (e.g. the
+#     developer who administers a dev registration). An app owner can add
+#     client credentials and redirect URIs, so extras are limited to
+#     rova_dev / opshub_dev / kb_dev; a prod key fails the variable
+#     validation. NO CI identity — CI must never own these apps.
 
 data "azuread_service_principal" "msgraph" {
   client_id = "00000003-0000-0000-c000-000000000000" # well-known, not a secret
@@ -251,8 +255,12 @@ resource "azuread_application" "signin" {
   }
 
   # ADDED on apply (live has no owners — named in the PR body): the two
-  # company owners, on the app AND its SP.
-  owners = [var.owner_operator_object_id, var.second_owner_object_id]
+  # company owners, on the app AND its SP, plus the DEV-only extras for this
+  # key (a prod key is rejected by the variable validation).
+  owners = distinct(concat(
+    [var.owner_operator_object_id, var.second_owner_object_id],
+    lookup(var.dev_app_extra_owner_object_ids, each.key, []),
+  ))
 }
 
 # ── Adoption: import the existing registrations, do not create new ones ─────
@@ -296,7 +304,10 @@ resource "azuread_service_principal" "signin" {
   # gate never shipped, so there is nothing to preserve here.
   app_role_assignment_required = false
   client_id                    = each.value.client_id
-  owners                       = [var.owner_operator_object_id, var.second_owner_object_id]
+  owners = distinct(concat(
+    [var.owner_operator_object_id, var.second_owner_object_id],
+    lookup(var.dev_app_extra_owner_object_ids, each.key, []),
+  ))
 }
 
 # ── Tenant-wide delegated consent for every sign-in app ─────────────────────

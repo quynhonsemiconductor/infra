@@ -61,6 +61,9 @@ build() { # build the fixture set from scratch
   echo "{\"id\":\"$(g 2 2)\"}" >"$FX/group-grp-qnsc-dev-users"
   echo "{\"id\":\"$(g 3 1)\"}" >"$FX/me"
   echo "{\"id\":\"$(g 3 2)\"}" >"$FX/user-second@tenant.example"
+  echo "{\"id\":\"$(g 3 3)\",\"userType\":\"Member\"}" >"$FX/user-dev@tenant.example"
+  echo "{\"id\":\"$(g 3 4)\",\"userType\":\"Guest\"}" >"$FX/user-guest@tenant.example"
+  echo "{\"id\":\"$(g 3 5)\"}" >"$FX/user-nouser@tenant.example"
   echo "{\"value\":[{\"id\":\"$(g 3 1)\",\"userType\":\"Member\"},{\"id\":\"$(g 3 2)\",\"userType\":\"Member\"}]}" >"$FX/members"
   for k in "${KEYS[@]}"; do
     i=$((i+1)); mkcert "$k"
@@ -161,6 +164,12 @@ expect_stop() { # expect_stop <label> <expected fragment>
   grep -q "STOP: .*$2" "$out" || { cat "$out"; fail "$1: wrong stop reason (wanted '$2')"; }
   leak_scan "$out" "$1"
 }
+expect_stop_extra() { # expect_stop_extra <label> <expected fragment> <IDENTITY_DEV_APP_EXTRA_OWNERS value>
+  local out="$T/out.$RANDOM"
+  if run env IDENTITY_DEV_APP_EXTRA_OWNERS="$3" bash "$SCRIPT" >"$out" 2>&1; then fail "$1: broken input did not stop the run"; fi
+  grep -q "STOP: .*$2" "$out" || { cat "$out"; fail "$1: wrong stop reason (wanted '$2')"; }
+  leak_scan "$out" "$1"
+}
 
 # 1. happy path: names + lengths, 21 variables, no value anywhere
 build
@@ -176,6 +185,25 @@ grep -qE 'TF_VAR_mail_service_cert_key_ids' "$OUT" && fail "the keyIds are pinne
 grep -qE 'ARM_SUBSCRIPTION_ID +36$' "$OUT" || fail "ARM_SUBSCRIPTION_ID not exported with length 36"
 leak_scan "$OUT" happy
 [ "$(grep -c "2026-10-01T00:00:00Z" "$OUT")" = 0 ] || fail "a value was printed"
+
+# 1b. optional DEV extra owners: resolved to object ids, map keyed by app; nothing printed
+build
+OUT="$T/out.extra"; run env IDENTITY_DEV_APP_EXTRA_OWNERS="opshub_dev=dev@tenant.example" bash "$SCRIPT" >"$OUT" 2>&1 \
+  || { cat "$OUT"; fail "extra owners: happy path exited non-zero"; }
+grep -q 'identity env OK: 22 variables' "$OUT" || { cat "$OUT"; fail "extra owners: variable count"; }
+grep -qE 'TF_VAR_dev_app_extra_owner_object_ids +[0-9]+$' "$OUT" || fail "extra owners: map not exported"
+leak_scan "$OUT" "extra owners"
+run env IDENTITY_DEV_APP_EXTRA_OWNERS="opshub_dev=dev@tenant.example" bash "$SCRIPT" -- \
+  sh -c 'printf "%s" "$TF_VAR_dev_app_extra_owner_object_ids"' >"$T/extra.json" 2>/dev/null \
+  || fail "extra owners: run mode"
+jq -e --arg id "$(g 3 3)" 'keys==["opshub_dev"] and .opshub_dev==[$id]' "$T/extra.json" >/dev/null \
+  || fail "extra owners: wrong map"
+expect_stop_extra "extra owner guest" "has a guest or non-Member user" "opshub_dev=guest@tenant.example"
+expect_stop_extra "extra owner without userType" "has a guest or non-Member user" "opshub_dev=nouser@tenant.example"
+expect_stop_extra "extra owner unknown" "az lookup failed: dev-extra-owner" "opshub_dev=nobody@tenant.example"
+expect_stop_extra "extra owner prod key" "rova_prod is not a dev sign-in app" "rova_prod=dev@tenant.example"
+expect_stop_extra "extra owner malformed" "expected app=upn" "opshub_dev"
+expect_stop_extra "extra owner empty upn" "has an empty UPN" "opshub_dev="
 
 # 2. run mode: the child sees the values (checked by shape, nothing printed), cwd is the stack dir
 CH="$T/child.out"

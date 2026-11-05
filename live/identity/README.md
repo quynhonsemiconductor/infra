@@ -466,8 +466,20 @@ plan carries #402 (rova invite scope).
    # https://<host>/ is registered for each door
    export IDENTITY_PROXMOX_HOST='<pve admin host>'
    export IDENTITY_PBS_HOST='<pbs admin host>'
+   # optional: extra owners for DEV sign-in apps only, comma-separated app=MemberUPN
+   export IDENTITY_DEV_APP_EXTRA_OWNERS='opshub_dev=<developer UPN>'
    scripts/owner/identity-env/identity-env.sh -- tofu plan -out=tfplan
    ```
+
+   `IDENTITY_DEV_APP_EXTRA_OWNERS` is optional. It keeps a named developer as
+   an OWNER of a DEV app registration (the live `signin["opshub_dev"]` carries
+   one added by hand); unset means no extras. Set it for the owner run —
+   without it the apply REMOVES that hand-added owner. Keys are limited to
+   `rova_dev`, `opshub_dev`, `kb_dev` (both the kit and the variable
+   validation reject a prod key). An app owner can add client credentials and
+   redirect URIs, so prod apps never take extras. With the line above the
+   plan shows **no change** to the `opshub_dev` owners (app and SP); every
+   other line is unchanged.
 
    pve-manager and the PBS UI send `location.origin` (no slash) and Entra
    normalises the root. This first plan is a scout: existing direct Admin
