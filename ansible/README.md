@@ -81,10 +81,11 @@ plan (both redirect URIs, same run as #402) → **2** go/no-go → **3** apply +
 into `kv-qnsc-admin` → **5** this inventory → **6** `--check` then run. Do not start at step 5: the realms
 need the applied app and the vault secret first.
 
-The four non-secret site values live in the LOCAL inventory (nothing in Git), next to the host. The two
-`pbs_entra_admin_emails` are the platform admins' Entra `email` claim values (owner-held; keep them equal
-to the app's direct assignments and `grp-qnsc-platform-admins`). The group object id is
-`az ad group show --group grp-qnsc-platform-admins --query id -o tsv`:
+The four non-secret site values live in the LOCAL inventory (nothing in Git), next to the host. The shared
+`proxmox_entra_admin_emails` is the platform admins' Entra `email` claim values (owner-held; keep them equal
+to the app's direct assignments and `grp-qnsc-platform-admins`). Use the EXACT strings Entra returns — PVE and
+PBS user ids are case-sensitive. `pbs_entra_admin_emails` is still accepted as a compat alias. The group
+object id is `az ad group show --group grp-qnsc-platform-admins --query id -o tsv`:
 
 ```yaml
 pve:
@@ -94,10 +95,31 @@ pve:
       proxmox_oidc_issuer_url: "https://login.microsoftonline.com/<tenant>/v2.0"   # step 3 output
       proxmox_oidc_client_id: "<application (client) id>"                          # step 3 output
       proxmox_oidc_admin_group_oid: "<object id of grp-qnsc-platform-admins>"
-      # PBS has no group-claim option: its admins are pre-created and get Admin on /. Keep this list
-      # equal to the app's direct assignments and the platform-admins group.
-      pbs_entra_admin_emails: ["<admin1>@<domain>", "<admin2>@<domain>"]
+      # ONE shared admin list for both realms. PVE pre-creates <email>@entra and makes each one a member
+      # of <oid>-entra; PBS pre-creates the same users and grants Admin on /. Keep it equal to the app's
+      # direct assignments and the platform-admins group.
+      proxmox_entra_admin_emails: ["<admin1>@<domain>", "<admin2>@<domain>"]
 ```
+
+**Why my group changed on login (and why the role does not use the claim).** PVE asks the provider's
+`userinfo` endpoint for claim values: `src/PVE/API2/OpenId.pm` passes `query-userinfo` with a default of 1,
+then reads `groups-claim` from the returned info (PVE docs, "Query userinfo endpoint",
+<https://pve.proxmox.com/pve-docs/chapter-pveum.html#pveum_openid>). Microsoft's userinfo response returns
+only the OIDC standard name/subject/email claims and **cannot be customized** — the app's SecurityGroup
+`groups` claim lives in the ID token, not in userinfo (Microsoft Learn, "UserInfo endpoint",
+<https://learn.microsoft.com/en-us/entra/identity-platform/userinfo>). So `pve_base_entra` does not rely on
+the claim: it pre-creates `<email>@<realm>` for every list entry, makes each one a member of
+`<group-oid>-entra`, and removes members no longer listed (offboarding). The realm keeps `autocreate=0`
+(only listed admins may exist) and `groups-overwrite=0` (a login never wipes the membership). On an
+existing realm the role also deletes the legacy `groups-claim` / `groups-autocreate` settings
+(`pveum realm modify <realm> --delete groups-claim,groups-autocreate`) so the configuration converges and
+drift includes them. PBS already works this way: pre-created user + per-user ACL. A `--check` run reports
+each pending create/addition/removal; a second run is `changed=0`.
+
+A **PVE-only** inventory may omit the shared list entirely: the realm, group and ACL are still managed,
+and only the user pre-creation/membership/offboarding tasks are skipped. When the list is present it must
+hold exact Entra email strings with no duplicates, and the same `proxmox_entra_admin_emails` (canonical)
+wins over the legacy `pbs_entra_admin_emails` in both roles.
 
 The client secret comes from the environment of the run (Key Vault `kv-qnsc-admin`,
 `admin-proxmox-oidc-secret`, created in identity step 4 with `scripts/rotate-signin-secret.sh`):
@@ -116,6 +138,20 @@ changes never rewrite the key). A rotation appends a credential, stores it in Ke
 roles with `-e pve_base_entra_rotate_client_key=true -e pbs_entra_rotate_client_key=true`; the old
 credential is revoked after a green login on both doors. The key is momentarily in
 `pveum`/`proxmox-backup-manager` argv on pve01 (single-admin host); the runbook states the caveat.
+
+## ZFS ARC ceiling (`pve_base_zfs`)
+
+`pve_base` owns `/etc/modprobe.d/zfs.conf` (one `options zfs zfs_arc_max=8589934592` line) and applies
+the live `/sys/module/zfs/parameters/zfs_arc_max`. It refuses a file whose `options zfs` line carries
+other settings instead of overwriting them; merge by hand and re-run. The initramfs handler rebuilds,
+and no reboot is needed. After a run that changed the value:
+
+```sh
+proxmox-boot-tool status                                  # boot entry/initramfs is current
+cat /sys/module/zfs/parameters/zfs_arc_max                # 8589934592
+```
+
+`--check` reports the pending file line and live change; `pve-host.yml --tags pve_base_zfs` converges just this.
 
 ## PBS API token
 

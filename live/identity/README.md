@@ -435,14 +435,21 @@ P1, so group-based app assignment and `ApplicationGroup` claims are unavailable:
 the admin USERS are assigned directly and the ID token carries security-group
 object ids (`SecurityGroup`).
 
-Proxmox VE reads the `groups` claim (group `<group-object-id>-entra`). PBS has
-no group-claim option in its OpenID realm, so PBS authorization is one ACL per
-pre-created `<email>@entra` user; the app's assignment list still gates sign-in
-on both.
+PVE does NOT get groups from the token: it reads claim values from the
+provider's userinfo endpoint (`query-userinfo` defaults on in
+`src/PVE/API2/OpenId.pm`), and Microsoft's userinfo response carries no
+`groups` — it returns only the standard name/subject/email claims and cannot be
+customized (Microsoft Learn, "UserInfo endpoint"). The app's SecurityGroup
+`groups` claim exists only in the ID token. So the `pve_base_entra` Ansible role
+pre-creates `<email>@entra` for every shared admin email, makes each one a
+member of `<group-object-id>-entra`, removes members no longer listed, and
+keeps the realm at `autocreate=0` / `groups-overwrite=0`. PBS is the same model
+(per-user ACL on a pre-created user); the app's assignment list still gates
+sign-in on both.
 
 **Adding or removing an admin = edit `TF_VAR_platform_admin_object_ids` (and
 re-apply), the Entra group `grp-qnsc-platform-admins` (Cloudflare Access and the
-Proxmox VE ACL key on it), AND `pbs_entra_admin_emails` in the local Ansible
+Proxmox VE ACL key on it), AND `proxmox_entra_admin_emails` in the local Ansible
 inventory. The same list drives the Proxmox app and the OpsHub Dev/Prod Admin
 role (direct user assignments; group-based app assignment needs Entra ID P1).
 Keep all three in step.**
@@ -679,9 +686,10 @@ plan carries #402 (rova invite scope).
    "Entra OpenID login": `proxmox_oidc_issuer_url` and
    `proxmox_oidc_client_id` from step 3d, `proxmox_oidc_admin_group_oid` from
    `az ad group show --group grp-qnsc-platform-admins --query id -o tsv`, and
-   `pbs_entra_admin_emails` = the Entra `email` claim of the two platform
-   admins (owner-held addresses, never committed; keep the list equal to the
-   app's direct assignments and the group).
+   `proxmox_entra_admin_emails` = the Entra `email` claim of the two platform
+   admins (owner-held addresses, exact casing, never committed; keep the list
+   equal to the app's direct assignments and the group). The old
+   `pbs_entra_admin_emails` key is still accepted as a fallback.
 
 6. From `ansible/`, with the vault secret only in the environment (never argv
    or a file), run the dry run and then the run:

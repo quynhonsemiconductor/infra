@@ -55,14 +55,31 @@ pve_base_entra_enabled: true
 pve_base_entra_realm: entra
 pve_base_entra_issuer_url: "{{ proxmox_oidc_issuer_url | default('') }}"
 pve_base_entra_client_id: "{{ proxmox_oidc_client_id | default('') }}"
-# Object id of grp-qnsc-platform-admins. Proxmox appends "-<realm>" to the claim group, so the PVE group
+# Object id of grp-qnsc-platform-admins. PVE appends "-<realm>" to the group name, so the PVE group
 # is "<object-id>-entra".
 pve_base_entra_admin_group_oid: "{{ proxmox_oidc_admin_group_oid | default('') }}"
 pve_base_entra_group_id: "{{ pve_base_entra_admin_group_oid }}-{{ pve_base_entra_realm }}"
 pve_base_entra_client_secret: "{{ lookup('ansible.builtin.env', 'PROXMOX_OIDC_CLIENT_SECRET') }}"
 pve_base_entra_username_claim: email
 pve_base_entra_scopes: "openid email profile"
+# The SHARED admin list (the same one PBS uses): exact Entra `mail`/email-claim strings, matching the app's
+# direct assignments and grp-qnsc-platform-admins. The role pre-creates <email>@<realm> and makes each one
+# a member of the admin group; PVE does NOT synchronise groups from the token (Entra's userinfo has no
+# groups claim, and groups-overwrite stays off). Canonical name: proxmox_entra_admin_emails. The old
+# pbs_entra_admin_emails key is still honoured as a fallback.
+pve_base_entra_admin_emails: "{{ proxmox_entra_admin_emails | default(pbs_entra_admin_emails | default([])) }}"
+# A PVE-only inventory (no shared admin list) stays valid: the realm, group and ACL are still
+# managed, only the user pre-creation / membership / offboarding tasks are skipped.
+pve_base_entra_manage_admins: "{{ pve_base_entra_admin_emails | length > 0 }}"
 # The username claim is fixed at realm creation (Auth/OpenId.pm): a different value stops the role.
 # The key is only written on creation or when this is true (a rotation), so an ordinary run never needs
 # the secret.
 pve_base_entra_rotate_client_key: false
+
+# ── ZFS ARC ceiling (host memory, shared with the VMs) ──────────────────────
+# 8 GiB. The three VMs ask for 56 GiB of the host's 62 GiB, so the ceiling is
+# NOT extra allocation: ZFS reclaims ARC under pressure. 4 GiB (the old value,
+# set when PBS was not yet serving the backup pool) left the co-located PBS
+# reading chunks and metadata from disk during GC/verify. 8 GiB keeps those hot
+# while the cap still leaves the host and the VM baseline room to breathe.
+pve_base_zfs_arc_max_bytes: 8589934592

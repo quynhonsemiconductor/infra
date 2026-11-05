@@ -1,0 +1,72 @@
+---
+# Offline regression check for the PVE Entra offboarding selectors in
+# roles/pve_base/tasks/main.yml. No host, no cloud: it proves the filters that
+# decide which realm users are dropped from <oid>-entra.
+#
+# The original bug: `selectattr('userid', 'match', '@entra$')` anchors at the
+# START (Jinja match == re.match), so it matched nothing and offboarding never
+# removed an account. The role now uses `search`.
+- name: PVE Entra membership selectors
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    pve_base_entra_realm: entra
+    pve_base_entra_group_id: g-entra
+    # alice is no longer listed; bob is; carol is a suffix decoy; root is PAM.
+    sim_users:
+      - userid: "alice@qnsc.vn@entra"
+        groups: "g-entra"
+      - userid: "bob@qnsc.vn@entra"
+        groups: "g-entra,other"
+      - userid: "carol@qnsc.vn@entra-other"
+        groups: ""
+      - userid: "root@pam"
+        groups: ""
+    sim_admin_emails: ["bob@qnsc.vn"]
+  tasks:
+    - name: The role's realm-user selector matches by suffix
+      ansible.builtin.set_fact:
+        sim_realm_users: "{{ sim_users | selectattr('userid', 'search', '@' ~ pve_base_entra_realm ~ '$') | list }}"
+
+    - name: A removed admin email is selected for removal; the decoy and root@pam are not
+      ansible.builtin.assert:
+        that:
+          - sim_realm_users | map(attribute='userid') | list == ['alice@qnsc.vn@entra', 'bob@qnsc.vn@entra']
+          # the OLD filter (match) selects nothing: this is the regression guard
+          - (sim_users | selectattr('userid', 'match', '@' ~ pve_base_entra_realm ~ '$') | list | length) == 0
+        quiet: true
+
+    - name: The ids still allowed to hold the admin group
+      ansible.builtin.set_fact:
+        sim_desired_ids: "{{ sim_admin_emails | map('regex_replace', '$', '@' ~ pve_base_entra_realm) | list }}"
+
+    - name: Work out the removals exactly as the role does (email not in the shared list)
+      ansible.builtin.set_fact:
+        sim_removed: >-
+          {{ sim_realm_users | rejectattr('userid', 'in', sim_desired_ids)
+             | map(attribute='userid') | list }}
+
+    - name: Only the dropped admin is removed
+      ansible.builtin.assert:
+        that:
+          - sim_removed == ['alice@qnsc.vn@entra']
+        quiet: true
+
+    - name: The removed account loses the admin group but keeps other groups
+      ansible.builtin.set_fact:
+        sim_alice_groups: >-
+          {{ (sim_users | selectattr('userid', 'equalto', 'alice@qnsc.vn@entra') | first).groups
+             | split(',') | map('trim') | reject('equalto', '')
+             | reject('equalto', pve_base_entra_group_id) | join(',') }}
+        sim_bob_groups: >-
+          {{ (sim_users | selectattr('userid', 'equalto', 'bob@qnsc.vn@entra') | first).groups
+             | split(',') | map('trim') | reject('equalto', '')
+             | reject('equalto', pve_base_entra_group_id) | join(',') }}
+
+    - name: Group removal leaves alice with no admin group for a re-run to preserve
+      ansible.builtin.assert:
+        that:
+          - pve_base_entra_group_id not in sim_alice_groups.split(',')
+          - sim_bob_groups == 'other'
+        quiet: true

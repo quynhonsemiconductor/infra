@@ -2,9 +2,6 @@
 # PCI ids (vendor:device) of every function of the card, passed to vfio-pci. Set in group_vars/pve.yml.
 pve_gpu_ids: []
 
-# ZFS ARC ceiling: 4 GiB (the VMs get the rest of the RAM; ZFS must not take it back).
-pve_gpu_arc_max_bytes: 4294967296
-
 # systemd-boot + ZFS hosts keep the kernel command line here (proxmox-boot-tool copies it to the ESP).
 pve_gpu_cmdline_file: /etc/kernel/cmdline
 
