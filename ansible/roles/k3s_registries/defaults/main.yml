@@ -1,0 +1,16 @@
+---
+# Docker Hub authentication for every k3s node. Anonymous pulls are limited to 10/h per IP; the
+# whole office shares one NAT address, so a rebuild or an image-GC sweep gives ImagePullBackOff for
+# hours (audit M4). The 12 docker.io images plus k3s's own rancher/* images use this.
+#
+# The username is a site value and lives in the git-ignored local inventory (it is not a secret,
+# but it is not the repo's business either). The token is a READ-ONLY Docker Hub personal access
+# token from 1Password, passed through the environment of the run (op run), never a vars file.
+k3s_registries_docker_hub_username: ""
+k3s_registries_docker_hub_token_env: QNSC_DOCKER_HUB_TOKEN
+
+# Which unit reads the file. The server playbook overrides this to k3s.
+k3s_registries_service: k3s-agent
+
+# A new registries.yaml needs a k3s restart to take effect. Default: report only.
+k3s_registries_allow_restart: false

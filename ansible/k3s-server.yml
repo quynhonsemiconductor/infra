@@ -11,6 +11,10 @@
   roles:
     - role: vm_guest
       tags: [vm_guest]
+    - role: k3s_registries
+      vars:
+        k3s_registries_service: k3s
+      tags: [k3s_registries]
     - role: kubelet
       vars:
         kubelet_profile: server

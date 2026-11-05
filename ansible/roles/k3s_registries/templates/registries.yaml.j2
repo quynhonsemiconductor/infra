@@ -1,0 +1,22 @@
+---
+# One mirror/endpoint (the public Docker Hub) plus the read-only credential. k3s writes its own
+# containerd host configuration from this file; editing it on a node is drift.
+#
+# `mirrors` is keyed by the image host (docker.io). `configs` is keyed by the registry HOST that
+# serves the image, not a URL: k3s labels it `<REGISTRY>` and its private-registry example uses a
+# host:port key (https://docs.k3s.io/installation/private-registry). Docker Hub's index is
+# index.docker.io and its registry is registry-1.docker.io, so both carry the credential; the
+# page's Docker Hub snippet shows the URL form, but containerd resolves authorization per host.
+mirrors:
+  docker.io:
+    endpoint:
+      - "https://index.docker.io/v2"
+configs:
+  "index.docker.io":
+    auth:
+      username: "{{ k3s_registries_docker_hub_username }}"
+      password: "{{ k3s_registries_docker_hub_token }}"
+  "registry-1.docker.io":
+    auth:
+      username: "{{ k3s_registries_docker_hub_username }}"
+      password: "{{ k3s_registries_docker_hub_token }}"

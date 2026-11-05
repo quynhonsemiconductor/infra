@@ -30,6 +30,7 @@ Priority: **P1** wave 1 (in `ansible/` now), **P2** wave 2 (next), **P3** later,
 | Exchange mailbox scoping (PowerShell) | `scripts/owner/mail-prod-tenant/` | keep (no provider for Exchange RBAC) | keep | documented in live/identity README |
 | Read-only kubeconfig for the operator | `scripts/owner/kubeconfig-ro.sh` | keep | keep | secret handling into 1Password |
 | Entra IdP secret rotation | `scripts/rotate-idp-secret.sh` | keep | keep | rotation is a deliberate act |
+| Docker Hub pull credential (all nodes) | (none: anonymous pulls) | Ansible `k3s_registries` | P1 | read-only PAT in 1Password; username is a local-inventory value; runbook `dockerhub-registries.md` |
 
 ## B. Hand steps recorded in the runbooks and notes
 

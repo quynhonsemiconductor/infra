@@ -1,0 +1,42 @@
+---
+- name: The Docker Hub username is set (local inventory, not the repo)
+  ansible.builtin.assert:
+    that: k3s_registries_docker_hub_username | length > 0
+    fail_msg: >-
+      Set k3s_registries_docker_hub_username in the git-ignored local inventory (all.vars in
+      inventory/local/hosts.yml) before running a full k3s playbook.
+    quiet: true
+
+- name: Read the Docker Hub read-only token from the environment of the run
+  ansible.builtin.set_fact:
+    k3s_registries_docker_hub_token: "{{ lookup('ansible.builtin.env', k3s_registries_docker_hub_token_env) | default('', true) }}"
+  no_log: true
+
+- name: Refuse to write a registries.yaml without a token
+  ansible.builtin.assert:
+    that: k3s_registries_docker_hub_token | length > 0
+    fail_msg: >-
+      {{ k3s_registries_docker_hub_token_env }} is empty. Run with
+      `op run --env-file=<local template> -- ansible-playbook ...` and map that variable to the
+      read-only Docker Hub token in 1Password.
+    quiet: true
+
+- name: Directory for the k3s registry configuration
+  ansible.builtin.file:
+    path: /etc/rancher/k3s
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Write registries.yaml (root only, it carries the token)
+  ansible.builtin.template:
+    src: registries.yaml.j2
+    dest: /etc/rancher/k3s/registries.yaml
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  notify:
+    - Restart k3s for the registry configuration
+    - Report that k3s needs a restart for the registry configuration
