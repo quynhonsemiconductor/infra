@@ -246,8 +246,10 @@
     # Files open UNDER the path, not `fuser -m`: before the move the path is a plain directory on
     # the root filesystem, and -m reports every process using that filesystem (all of them, ai-01
     # 2026-11-05). Stopping k3s-agent does NOT stop running containers (KillMode=process), so the
-    # owner drains the node first (README "Agent data disk"); a pod still writing here is refused.
-    # lsof exits 1 with no output when nothing is open.
+    # owner drains the node first (docs/runbooks/agent-data-disks.md); a pod still writing here is
+    # refused. lsof exits 1 with no output when nothing is open; an lsof ERROR also exits 1, so the
+    # gate also requires an empty stderr (-w only silences warnings, not errors). Known gap: a file
+    # unlinked while open is invisible to +D; after a drain nothing should hold one.
     - name: No process may hold a file open under the volume path
       ansible.builtin.command: "lsof -w +D {{ k3s_data_disk_mount }}"
       register: k3s_data_disk_fuser
@@ -258,10 +260,13 @@
 
     - name: Refuse when a process still holds the volume path
       ansible.builtin.assert:
-        that: k3s_data_disk_fuser.rc | default(1) == 1 and (k3s_data_disk_fuser.stdout | default('')) | length == 0
+        that:
+          - k3s_data_disk_fuser.rc | default(-1) == 1
+          - (k3s_data_disk_fuser.stdout | default('x')) | length == 0
+          - (k3s_data_disk_fuser.stderr | default('x')) | length == 0
         fail_msg: >-
           files are still open under {{ k3s_data_disk_mount }} (drain the node first) (exit {{ k3s_data_disk_fuser.rc | default('?') }}:
-          {{ k3s_data_disk_fuser.stdout | default('') }}). Stop them before moving the volumes.
+          {{ k3s_data_disk_fuser.stdout | default('') }} {{ k3s_data_disk_fuser.stderr | default('') }}). Stop them before moving the volumes.
         quiet: true
       when: not ansible_check_mode
 
@@ -272,6 +277,26 @@
         fstype: ext4
         opts: defaults
         state: ephemeral
+
+    # The disk must still be empty (only mkfs's lost+found): a disk that already holds volumes was
+    # moved before and later came up unmounted (nofail); copying the stale root copy over it would
+    # put old data over new. Stop and look instead.
+    - name: Look for volumes already on the data disk
+      ansible.builtin.find:
+        paths: "{{ k3s_data_disk_temp_mount }}"
+        file_type: any
+        excludes: [lost+found]
+      register: k3s_data_disk_on_disk
+      when: not ansible_check_mode
+
+    - name: Refuse to copy over a data disk that already holds volumes
+      ansible.builtin.assert:
+        that: (k3s_data_disk_on_disk.matched | default(0)) | int == 0
+        fail_msg: >-
+          {{ k3s_data_disk_device }} already holds {{ k3s_data_disk_on_disk.matched }} entries: it was moved to
+          before. Mount it ({{ k3s_data_disk_mount }}) and compare by hand; never rsync the root copy over it.
+        quiet: true
+      when: not ansible_check_mode
 
     - name: Copy the existing volumes onto the data disk
       # noqa: command-instead-of-module - rsync with the exact flags is the copy; synchronize is

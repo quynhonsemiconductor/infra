@@ -31,9 +31,14 @@ name, so the existing PersistentVolume and the pod's mount are unchanged; nothin
 `KillMode=process`), so TEI would keep its cache files open and the role refuses the move
 (`files are still open under ...`). Drain moves the workloads off; DaemonSets stay but do not use the
 storage path. The TEI pod stays Pending while drained (its PV is pinned to ai-01) — that is the window.
+emptyDir data on ai-01 is scratch only (TEI tmp, clamd's signature DB re-downloads on start).
+
+Run these on **k3s-01** (the agents carry no admin kubeconfig):
 
 ```sh
-kubectl drain ai-01 --ignore-daemonsets --delete-emptydir-data --timeout=5m
+# what runs on ai-01, and which of it would survive a drain (DaemonSets): none may mount the storage path
+sudo k3s kubectl get pods -A -o wide --field-selector spec.nodeName=ai-01
+sudo k3s kubectl drain ai-01 --ignore-daemonsets --delete-emptydir-data --timeout=5m
 ```
 
 Then find the disk's stable id **inside ai-01** (never pass `/dev/sdb`):
@@ -55,10 +60,10 @@ op run --env-file=<local template> -- \
   -e k3s_data_disk_format=true -e k3s_data_disk_allow_move=true
 ```
 
-Then let the workloads back:
+Then let the workloads back (on k3s-01):
 
 ```sh
-kubectl uncordon ai-01
+sudo k3s kubectl uncordon ai-01
 ```
 
 Verify on ai-01:
@@ -67,8 +72,13 @@ Verify on ai-01:
 findmnt --mountpoint /var/lib/rancher/k3s/storage     # SOURCE /dev/sdb
 df -h /var/lib/rancher/k3s/storage                     # ~300G, not 40G
 sudo du -sh /var/lib/rancher/k3s/storage/pvc-*         # the model cache is here
-kubectl -n ai get pods                                 # tei-e5 Running and Ready, clamd Running
-kubectl -n ai logs deploy/tei-e5 --tail=20             # no download, it starts offline from the cache
+```
+
+and on k3s-01:
+
+```sh
+sudo k3s kubectl -n ai get pods                        # tei-e5 Running and Ready
+sudo k3s kubectl -n ai logs deploy/tei-e5 --tail=20    # no download, it starts offline from the cache
 ```
 
 The old copy is now hidden by the mount point and still occupies root. It is a few GB; delete it only
@@ -76,7 +86,8 @@ in a later window by unmounting, removing the stale directory and mounting again
 
 If the role stops with an error after `k3s-agent` was stopped, the old data is still intact and the
 final mount has not happened: run `sudo systemctl start k3s-agent` on the node to restore service,
-then read the failing task (it names the file or the copy check) before re-running.
+then `sudo k3s kubectl uncordon ai-01` on k3s-01 (a drain, even a timed-out one, leaves the node
+cordoned), and read the failing task (it names the file or the copy check) before re-running.
 
 ## vlsi-01 — mount before the first workspace
 
