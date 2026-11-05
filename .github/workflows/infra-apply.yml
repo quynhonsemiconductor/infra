@@ -84,7 +84,7 @@ permissions:
   contents: read
 
 env:
-  TOFU_VERSION: "1.9.1"
+  TOFU_VERSION: "1.13.2"
   # Stacks whose read-only plan is not comparable to the write plan: no plan stage, no fingerprint
   # check, the apply job asks for approval whenever the stack is selected (see the header).
   LEGACY_STACKS: "observability github"

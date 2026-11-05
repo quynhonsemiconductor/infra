@@ -10,6 +10,16 @@
 
 > Platform-level AWS infrastructure shared across all QNSC products.
 
+## OpenTofu version
+
+Every workflow installs the version named in its `TOFU_VERSION` environment variable
+(today **1.13.2**); the org Renovate preset tracks that line, so a bump arrives as a PR.
+Locally, use the same version — the release floor is in `required_version` in each
+stack's `versions.tf` (`>= 1.9`, deliberately older than the CI pin so a consumer's
+local binary is not forced to upgrade in lockstep). Check with `tofu version` before
+planning; a plan rendered by a different OpenTofu version is not evidence that CI's plan
+will match.
+
 ## What this repo manages
 
 | Resource | Why it's here |
