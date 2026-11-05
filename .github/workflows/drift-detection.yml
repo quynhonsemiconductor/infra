@@ -103,7 +103,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: quynhonsemiconductor/ci/actions/iac-lint@ea2c56bd9b03fb4d52e8fb9fe98dca95fd278638 # v1.24.5
+      - uses: quynhonsemiconductor/ci/actions/iac-lint@956804ad4aa2dcf930909553d306d72b3708fd5d # v1.34.1+ci#308
         with:
           tofu-version: ${{ env.TOFU_VERSION }}
           fmt: 'false'   # install only
@@ -227,7 +227,7 @@ jobs:
       - name: Classify external drift
         id: classify
         if: ${{ steps.refresh.outputs.exitcode == '2' }}
-        uses: quynhonsemiconductor/ci/actions/destructive-guard@ea2c56bd9b03fb4d52e8fb9fe98dca95fd278638 # v1.24.5
+        uses: quynhonsemiconductor/ci/actions/destructive-guard@956804ad4aa2dcf930909553d306d72b3708fd5d # v1.34.1+ci#308
         with:
           mode: drift
           plan-file: refresh.tfplan
