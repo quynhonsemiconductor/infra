@@ -297,6 +297,16 @@
     # Re-adding an offboarded account must clear the lock/expiry the
     # offboarding set, or the certificate would be accepted and PAM would still
     # deny the login forever.
+    - name: Report re-enabling a listed account (check mode)
+      ansible.builtin.debug:
+        msg: "would re-enable {{ item.item.name }} (clear lock and expiry)"
+      changed_when: true
+      loop: "{{ ssh_infra_getent_listed.results }}"
+      when:
+        - ansible_check_mode
+        - item.rc == 0
+        - item.item.name in ssh_infra_reusable_names
+
     - name: Re-enable a listed account that already exists
       ansible.builtin.user:
         name: "{{ item.item.name }}"

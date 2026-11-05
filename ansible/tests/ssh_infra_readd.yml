@@ -1,0 +1,25 @@
+---
+# Offline --check test of the RE-ADD path: an account this role offboarded
+# (locked, expiry=1, no authorized_keys) is listed again and must be reported
+# as "would re-enable" instead of being refused as a foreign account.
+#
+# CI creates the temporary qnsc-test-admin account, locks it and expires it
+# before running this play; every path is under /tmp and the run is --check.
+- name: Re-adding an offboarded account
+  hosts: localhost
+  connection: local
+  become: true
+  gather_facts: false
+  vars:
+    ssh_infra_ca_public_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITESTKEYONLY test@example"
+    node_admin_users:
+      - name: qnsc-test-admin
+        sudo: true
+        hosts: [localhost]
+    ssh_infra_managed_users_file: /tmp/qnsc-ssh-readd/marker
+    ssh_infra_ca_file: /tmp/qnsc-ssh-readd/ca.pub
+    ssh_infra_sshd_dropin: /tmp/qnsc-ssh-readd/10-qnsc-test.conf
+    ssh_infra_principals_dir: /tmp/qnsc-ssh-readd/principals
+    ssh_infra_sudoers_dir: /tmp/qnsc-ssh-readd/sudoers
+  roles:
+    - role: ssh_infra

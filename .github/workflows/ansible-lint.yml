@@ -64,3 +64,16 @@ jobs:
           out=$(ansible-playbook -i localhost, -c local --check tests/ssh_infra_last_account.yml)
           printf '%s\n' "$out"
           grep -q "would lock daemon" <<<"$out"
+
+      # Re-adding an offboarded account (locked + expired) must report a
+      # re-enable, not refuse it as a foreign account. --check; /tmp paths.
+      - name: SSH re-add path (--check)
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'sudo userdel -r qnsc-test-admin 2>/dev/null || true' EXIT
+          sudo useradd -m qnsc-test-admin
+          sudo usermod -L -e 1 qnsc-test-admin
+          out=$(ansible-playbook -i localhost, -c local --check tests/ssh_infra_readd.yml)
+          printf '%s\n' "$out"
+          grep -q "would re-enable qnsc-test-admin" <<<"$out"
