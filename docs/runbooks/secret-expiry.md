@@ -9,15 +9,22 @@ that gives the Key Vault secrets which have no `expires` one where that is meani
 existing **read-only** CI identity (`AZURE_CLIENT_ID_READ`):
 
 - **Key Vault** — `az keyvault secret list` on `kv-qnsc-prod`, `kv-qnsc-platform`, `kv-qnsc-dev`.
-  Key Vault Reader returns `attributes.exp`, never a value.
+  Key Vault Reader returns `attributes.exp`, never a value. The estate's certificates
+  (`*-graph-cert`) are stored as SECRETS, not certificate objects, so this list is the complete
+  cert coverage; a future certificate object would also surface as its backing secret.
 - **Entra** — `GET /applications` (Directory Readers) for `passwordCredentials` and `keyCredentials`
-  end dates. Metadata only: `keyId`, display name, dates; no secret value.
+  end dates. Metadata only: `keyId`, display name, dates; no secret value. It is every app
+  registration, not a name filter: the product `*Prod`/`*Dev` sign-in apps, the `*Service` apps,
+  the ESO apps and anything hand-made are all covered — a new app needs no watcher change.
 
 | Result | Meaning | What happens |
 |---|---|---|
-| **FAIL** | a prod/platform secret has no expiry; or any credential is expired or has no readable end date | run is red, Teams card, run summary |
+| **FAIL** | a prod/platform secret has no expiry; or any credential is expired, expires within 7 days, or has no readable end date | run is red, Teams card (with an `URGENT (<=7d or expired)` count), run summary |
 | **WARN** | anything expires within 30 days; or a dev secret has no expiry yet | run stays green, Teams card, run summary |
 | **COULD NOT RUN** | a vault or Graph call failed (exit 2) | run is red, Teams card — never read as clean |
+
+The two thresholds are deliberate: 30 days is the rotation window, 7 days fails the run because a
+weekly check would otherwise get one more shot after the credential is already gone.
 
 Identifiers stay without an expiry on purpose: `*-mcp-access-aud` (Cloudflare Access AUD tag),
 `*-client-id` and `*-platform-admin-emails` (not credentials). `*-graph-cert` must use the
