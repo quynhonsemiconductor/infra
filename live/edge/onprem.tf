@@ -51,7 +51,9 @@ locals {
   # 2026-11-01 rova prod (owner fast track): rova.qnsc.vn moves off AWS on the
   # move night. Merge ONLY on the night of the move — this line is the switch.
   # 2026-11-04 opshub.qnsc.vn (P3): opshub-prod live in the cluster (gitops#205/#264), tunnel rules (infra#356).
-  cutover = ["rova-dev.qnsc.vn", "opshub-dev.qnsc.vn", "rova.qnsc.vn", "kb-dev.qnsc.vn", "opshub.qnsc.vn"]
+  # 2026-11-05 kb.qnsc.vn (P3): DRAFT — merge only once the kb-prod data layer is live (gitops#255). Tunnel rules
+  # live in live/onprem/tunnels.tf; this entry is the switch that publishes DNS and creates the staff Access app.
+  cutover = ["rova-dev.qnsc.vn", "opshub-dev.qnsc.vn", "rova.qnsc.vn", "kb-dev.qnsc.vn", "opshub.qnsc.vn", "kb.qnsc.vn"]
 
   # Nothing goes live before the tunnels exist (DNS targets them).
   cutover_live = var.tunnels_exist ? local.cutover : []
