@@ -94,6 +94,13 @@ build() { # build the fixture set from scratch
   jq -n --arg app "$(g 14 1)" --arg sp "$(g 16 1)" '[{id:$sp,appId:$app}]' >"$FX/sp-$(g 14 1)"
   jq -n --arg id "grant$(g 16 1)" --arg g "$(g 90 1)" --arg s "openid profile email offline_access User.Read" \
     '{value:[{id:$id,consentType:"AllPrincipals",resourceId:$g,scope:$s}]}' >"$FX/delegated-$(g 16 1).json"
+  # KB Prod sign-in app (kb_prod_apps.tf): exists after the kb prod apply, with one AllPrincipals grant.
+  jq -n --arg id "$(g 15 2)" --arg app "$(g 14 2)" '{id:$id,appId:$app}' >"$FX/app-KB-Prod"
+  jq -c '[.]' "$FX/app-KB-Prod" >"$FX/app-KB-Prod.list"
+  jq -n --arg app "$(g 14 2)" --arg sp "$(g 16 2)" '[{id:$sp,appId:$app}]' >"$FX/sp-$(g 14 2)"
+  jq -n --arg id "grant$(g 16 2)" --arg g "$(g 90 1)" \
+    --arg s "openid profile email offline_access User.Read Files.Read Files.Read.All Sites.Read.All" \
+    '{value:[{id:$id,consentType:"AllPrincipals",resourceId:$g,scope:$s}]}' >"$FX/delegated-$(g 16 2).json"
   roles='[]'; n=0
   for r in admin it-admin security hr manager helpdesk auditor; do n=$((n+1)); roles=$(jq -c --arg r "$r" --arg id "$(g 30 $n)" '.+[{value:$r,id:$id,isEnabled:true}]' <<<"$roles"); done
   jq --argjson r "$roles" '.appRoles=$r' "$FX/app-OpsHub-Dev" >"$FX/x" && mv "$FX/x" "$FX/app-OpsHub-Dev"
@@ -167,7 +174,7 @@ leak_scan "$OUT" happy
 
 # 2. run mode: the child sees the values (checked by shape, nothing printed), cwd is the stack dir
 CH="$T/child.out"
-run bash "$SCRIPT" -- bash -c 'jq -e "(.dev|length)>0" >/dev/null 2>&1 <<<"{}" ; [[ "$TF_VAR_budget_period_start" == 2026-10-01T00:00:00Z && "$TF_VAR_budget_period_end" == 2028-09-30T00:00:00Z ]] && [[ "$TF_VAR_proxmox_redirect_uris" == "[\"https://pve.example.test/\"]" ]] && jq -e "length==2" <<<"$TF_VAR_proxmox_admin_object_ids" >/dev/null && jq -e "length==4" <<<"$TF_VAR_mail_service_certificates" >/dev/null && jq -e "length==1 and (.[\"'$(g 22 99)'\"] != null)" <<<"$TF_VAR_mail_service_rotated_certificates" >/dev/null && jq -e "length==4" <<<"$TF_VAR_mail_service_graph_grant_ids" >/dev/null && jq -e "length==5 and .opshub_prod != null" <<<"$TF_VAR_signin_delegated_grant_ids" >/dev/null && jq -e "length==5 and (.kb_dev|index(\"email\") != null) and (.rova_prod|length == 5)" <<<"$TF_VAR_signin_delegated_grant_scopes" >/dev/null && jq -e ".[\"rova_prod/User.Invite.All\"] != null and .[\"opshub_dev/User.Read.All\"] != null" <<<"$TF_VAR_mail_service_graph_grant_ids" >/dev/null && [[ "$TF_VAR_break_glass_upn_domain" == tenant.example ]] && jq -e ".admin and .auditor" <<<"$TF_VAR_opshub_dev_app_role_ids" >/dev/null && pwd' >"$CH" 2>&1 || { cat "$CH"; fail "child did not get the right env"; }
+run bash "$SCRIPT" -- bash -c 'jq -e "(.dev|length)>0" >/dev/null 2>&1 <<<"{}" ; [[ "$TF_VAR_budget_period_start" == 2026-10-01T00:00:00Z && "$TF_VAR_budget_period_end" == 2028-09-30T00:00:00Z ]] && [[ "$TF_VAR_proxmox_redirect_uris" == "[\"https://pve.example.test/\"]" ]] && jq -e "length==2" <<<"$TF_VAR_proxmox_admin_object_ids" >/dev/null && jq -e "length==4" <<<"$TF_VAR_mail_service_certificates" >/dev/null && jq -e "length==1 and (.[\"'$(g 22 99)'\"] != null)" <<<"$TF_VAR_mail_service_rotated_certificates" >/dev/null && jq -e "length==4" <<<"$TF_VAR_mail_service_graph_grant_ids" >/dev/null && jq -e "length==6 and .opshub_prod != null and .kb_prod != null" <<<"$TF_VAR_signin_delegated_grant_ids" >/dev/null && jq -e "length==6 and (.kb_dev|index(\"email\") != null) and (.kb_prod|length == 8) and (.rova_prod|length == 5)" <<<"$TF_VAR_signin_delegated_grant_scopes" >/dev/null && jq -e ".[\"rova_prod/User.Invite.All\"] != null and .[\"opshub_dev/User.Read.All\"] != null" <<<"$TF_VAR_mail_service_graph_grant_ids" >/dev/null && [[ "$TF_VAR_break_glass_upn_domain" == tenant.example ]] && jq -e ".admin and .auditor" <<<"$TF_VAR_opshub_dev_app_role_ids" >/dev/null && pwd' >"$CH" 2>&1 || { cat "$CH"; fail "child did not get the right env"; }
 [ "$(cat "$CH")" = "$T/stack" ] || fail "child cwd is not the stack dir"
 # the rotated certificate reaches the child byte for byte under its pinned keyId
 run bash "$SCRIPT" -- sh -c 'printf "%s" "$TF_VAR_mail_service_rotated_certificates"' >"$T/rot.json" 2>/dev/null || fail "rotated child"
