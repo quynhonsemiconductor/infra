@@ -98,9 +98,11 @@ fi
 # so it counts as status 1 (same as OK), not as a failure.
 if command -v proxmox-backup-manager >/dev/null 2>&1; then
     tasks="$(timeout 30 proxmox-backup-manager task list --all --limit 1000 --output-format json 2>/dev/null || true)"
-    # Capture first, publish the OK flag only if jq exited 0. A parse failure
-    # must never leave collector_ok = 1 with the per-target series missing.
-    if parsed="$(printf '%s' "$tasks" | jq -r '
+    # Capture first, publish the OK flag only if the fetch returned text AND jq
+    # exited 0. A parse failure must never leave collector_ok = 1 with the
+    # per-target series missing; an empty result means the command failed or
+    # timed out (jq treats empty input as a successful no-op), so it is 0 too.
+    if [ -n "$tasks" ] && parsed="$(printf '%s' "$tasks" | jq -r '
         def usable: ((.status // "") == "OK") or (((.status // "") | startswith("WARNINGS")));
         if type != "array" then error("task list is not a JSON array")
         else
