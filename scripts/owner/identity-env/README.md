@@ -4,9 +4,10 @@ Builds every `TF_VAR_*` of `live/identity` that has no default from read-only `a
 none in Git, none printed). Owner's own terminal only: `az login` done.
 
 ```sh
-export IDENTITY_SECOND_OWNER_UPN=<second owner UPN>
-export IDENTITY_PROXMOX_HOST=<Proxmox VE admin host>   # redirect URI https://<host>/
-export IDENTITY_PBS_HOST=<Proxmox Backup Server admin host>   # redirect URI https://<host>/
+export IDENTITY_SECOND_OWNER_UPN='<second owner UPN>'
+# redirect URI https://<host>/ is registered for each admin door
+export IDENTITY_PROXMOX_HOST='<Proxmox VE admin host>'
+export IDENTITY_PBS_HOST='<Proxmox Backup Server admin host>'
 scripts/owner/identity-env/identity-env.sh                            # names + lengths only
 scripts/owner/identity-env/identity-env.sh -- tofu plan -out=tfplan   # runs in live/identity, env only in the child
 ```

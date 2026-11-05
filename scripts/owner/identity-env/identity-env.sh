@@ -36,6 +36,12 @@ put() { # put TF_VAR_name value  (value stays in the environment, only name + le
 }
 guid_ok() { [[ "$1" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; }
 need_guid() { guid_ok "$2" || die "$1 is not a GUID"; }
+# host_ok <hostname>: DNS labels only — alphanumeric ends, hyphens inside, 1-63 chars per label,
+# no empty label, no leading/trailing dot or dash, <= 253 chars. No port, no scheme, no path.
+host_ok() {
+  [[ -n "$1" && ${#1} -le 253 ]] &&
+    [[ "$1" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$ ]]
+}
 az_json() { # az_json <what> args... : stderr dropped, empty/failed lookup stops
   local what="$1" out; shift
   out=$(az "$@" -o json 2>/dev/null) || die "az lookup failed: $what"
@@ -72,14 +78,17 @@ put TF_VAR_owner_operator_object_id "$OWNER"
 [[ -n "${IDENTITY_SECOND_OWNER_UPN:-}" ]] || die "set IDENTITY_SECOND_OWNER_UPN"
 SECOND=$(az_json second-owner ad user show --id "$IDENTITY_SECOND_OWNER_UPN" | jq -r '.id // empty'); need_guid second_owner_object_id "$SECOND"
 put TF_VAR_second_owner_object_id "$SECOND"
-# The Proxmox admins ARE the platform-admins group's user members (README: keep the two in step).
+# The platform admins ARE the group's user members (README: keep the two in step). ONE list drives
+# the Proxmox app's direct assignments and the OpsHub Dev/Prod Admin role: group-based app-role
+# assignment needs Entra ID P1/P2, which the tenant does not have.
 ADMINS=$(az_json platform-admins-members ad group member list --group grp-qnsc-platform-admins \
   | jq -c '[.[]|select(.["@odata.type"]=="#microsoft.graph.user")|.id]|sort')
 [[ "$(jq 'length' <<<"$ADMINS")" -gt 0 ]] || die "grp-qnsc-platform-admins has no user members"
-while read -r g; do need_guid proxmox_admin_object_ids "$g"; done < <(jq -r '.[]' <<<"$ADMINS")
-put TF_VAR_proxmox_admin_object_ids "$ADMINS"
-[[ "${IDENTITY_PROXMOX_HOST:-}" =~ ^[A-Za-z0-9.-]+$ ]] || die "set IDENTITY_PROXMOX_HOST (a bare hostname)"
-[[ "${IDENTITY_PBS_HOST:-}" =~ ^[A-Za-z0-9.-]+$ ]] || die "set IDENTITY_PBS_HOST (a bare hostname)"
+while read -r g; do need_guid platform_admin_object_ids "$g"; done < <(jq -r '.[]' <<<"$ADMINS")
+put TF_VAR_platform_admin_object_ids "$ADMINS"
+host_ok "${IDENTITY_PROXMOX_HOST:-}" || die "set IDENTITY_PROXMOX_HOST (a bare DNS hostname)"
+host_ok "${IDENTITY_PBS_HOST:-}" || die "set IDENTITY_PBS_HOST (a bare DNS hostname)"
+[[ "$IDENTITY_PROXMOX_HOST" != "$IDENTITY_PBS_HOST" ]] || die "IDENTITY_PROXMOX_HOST and IDENTITY_PBS_HOST must differ"
 put TF_VAR_proxmox_redirect_uris "$(jq -cn --arg pve "$IDENTITY_PROXMOX_HOST" --arg pbs "$IDENTITY_PBS_HOST" '["https://\($pve)/", "https://\($pbs)/"]')"
 
 # --- app registrations ---------------------------------------------------------------------------

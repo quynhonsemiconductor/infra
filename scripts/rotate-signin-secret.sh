@@ -16,10 +16,12 @@
 # (.github/workflows/secret-expiry.yml, docs/runbooks/secret-expiry.md) alerts at < 30 days
 # (§7.5). Revoke superseded credentials after the next green deploy.
 #
-# ORDER: the credential EXISTS the moment the reset returns, so the password
-# is written to the vault BEFORE anything else can fail. `-o json` from the
+# ORDER: the credential EXISTS the moment the reset returns. `-o json` from the
 # reset carries appId/password/tenant only — NO keyId — so the keyId is read
-# afterwards from the credential list by the display name this run created.
+# first from the credential list by the display name this run created and
+# printed to STDERR BEFORE the vault write: if the write fails, the orphan has
+# a handle the owner can revoke. The password then goes to the vault before
+# any other step can fail.
 set -euo pipefail
 
 usage() {
@@ -44,36 +46,37 @@ reset=$(az ad app credential reset --id "$app" --append \
 	--display-name "$name" \
 	--end-date "$end" --only-show-errors -o json)
 
-# The password is captured and piped; it is never echoed. jq runs with -e, so a
-# missing/empty password stops here — BEFORE any vault prompt — with no
-# credential created by a failed parse (the reset already failed if it exits).
+# The password is captured and piped; it is never echoed or passed in argv. jq
+# runs with -e, so a missing/empty password stops here — BEFORE any vault write
+# — with no credential created by a failed parse (the reset already failed if
+# it exits).
 password=$(printf '%s' "$reset" | jq -er '.password' 2>/dev/null) || {
 	echo "STOP: the reset returned no password — no vault write attempted" >&2
 	exit 1
 }
 printf 'storing %s chars\n' "${#password}" >&2
 
-# Vault write FIRST: after this the credential can never be an orphan with a
-# password nobody holds.
-printf '%s' "$password" | az keyvault secret set --vault-name "$vault" --name "$secret_name" \
-	--file /dev/stdin --content-type "text/plain" \
-	--expires "$end" \
-	--tags owner=platform "rotated=$(date -u +%Y-%m-%d)" -o none
-unset password reset
-
-# keyId is NOT in the reset output; read it from the list by the unique
-# display name. Failure here is a warning, not an error: the secret is already
-# safe in the vault and nothing secret is at stake.
+# keyId is NOT in the reset output. Read it from the list by the unique display
+# name BEFORE the vault write, so a failed write still leaves a revocable handle
+# on stderr. A failed lookup is a warning: the vault write below must still run.
 kid=""
 creds=$(az ad app credential list --id "$app" --only-show-errors -o json 2>/dev/null || true)
 if [[ -n "$creds" ]]; then
 	kid=$(printf '%s' "$creds" |
 		jq -r --arg n "$name" 'map(select(.displayName == $n)) | .[0].keyId // empty' 2>/dev/null || true)
 fi
-if [[ -z "$kid" ]]; then
-	echo "WARN: secret stored, but no credential named '$name' was listed — inspect the app's credentials by hand." >&2
+if [[ -n "$kid" ]]; then
+	echo "new credential keyId $kid — revoke it if the vault write below fails" >&2
 else
-	echo "new credential keyId $kid — revoke this if the rotation was wrong"
+	echo "WARN: the new credential's keyId was not listed — if the vault write fails, find it in the app's credentials by display name '$name' and revoke it." >&2
 fi
+
+# Vault write: the credential gains a password holder; the keyId above is its
+# handle whether or not this succeeds.
+printf '%s' "$password" | az keyvault secret set --vault-name "$vault" --name "$secret_name" \
+	--file /dev/stdin --content-type "text/plain" \
+	--expires "$end" \
+	--tags owner=platform "rotated=$(date -u +%Y-%m-%d)" -o none
+unset password reset creds
 
 echo "rotated: $secret_name in $vault (vault secret +6m; new credential --end-date $end; old credentials kept — revoke manually after the next green deploy)."

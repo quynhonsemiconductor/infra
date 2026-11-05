@@ -440,33 +440,39 @@ no group-claim option in its OpenID realm, so PBS authorization is one ACL per
 pre-created `<email>@entra` user; the app's assignment list still gates sign-in
 on both.
 
-**Adding or removing an admin = edit `TF_VAR_proxmox_admin_object_ids` (and
+**Adding or removing an admin = edit `TF_VAR_platform_admin_object_ids` (and
 re-apply), the Entra group `grp-qnsc-platform-admins` (Cloudflare Access and the
 Proxmox VE ACL key on it), AND `pbs_entra_admin_emails` in the local Ansible
-inventory. Keep all three in step.**
+inventory. The same list drives the Proxmox app and the OpsHub Dev/Prod Admin
+role (direct user assignments; group-based app assignment needs Entra ID P1).
+Keep all three in step.**
 
 The owner sequence is ONE identity plan/apply, then the secret, then the local
 Ansible inventory and the Ansible run. Do not split the identity run: the same
 plan carries #402 (rova invite scope).
 
 1. Export the three identifiers the kit cannot read from Entra, then plan with
-   the kit. Both admin-door hostnames are Tier 1 in this public repo, so they
+   the kit. The admin-door hostnames are Tier 1 in this public repo, so they
    stay out of Git; the kit builds `TF_VAR_proxmox_redirect_uris` from them,
    with the trailing slash azuread 3.10 requires. **Both hosts are required:**
    the ONE app registers the PVE and the PBS origin (runbook server-setup
-   §3.2.1), so a missing or malformed host stops the kit before the plan.
+   §3.2.1), so a missing or malformed host stops the kit before the plan. Both
+   doors are https on 443 behind the Cloudflare tunnel, so neither value takes
+   a port.
 
    ```sh
+   # UPN of the second company owner
    export IDENTITY_SECOND_OWNER_UPN='<second owner UPN>'
-   export IDENTITY_PROXMOX_HOST='<pve admin host>'   # https://<host>/ registered
-   export IDENTITY_PBS_HOST='<pbs admin host>'       # https://<host>/ registered
+   # https://<host>/ is registered for each door
+   export IDENTITY_PROXMOX_HOST='<pve admin host>'
+   export IDENTITY_PBS_HOST='<pbs admin host>'
    scripts/owner/identity-env/identity-env.sh -- tofu plan -out=tfplan
    ```
 
    pve-manager and the PBS UI send `location.origin` (no slash) and Entra
    normalises the root.
 
-2. Go/no-go: the ONE plan must contain exactly these two change sets and
+2. Go/no-go: the ONE plan must contain exactly these three change sets and
    nothing else.
 
    **Proxmox (`proxmox.tf`)** — ONE in-place update,
@@ -499,29 +505,56 @@ plan carries #402 (rova invite scope).
    its branch) — one plan, not two; run its "before apply" assignment checks
    first.
 
-   Any other resource in the plan, any destroy, and any `must be replaced` is
-   NO-GO: stop and reconcile in a reviewed commit before the apply.
+   **OpsHub Admin direct assignment (`apps.tf`, `prod_apps.tf`)** — the Admin
+   role moves off `grp-qnsc-platform-admins` and onto each platform admin
+   directly, from the SAME list as Proxmox
+   (`var.platform_admin_object_ids`). Group-based app-role assignment is an
+   Entra ID P1/P2 feature and the tenant has no P1 (owner decision 2026-11-04;
+   Microsoft Learn, "Manage access to apps": "Group-based assignment (requires
+   Microsoft Entra ID P1 or P2)",
+   <https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/what-is-access-management#assigning-users-and-groups-to-an-app>).
+   Expected: 2 creates for
+   `azuread_app_role_assignment.opshub_dev_admin["<admin object id>"]` and 2
+   for `...opshub_prod_admin[...]` — one user assignment per admin per app. If
+   #381 was already applied, the plan ALSO destroys the two unkeyed
+   `opshub_dev_admin` / `opshub_prod_admin` group assignments; that one
+   destroy pair is the point of the change and is GO. Any other destroy is
+   NO-GO; 0 replace.
+
+   Any other resource in the plan, any destroy beyond the group assignments
+   named above, and any `must be replaced` is NO-GO: stop and reconcile in a
+   reviewed commit before the apply.
 
 3. Apply the saved plan and record the two outputs. Neither is a secret. The
-   plan file holds the values, so delete it after the apply:
+   plan file holds the values, so delete it after the apply. Run every `tofu
+   output` through the kit: the azurerm backend needs `ARM_SUBSCRIPTION_ID`,
+   which the kit exports for the child (`tofu output` alone fails in a fresh
+   shell):
 
    ```sh
    tofu -chdir=live/identity apply tfplan
-   tofu -chdir=live/identity output -raw proxmox_oidc_client_id
-   tofu -chdir=live/identity output -raw proxmox_oidc_issuer_url
+   scripts/owner/identity-env/identity-env.sh -- tofu output -raw proxmox_oidc_client_id
+   scripts/owner/identity-env/identity-env.sh -- tofu output -raw proxmox_oidc_issuer_url
    rm live/identity/tfplan
    ```
 
 4. Create the client secret OUT OF BAND straight into the admin vault: nothing
    printed, nothing in state, ≤ 6 months. Reuse the sign-in rotation script —
-   it `--append`s (never wipes a live credential), writes the vault before
-   anything else can fail, and leaves the new credential's `keyId` on stderr
-   so it can be revoked if the vault write fails:
+   it `--append`s (never wipes a live credential) and prints the new
+   credential's `keyId` to stderr BEFORE the vault write, so a failed write
+   leaves a revocable handle:
 
    ```sh
    ./scripts/rotate-signin-secret.sh \
-     "$(tofu -chdir=live/identity output -raw proxmox_oidc_client_id)" \
+     "$(scripts/owner/identity-env/identity-env.sh -- tofu output -raw proxmox_oidc_client_id)" \
      kv-qnsc-admin admin-proxmox-oidc-secret
+   ```
+
+   Revoke an orphaned credential by its `rotated-<UTC timestamp>` display name:
+
+   ```sh
+   az ad app credential list --id "<proxmox client id>" -o table
+   az ad app credential delete --id "<proxmox client id>" --key-id "<keyId>"
    ```
 
    BOTH realms use this one secret. Set the calendar reminder before the
@@ -1327,7 +1360,7 @@ product-docs), so the owner reads the rest from Entra or `az` as shown.
 | `TF_VAR_owner_operator_object_id` | user object id | Entra, Users, the owner, Object ID |
 | `TF_VAR_second_owner_object_id` | user object id | Entra, Users, the second owner, Object ID |
 | `TF_VAR_proxmox_redirect_uris` | JSON list, one `https://<host>/` per door (trailing slash) | the PVE and PBS admin hosts (product-docs) |
-| `TF_VAR_proxmox_admin_object_ids` | JSON list of user object ids | Entra, Users, Object ID; keep equal to the platform admins group |
+| `TF_VAR_platform_admin_object_ids` | JSON list of user object ids | the platform admins' object ids (Proxmox app + OpsHub Admin role); keep equal to the platform admins group |
 | `TF_VAR_mail_service_object_ids` | JSON, 4 service app object ids | mail export `*-app.json` `.id` |
 | `TF_VAR_mail_service_sp_object_ids` | JSON, 4 service SP object ids | mail export `*-sp.json` `.id` |
 | `TF_VAR_mail_service_certificates` | JSON, 4 PEM public certs (the pinned primary of each app) | dev: 1Password "Entra mail cert – <product>-dev – certificate"; rova_prod: `az keyvault secret show ... | openssl x509` (mail step 3) |

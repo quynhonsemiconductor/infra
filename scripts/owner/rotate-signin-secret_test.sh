@@ -6,7 +6,7 @@
 #   az ad app credential reset -o json : {appId, password, tenant} — NO keyId
 #   az ad app credential list  -o json : passwordCredentials[] with keyId/displayName
 # Every broken input must stop the script; a PASS must fail when the fixture
-# breaks (case C/D below).
+# breaks (cases C, D and E below).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -44,7 +44,9 @@ case "$1 $2 $3 $4" in
 	"keyvault secret set"*)
 		# The password arrives on stdin; store it only in the test's temp dir.
 		[[ "$*" == *"--file /dev/stdin"* ]] || { echo "vault write without stdin" >&2; exit 1; }
-		cat >"${AZ_VAULT:?}"
+		payload=$(cat)
+		[[ -n "${AZ_VAULT_FAIL:-}" ]] && { echo "vault unavailable" >&2; exit 1; }
+		printf '%s' "$payload" >"${AZ_VAULT:?}"
 		;;
 	*) echo "unexpected az call: $*" >&2; exit 1 ;;
 esac
@@ -64,7 +66,7 @@ printf '[]\n' >"$LIST_EMPTY"
 run() { # run <reset-fixture> <list-fixture> <args...>; sets CODE
 	: >"$LOG"; rm -f "$VAULT"; : >"$OUT"; : >"$ERR"
 	set +e
-	AZ_LOG="$LOG" AZ_RESET="$1" AZ_LIST="$2" AZ_VAULT="$VAULT" \
+	AZ_LOG="$LOG" AZ_RESET="$1" AZ_LIST="$2" AZ_VAULT="$VAULT" AZ_VAULT_FAIL="${AZ_VAULT_FAIL:-}" \
 		PATH="$BIN:$PATH" bash "$SCRIPT" "${@:3}" >"$OUT" 2>"$ERR"
 	CODE=$?
 	set -e
@@ -80,8 +82,13 @@ fi
 [[ "$(head -1 "$LOG")" == *"--id $APP_OBJECT"* ]] || fail "A: /applications/ prefix was not stripped"
 [[ "$(cat "$VAULT")" == "$PASSWORD" ]] || fail "A: vault did not receive the password via stdin"
 if grep -q "$PASSWORD" "$OUT" "$ERR"; then fail "A: the password was printed"; fi
-grep -q "$KEYID" "$OUT" || fail "A: the new keyId was not reported"
-pass "A: strips /applications/, writes the vault first, reports the keyId by name"
+grep -q "$KEYID" "$ERR" || fail "A: the new keyId was not reported on stderr"
+grep -q "$KEYID" "$OUT" && fail "A: the keyId was printed on stdout (must be stderr only)" || true
+list_line=$(grep -n 'credential list' "$LOG" | head -1 | cut -d: -f1)
+vault_line=$(grep -n 'keyvault secret set' "$LOG" | head -1 | cut -d: -f1)
+[[ -n "$list_line" && -n "$vault_line" && "$list_line" -lt "$vault_line" ]] \
+	|| fail "A: the keyId lookup did not run before the vault write"
+pass "A: strips /applications/, reports the keyId on stderr before the vault write"
 
 # B. appId form passes through unchanged.
 if ! run "$RESET_OK" "$LIST_OK" "$APP_CLIENT" kv-qnsc-prod kb-prod-entra-client-secret; then
@@ -99,13 +106,23 @@ fi
 [[ ! -e "$VAULT" ]] || fail "C: the vault was written despite the missing password"
 pass "C: missing password stops before the vault write"
 
-# D. keyId lookup empty: the secret is already safe, so warn and succeed.
+# D. keyId lookup empty: the write must still run; warn (before the write) that
+#    an orphan would have no handle.
 if ! run "$RESET_OK" "$LIST_EMPTY" "$APP_CLIENT" kv-qnsc-prod x; then
 	cat "$ERR" >&2
 	fail "D: expected success with a warning, got exit $CODE"
 fi
 [[ "$(cat "$VAULT")" == "$PASSWORD" ]] || fail "D: vault did not receive the password"
 grep -q "WARN" "$ERR" || fail "D: no warning when the keyId lookup came back empty"
-pass "D: empty keyId lookup warns without failing after a good vault write"
+pass "D: empty keyId lookup warns and still writes the vault"
+
+# E. Vault write fails AFTER the credential exists: exit non-zero, and the new
+#    keyId is already on stderr (the revocable handle for the orphan).
+if AZ_VAULT_FAIL=1 run "$RESET_OK" "$LIST_OK" "$APP_CLIENT" kv-qnsc-prod x; then
+	fail "E: a failed vault write was reported as success"
+fi
+grep -q "$KEYID" "$ERR" || fail "E: the orphan's keyId was not printed before the failed write"
+[[ ! -e "$VAULT" ]] || fail "E: the stub stored a secret although it failed"
+pass "E: failed vault write leaves the keyId on stderr"
 
 echo "PASS: rotate-signin-secret"

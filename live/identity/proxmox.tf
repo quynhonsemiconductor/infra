@@ -24,9 +24,11 @@
 #     Ansible role); the app's direct-assignment list still gates sign-in.
 #   - sign-in is restricted: app_role_assignment_required = true and the admin
 #     USERS are assigned DIRECTLY (group assignment needs P1). Anyone not
-#     assigned is refused by Entra before either service sees a token. Adding
-#     or removing an admin = edit proxmox_admin_object_ids (and the Entra
-#     group, which Cloudflare Access and the PVE ACL key on).
+#     assigned is refused by Entra before either service sees a token. The
+#     same shared list (var.platform_admin_object_ids) drives the OpsHub
+#     Admin role in apps.tf / prod_apps.tf. Adding or removing an admin = edit
+#     that list (and the Entra group, which Cloudflare Access and the PVE ACL
+#     key on).
 #   - the client-secret VALUE never touches state (same rule as the sign-in
 #     apps, main.tf / scripts/rotate-signin-secret.sh): the owner creates it
 #     out of band into kv-qnsc-admin (README "Proxmox login"). Tofu owns shape
@@ -40,19 +42,6 @@ variable "proxmox_redirect_uris" {
   validation {
     condition     = length(var.proxmox_redirect_uris) > 0 && alltrue([for u in var.proxmox_redirect_uris : can(regex("^https://[^/]+/$", u))])
     error_message = "proxmox_redirect_uris must be a non-empty list of https://<host>/ URIs (origin with a trailing slash, no path)."
-  }
-}
-
-variable "proxmox_admin_object_ids" {
-  type        = set(string)
-  description = "Object ids of the USERS assigned to the Proxmox app (no Entra ID P1: group assignment is unavailable). Keep in step with grp-qnsc-platform-admins. TF_VAR_proxmox_admin_object_ids (JSON list), never committed."
-
-  validation {
-    condition = length(var.proxmox_admin_object_ids) > 0 && alltrue([
-      for id in var.proxmox_admin_object_ids :
-      can(regex("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", id))
-    ])
-    error_message = "proxmox_admin_object_ids must be a non-empty set of user object ids (GUIDs)."
   }
 }
 
@@ -103,7 +92,7 @@ resource "azuread_service_principal" "proxmox" {
 # Direct USER assignment (no P1 for groups). The all-zero id is the
 # well-known "default access" role of an app that defines no app roles.
 resource "azuread_app_role_assignment" "proxmox_admins" {
-  for_each = var.proxmox_admin_object_ids
+  for_each = var.platform_admin_object_ids
 
   app_role_id         = "00000000-0000-0000-0000-000000000000"
   principal_object_id = each.value
