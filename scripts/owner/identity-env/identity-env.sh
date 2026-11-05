@@ -69,7 +69,8 @@ ORG=$(az_json tenant-domains rest --method get --url https://graph.microsoft.com
 put TF_VAR_break_glass_upn_domain "$(jq -r '[.value[0].verifiedDomains[]|select(.isInitial)|.name]|if length==1 then .[0] else empty end' <<<"$ORG")"
 
 grp_id() { local id; id=$(az_json "group $1" ad group show --group "$1" | jq -r '.id // empty'); need_guid "group $1" "$id"; printf '%s' "$id"; }
-put TF_VAR_platform_admins_object_id "$(grp_id grp-qnsc-platform-admins)"
+ADMINS_GROUP=$(grp_id grp-qnsc-platform-admins)
+put TF_VAR_platform_admins_object_id "$ADMINS_GROUP"
 put TF_VAR_grp_dev_users_object_id "$(grp_id grp-qnsc-dev-users)"
 
 # --- people --------------------------------------------------------------------------------------
@@ -81,12 +82,28 @@ put TF_VAR_second_owner_object_id "$SECOND"
 # The platform admins ARE the group's user members (README: keep the two in step). ONE list drives
 # the Proxmox app's direct assignments and the OpsHub Dev/Prod Admin role: group-based app-role
 # assignment needs Entra ID P1/P2, which the tenant does not have.
-MEMBERS=$(az_json platform-admins-members ad group member list --group grp-qnsc-platform-admins)
+#
+# `az ad group member list` does NOT return userType on real tenants, so read the members through
+# Graph with the fields selected and page through @odata.nextLink. Do not fall back to the CLI: a
+# missing userType would make every member look like a non-user.
+members_json() {
+  local url="https://graph.microsoft.com/v1.0/groups/$ADMINS_GROUP/members?\$select=id,userType,userPrincipalName"
+  local out='[]' page
+  while [[ -n "$url" ]]; do
+    page=$(az_json platform-admins-members rest --method get --url "$url")
+    out=$(jq -c --argjson p "$page" '. + ($p.value // [])' <<<"$out")
+    url=$(jq -r '.["@odata.nextLink"] // empty' <<<"$page")
+  done
+  printf '%s' "$out"
+}
+MEMBERS=$(members_json)
 # A guest, a nested group or any non-user member would turn the direct-assignment list into something
-# Entra cannot assign to an app role: stop instead of silently filtering it out.
-[[ "$(jq '[.[] | select((.["@odata.type"] // "") != "#microsoft.graph.user" or (.userType // "") != "Member")] | length' <<<"$MEMBERS")" == 0 ]] \
-  || die "grp-qnsc-platform-admins has a guest, nested group or non-user member — remove it first"
+# Entra cannot assign to an app role: stop instead of silently filtering it out. Selected-field shape:
+# only a Member user carries userType == "Member"; a group or service principal does not.
+[[ "$(jq '[.[] | select((.userType // "") != "Member")] | length' <<<"$MEMBERS")" == 0 ]] \
+  || die "grp-qnsc-platform-admins has a guest, nested group or non-Member member — remove it first"
 ADMINS=$(jq -c '[.[].id]|sort' <<<"$MEMBERS")
+[[ "$(jq 'length' <<<"$ADMINS")" -gt 0 ]] || die "grp-qnsc-platform-admins has no user members"
 while read -r g; do need_guid platform_admin_object_ids "$g"; done < <(jq -r '.[]' <<<"$ADMINS")
 put TF_VAR_platform_admin_object_ids "$ADMINS"
 # Hostnames are case-insensitive: normalise before validation, the PVE != PBS check and the URI build.
