@@ -27,7 +27,10 @@ one identifier it ever prints is the keyId of an unpinned live credential, so th
 
 The kit also builds the grant import maps `TF_VAR_mail_service_graph_grant_ids` and
 `TF_VAR_opshub_prod_service_graph_grant_ids` from each app's live `appRoleAssignments` on Microsoft Graph
-(`appRoleAssignedTo` is the other direction and would return nothing useful). `eso_certificates` is built the same
+(`appRoleAssignedTo` is the other direction and would return nothing useful). The sign-in apps' tenant-wide
+consent comes from one `oauth2PermissionGrants` lookup per app, which yields both
+`TF_VAR_signin_delegated_grant_ids` and `TF_VAR_signin_delegated_grant_scopes` (the live scope lists the plan
+must never narrow). `eso_certificates` is built the same
 way, from the certificate live on each ESO app (a stale file would plan a replace), only while the stack still
 declares it. Test (offline, runs in the `Infrastructure · Plan` lint job):
 `bash scripts/owner/identity-env/test_identity_env.sh`.

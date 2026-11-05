@@ -771,11 +771,18 @@ apply: this resource keeps the one credential it created.
 ### Delegated consent and app-role groups
 
 Every sign-in app (Rova Dev/Prod, OpsHub Dev/Prod, KB Dev) has an AllPrincipals
-`azuread_service_principal_delegated_permission_grant` for `openid profile email
-offline_access User.Read`, so no user sees a consent prompt. Grant ids that
-already exist are imported through `TF_VAR_signin_delegated_grant_ids` (the
-apply kit discovers them); a missing key plans a create, which Entra rejects as
-a duplicate against a live grant.
+`azuread_service_principal_delegated_permission_grant` for the delegated scopes
+that app requests (`openid profile email offline_access User.Read`, plus KB's
+`Files.Read`, `Files.Read.All` and `Sites.Read.All`), so no user sees a consent
+prompt. The set is DERIVED from the app's `requiredResourceAccess`, never a
+fixed list. Grant ids that already exist are imported through
+`TF_VAR_signin_delegated_grant_ids` (the apply kit discovers them); a missing
+key plans a create, which Entra rejects as a duplicate against a live grant.
+
+An apply replaces a grant's scope list, so the kit also reads each live grant's
+scopes into `TF_VAR_signin_delegated_grant_scopes`. A live scope the derived set
+would drop fails the plan (the KB Dev `email` case in #381): declare it on the
+app first, or the apply revokes it.
 
 OpsHub Dev and Prod app-role `admin` is assigned to `grp-qnsc-platform-admins`
 in IaC. The other six roles stay per-user: no role-specific Entra group exists
@@ -1052,8 +1059,9 @@ KB dev's apps tell us the shape but not the prod addresses:
 4. **Service certificate / KV names**: same create pattern as opshub (public
    PEM in, combined PEM to `kv-qnsc-prod/kb-prod-graph-cert` once the name is
    confirmed against `values/kb/prod.secrets.yaml`).
-5. **Optional id-token claims**: dev has none (`email` is not in its scopes
-   either); keep none unless KB asks for `preferred_username`.
+5. **Optional id-token claims**: dev declares none (the `email` delegated scope
+   is requested, but no optional id-token claim is); keep none unless KB asks
+   for `preferred_username`.
 
 ## Prod mail readiness: the rova prod fast-track checklist
 
@@ -1130,6 +1138,7 @@ product-docs), so the owner reads the rest from Entra or `az` as shown.
 | `TF_VAR_mail_service_rotated_certificates` | JSON map `{keyId: PEM}`, REQUIRED, no default | built by the kit from Entra `keyCredentials`; today one entry: KB Dev's 2026-11-04 credential. Keyed by the keyIds pinned in `mail.tf`, never hand-built |
 | `TF_VAR_mail_service_graph_grant_ids` | JSON map `{"<slot>/<role>": <assignment id>}`, REQUIRED, no default | built by the kit from each service app's live `appRoleAssignments` (README "Graph permission grants") |
 | `TF_VAR_signin_delegated_grant_ids` | JSON map `{<slot>: <grant id>}`, optional (default `{}`) | built by the kit from each sign-in app's live AllPrincipals `oauth2PermissionGrants`; absent apps plan a create |
+| `TF_VAR_signin_delegated_grant_scopes` | JSON map `{<slot>: [<scope>...]}`, optional (default `{}`) | built by the kit from the same live grants; a live scope missing from the derived set fails the plan |
 | `TF_VAR_opshub_prod_service_graph_grant_ids` | JSON map `{<role>: <assignment id>}`, REQUIRED, no default | built by the kit from "OpsHub Prod Service" `appRoleAssignments` |
 | `TF_VAR_opshub_prod_service_certificate` | PEM PUBLIC cert (one string), optional | `$HOME/keys/opshub-prod-cert.pem` from "Prod identity: OpsHub" step 1. Unset = the prod service app is not created (and the app's precondition stops the plan) |
 
