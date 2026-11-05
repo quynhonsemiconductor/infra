@@ -23,6 +23,15 @@
 # them `sum by (job,status_class,deployment_environment_name)`. The rule is
 # silent until a kb prod API serves traffic (no_data_state = OK).
 #
+# SERIES PROVEN IN MIMIR (2026-11-05, G; datasource grafanacloud-qnsc-prom):
+#   sum by (job, status_class, deployment_environment_name)
+#     (increase(http_server_duration_milliseconds_count{job=~"kb/.+"}[7d]))
+# returns ONE job, `kb/kb-api`, in `dev` with status_class 2xx = 15,090,
+# 4xx = 7 and 5xx = 0 — so the `job=~"kb/.+"` prefix and the `status_class`
+# label that prod-http-5xx.tf selects on do match the live series, not an
+# assumed shape. No `prod` series exists yet because kb prod does not exist;
+# that is exactly the case no_data_state = "OK" covers.
+#
 # ── GATE ───────────────────────────────────────────────────────────────────
 # `kb_prod_live` is flipped by ONE PR in the kb prod window, after the SA's
 # edge/tunnel PR puts kb.qnsc.vn behind Access with a /readyz bypass. Creating
