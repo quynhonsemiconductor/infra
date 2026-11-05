@@ -61,7 +61,7 @@ build() { # build the fixture set from scratch
   echo "{\"id\":\"$(g 2 2)\"}" >"$FX/group-grp-qnsc-dev-users"
   echo "{\"id\":\"$(g 3 1)\"}" >"$FX/me"
   echo "{\"id\":\"$(g 3 2)\"}" >"$FX/user-second@tenant.example"
-  echo "[{\"@odata.type\":\"#microsoft.graph.user\",\"userType\":\"Member\",\"id\":\"$(g 3 1)\"},{\"@odata.type\":\"#microsoft.graph.user\",\"userType\":\"Member\",\"id\":\"$(g 3 2)\"}]" >"$FX/members"
+  echo "{\"value\":[{\"id\":\"$(g 3 1)\",\"userType\":\"Member\"},{\"id\":\"$(g 3 2)\",\"userType\":\"Member\"}]}" >"$FX/members"
   for k in "${KEYS[@]}"; do
     i=$((i+1)); mkcert "$k"
     jq -n --arg id "$(g 10 $i)" --arg app "$(g 11 $i)" '{id:$id,appId:$app,appRoles:[]}' >"$FX/app-$(signin_name "$k" | tr " " -)"
@@ -128,7 +128,11 @@ case "$a" in
     jq -n --arg k "$(sed 1d "$f" | base64 | tr -d '\n')" '{keyCredentials:[{key:$k}]}' ;;
   "ad sp show --id "*) cat "$FX/graph-sp" ;;
   "ad group show --group "*) g=${a#ad group show --group }; cat "$FX/group-${g%% *}" ;;
-  "ad group member list"*) cat "$FX/members" ;;
+  "rest --method get --url https://graph.microsoft.com/v1.0/groups/"*)
+    case "$a" in
+      *skiptoken=2*) cat "$FX/members2" 2>/dev/null || echo '{"value":[]}' ;;
+      *) cat "$FX/members" ;;
+    esac ;;
   "ad signed-in-user show"*) cat "$FX/me" ;;
   "ad user show --id "*) u=${a#ad user show --id }; cat "$FX/user-${u%% *}" ;;
   "ad app list --filter displayName eq '"*) n=${a#*\'}; n=${n%%\'*}; cat "$FX/app-${n// /-}.list" 2>/dev/null || echo '[]' ;;
@@ -234,10 +238,21 @@ jq -e --arg a "$(g 22 99)" --arg b "$(g 22 98)" 'keys|sort==([$a,$b]|sort)' "$T/
 build; grep -v 'rova_dev' "$T/stack/mail.tf" >"$T/m" && mv "$T/m" "$T/stack/mail.tf"
 expect_stop "missing pinned slot" "must pin exactly these slots"
 build; echo '{"value":[{"verifiedDomains":[{"name":"a","isDefault":true,"isInitial":false}]}]}' >"$FX/org"; expect_stop "no initial domain" "lookup for TF_VAR_break_glass_upn_domain is empty"
-build; echo '[]' >"$FX/members"; expect_stop "empty member list" "az lookup empty: platform-admins-members"
-build; echo '[{"@odata.type":"#microsoft.graph.group","id":"x"}]' >"$FX/members"; expect_stop "nested group member" "has a guest, nested group or non-user member"
-build; echo '[{"@odata.type":"#microsoft.graph.user","userType":"Guest","id":"x"}]' >"$FX/members"; expect_stop "guest member" "has a guest, nested group or non-user member"
-build; echo '[{"@odata.type":"#microsoft.graph.servicePrincipal","id":"x"}]' >"$FX/members"; expect_stop "non-user member" "has a guest, nested group or non-user member"
+build; echo '{"value":[]}' >"$FX/members"; expect_stop "empty member page" "grp-qnsc-platform-admins has no user members"
+build; echo "{\"value\":[{\"id\":\"$(g 9 9)\"}]}" >"$FX/members"; expect_stop "nested group member" "has a guest, nested group or non-Member member"
+build; echo "{\"value\":[{\"id\":\"$(g 3 1)\",\"userType\":\"Guest\"}]}" >"$FX/members"; expect_stop "guest member" "has a guest, nested group or non-Member member"
+build; echo "{\"value\":[{\"id\":\"$(g 9 9)\",\"userType\":null}]}" >"$FX/members"; expect_stop "non-user member" "has a guest, nested group or non-Member member"
+# THE LIVE SHAPE: `az ad group member list` omits userType entirely — must fail closed, not empty the list.
+build; echo "{\"value\":[{\"id\":\"$(g 3 1)\",\"userPrincipalName\":\"a@tenant.example\"}]}" >"$FX/members"; expect_stop "member without userType" "has a guest, nested group or non-Member member"
+# @odata.nextLink paging: page 2 supplies the second Member.
+build
+jq -nc --arg a "$(g 3 1)" \
+  --arg n 'https://graph.microsoft.com/v1.0/groups/x/members?$select=id,userType,userPrincipalName&$skiptoken=2' \
+  '{value:[{id:$a,userType:"Member"}],"@odata.nextLink":$n}' >"$FX/members"
+jq -nc --arg b "$(g 3 2)" '{value:[{id:$b,userType:"Member"}]}' >"$FX/members2"
+run bash "$SCRIPT" -- sh -c 'printf "%s" "$TF_VAR_platform_admin_object_ids"' >"$T/admins2.json" 2>/dev/null \
+  || fail "paged member list rejected"
+jq -e "length==2" "$T/admins2.json" >/dev/null || fail "paged member list did not page through @odata.nextLink"
 build; out="$T/out.noupn"; if PATH="$BIN:$PATH" FX="$FX" IDENTITY_STACK_DIR="$T/stack" IDENTITY_PROXMOX_HOST=h.test IDENTITY_PBS_HOST=h2.test bash "$SCRIPT" >"$out" 2>&1; then fail "missing UPN did not stop"; fi
 grep -q 'STOP: set IDENTITY_SECOND_OWNER_UPN' "$out" || fail "missing UPN reason"
 build; out="$T/out.nohost"; if run env -u IDENTITY_PROXMOX_HOST bash "$SCRIPT" >"$out" 2>&1; then fail "missing host did not stop"; fi

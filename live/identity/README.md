@@ -543,8 +543,20 @@ plan carries #402 (rova invite scope).
 
    ```sh
    GROUP=$(az ad group show --group grp-qnsc-platform-admins --query id -o tsv)
-   USERS=$(az ad group member list --group grp-qnsc-platform-admins \
-     --query "[?userType=='Member'].id" -o tsv)
+   next="https://graph.microsoft.com/v1.0/groups/$GROUP/members?\$select=id,userType,userPrincipalName"
+   USERS=""
+   while [ -n "$next" ]; do
+     page=$(az rest --method get --url "$next" -o json) || exit 1
+     bad=$(jq '[.value[] | select((.userType // "") != "Member")] | length' <<<"$page")
+     [ "$bad" = 0 ] || { echo "STOP: grp-qnsc-platform-admins has a guest, group or non-Member member"; exit 1; }
+     USERS=$(printf '%s\n%s' "$USERS" "$(jq -r '.value[].id' <<<"$page")")
+     next=$(jq -r '.["@odata.nextLink"] // empty' <<<"$page")
+   done
+   GOT=$(printf '%s' "$USERS" | grep -c . || true)
+   EXPECTED=$(scripts/owner/identity-env/identity-env.sh -- \
+     sh -c 'printf "%s" "$TF_VAR_platform_admin_object_ids" | jq length')
+   [ "$GOT" -gt 0 ] || { echo "STOP: USERS is empty — refusing to import or build targets"; exit 1; }
+   [ "$GOT" = "$EXPECTED" ] || { echo "STOP: USERS ($GOT) != platform_admin_object_ids ($EXPECTED)"; exit 1; }
    for pair in "OpsHub Dev:opshub_dev_admin" "OpsHub Prod:opshub_prod_admin"; do
      app=${pair%%:*}; res=${pair##*:}
      appId=$(az ad app list --filter "displayName eq '$app'" --query "[0].appId" -o tsv)
@@ -563,6 +575,12 @@ plan carries #402 (rova invite scope).
    done
    ```
 
+   `az ad group member list` is NOT used: it omits `userType`, which made the
+   old query return an empty list on the live tenant. Read the members through
+   Graph with the fields selected and page through `@odata.nextLink`; the gate
+   above dies on a non-Member member, an empty list, or a count that differs
+   from the kit's `platform_admin_object_ids`.
+
    A principal outside the group (a stale Admin) is intentionally NOT
    imported: it is not in the shared list, and per-user grants are additive,
    so the apply leaves it alone. Remove it by hand if it should not have
@@ -579,6 +597,8 @@ plan carries #402 (rova invite scope).
      targets+=(-target="azuread_app_role_assignment.opshub_dev_admin[\"$u\"]")
      targets+=(-target="azuread_app_role_assignment.opshub_prod_admin[\"$u\"]")
    done <<<"$USERS"
+   [ "${#targets[@]}" -gt 0 ] \
+     || { echo "STOP: no -target built (USERS empty?) — refusing a full apply"; exit 1; }
    scripts/owner/identity-env/identity-env.sh -- tofu apply "${targets[@]}"
    ```
 
