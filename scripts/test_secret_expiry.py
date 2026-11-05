@@ -55,6 +55,31 @@ class KeyVault(unittest.TestCase):
         self.assertEqual(finding.status, se.WARN)
         self.assertEqual(finding.days, 29)
 
+    def test_expiring_in_8_days_warns(self):
+        finding = self.run_one("kv-qnsc-prod", "rova-prod-app", int((NOW + dt.timedelta(days=8)).timestamp()))
+        self.assertEqual(finding.status, se.WARN)
+
+    def test_exactly_30_days_warns(self):
+        finding = self.run_one("kv-qnsc-prod", "rova-prod-app", int((NOW + dt.timedelta(days=30)).timestamp()))
+        self.assertEqual(finding.status, se.WARN)
+        self.assertEqual(finding.days, 30)
+
+    def test_expires_today_is_urgent(self):
+        finding = self.run_one("kv-qnsc-prod", "rova-prod-app", int(NOW.timestamp()))
+        self.assertEqual(finding.status, se.FAIL)
+        self.assertEqual(finding.days, 0)
+        self.assertIn("7-day threshold", finding.detail)
+
+    def test_expiring_in_7_days_fails(self):
+        finding = self.run_one("kv-qnsc-prod", "rova-prod-app", int((NOW + dt.timedelta(days=7)).timestamp()))
+        self.assertEqual(finding.status, se.FAIL)
+        self.assertIn("7-day threshold", finding.detail)
+
+    def test_expiring_in_2_days_fails(self):
+        finding = self.run_one("kv-qnsc-prod", "rova-prod-app", int((NOW + dt.timedelta(days=2)).timestamp()))
+        self.assertEqual(finding.status, se.FAIL)
+        self.assertIn("expires in 2 days", finding.detail)
+
     def test_31_days_is_ok(self):
         finding = self.run_one("kv-qnsc-prod", "rova-prod-app", int((NOW + dt.timedelta(days=31)).timestamp()))
         self.assertEqual(finding.status, se.OK)
@@ -71,6 +96,12 @@ class Entra(unittest.TestCase):
         finding = se.evaluate_entra(apps, NOW)[0]
         self.assertEqual(finding.status, se.WARN)
         self.assertEqual(finding.kind, "client secret")
+
+    def test_secret_within_7_days_fails(self):
+        apps = [{"displayName": "Rova Prod Service", "keyCredentials": [{"displayName": "c1", "endDateTime": at(5)}]}]
+        finding = se.evaluate_entra(apps, NOW)[0]
+        self.assertEqual(finding.status, se.FAIL)
+        self.assertIn("7-day threshold", finding.detail)
 
     def test_certificate_without_end_fails(self):
         apps = [{"displayName": "Rova Prod Service", "keyCredentials": [{"displayName": "c1"}]}]
@@ -97,6 +128,22 @@ class EntraCollection(unittest.TestCase):
         self.assertEqual(se.validate_entra_apps(apps), 2)
 
 
+class UrgentCount(unittest.TestCase):
+    def finding(self, days):
+        expires = None if days is None else NOW + dt.timedelta(days=days)
+        return se.classify(
+            source="kv-qnsc-prod", name="x", kind="Key Vault secret", expires=expires, now=NOW, required=True
+        )
+
+    def test_expired_and_within_seven_days_are_urgent(self):
+        findings = [self.finding(-2), self.finding(0), self.finding(7)]
+        self.assertEqual(se.urgent_count(findings), 3)
+
+    def test_eight_days_and_missing_expiry_are_not_urgent(self):
+        findings = [self.finding(8), self.finding(None)]
+        self.assertEqual(se.urgent_count(findings), 0)
+
+
 class Report(unittest.TestCase):
     def test_only_notable_rows_and_counts(self):
         findings = [
@@ -104,7 +151,7 @@ class Report(unittest.TestCase):
             se.classify(source="kv-qnsc-prod", name="fine", kind="Key Vault secret", expires=NOW + dt.timedelta(days=100), now=NOW, required=True),
         ]
         report = se.render_markdown(findings, NOW, ["kv-qnsc-prod"], 0)
-        self.assertIn("**1 FAIL, 0 WARN, 1 OK.**", report)
+        self.assertIn("**1 FAIL, 0 WARN, 1 OK** (0 urgent: expires within 7 days or already expired).", report)
         self.assertIn("| FAIL | kv-qnsc-prod | missing |", report)
         self.assertNotIn("| OK |", report)
 

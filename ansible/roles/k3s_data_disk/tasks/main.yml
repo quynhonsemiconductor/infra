@@ -86,21 +86,22 @@
   ansible.builtin.command: "blkid -p -o value -s TYPE {{ k3s_data_disk_real.stdout }}"
   register: k3s_data_disk_fstype
   changed_when: false
-  failed_when: false
+  # rc 2 = no such tag (blank); any other non-zero is a probe ERROR, which must never read as "blank"
+  failed_when: k3s_data_disk_fstype.rc not in [0, 2]
   check_mode: false
 
 - name: Probe for a partition table
   ansible.builtin.command: "blkid -p -o value -s PTTYPE {{ k3s_data_disk_real.stdout }}"
   register: k3s_data_disk_pttype
   changed_when: false
-  failed_when: false
+  failed_when: k3s_data_disk_pttype.rc not in [0, 2]
   check_mode: false
 
 - name: List every signature wipefs can see
   ansible.builtin.command: "wipefs -n {{ k3s_data_disk_real.stdout }}"
   register: k3s_data_disk_wipefs
   changed_when: false
-  failed_when: false
+  failed_when: k3s_data_disk_wipefs.rc != 0
   check_mode: false
 
 - name: Read the filesystem label
@@ -144,15 +145,24 @@
     - k3s_data_disk_wipefs.stdout | length == 0
     - k3s_data_disk_format | bool
 
+# Its own register: a SKIPPED task still overwrites its register with a result that has no
+# stdout, so re-using k3s_data_disk_fstype broke every later `.stdout` test (blank disk in
+# --check, ai-01 2026-11-05; an already-formatted disk on every re-run). It runs in --check too
+# (read-only), where the disk is still blank and it reads ''.
 - name: Re-read the filesystem type after formatting
   ansible.builtin.command: "blkid -p -o value -s TYPE {{ k3s_data_disk_real.stdout }}"
-  register: k3s_data_disk_fstype
+  register: k3s_data_disk_fstype_post
   changed_when: false
+  failed_when: false
   check_mode: false
   when:
     - k3s_data_disk_fstype.stdout | length == 0
     - k3s_data_disk_format | bool
-    - not ansible_check_mode
+
+- name: The filesystem type now (the re-read when it ran, else the first probe)
+  ansible.builtin.set_fact:
+    k3s_data_disk_fstype_now: >-
+      {{ (k3s_data_disk_fstype_post.stdout | default(k3s_data_disk_fstype.stdout)) | trim }}
 
 - name: Read the filesystem label
   ansible.builtin.command: "blkid -p -o value -s LABEL {{ k3s_data_disk_real.stdout }}"
@@ -163,11 +173,11 @@
 
 - name: Refuse to continue when this is not the expected filesystem
   ansible.builtin.assert:
-    that: k3s_data_disk_fstype.stdout | trim == 'ext4' and k3s_data_disk_fslabel.stdout | trim == k3s_data_disk_label
+    that: k3s_data_disk_fstype_now == 'ext4' and k3s_data_disk_fslabel.stdout | trim == k3s_data_disk_label
     fail_msg: >-
       {{ k3s_data_disk_device }} did not become ext4 label {{ k3s_data_disk_label }}; stop and inspect it.
     quiet: true
-  when: not (ansible_check_mode and k3s_data_disk_format | bool and k3s_data_disk_fstype.stdout | length == 0)
+  when: not (ansible_check_mode and k3s_data_disk_format | bool and k3s_data_disk_fstype_now | length == 0)
 
 - name: Is the data disk already mounted at the mount path
   ansible.builtin.command: "findmnt --mountpoint {{ k3s_data_disk_mount }}"
@@ -227,14 +237,21 @@
         quiet: true
       when: not ansible_check_mode
 
-    - name: Install rsync and psmisc for the copy and the open-file check
+    - name: Install rsync and lsof for the copy and the open-file check
       ansible.builtin.apt:
-        name: [rsync, psmisc]
+        name: [rsync, lsof]
         state: present
       when: not ansible_check_mode
 
-    - name: No process may hold the volume path open
-      ansible.builtin.command: "fuser -m {{ k3s_data_disk_mount }}"
+    # Files open UNDER the path, not `fuser -m`: before the move the path is a plain directory on
+    # the root filesystem, and -m reports every process using that filesystem (all of them, ai-01
+    # 2026-11-05). Stopping k3s-agent does NOT stop running containers (KillMode=process), so the
+    # owner drains the node first (docs/runbooks/agent-data-disks.md); a pod still writing here is
+    # refused. lsof exits 1 with no output when nothing is open; an lsof ERROR also exits 1, so the
+    # gate also requires an empty stderr (-w only silences warnings, not errors). Known gap: a file
+    # unlinked while open is invisible to +D; after a drain nothing should hold one.
+    - name: No process may hold a file open under the volume path
+      ansible.builtin.command: "lsof -w +D {{ k3s_data_disk_mount }}"
       register: k3s_data_disk_fuser
       changed_when: false
       failed_when: false
@@ -243,10 +260,13 @@
 
     - name: Refuse when a process still holds the volume path
       ansible.builtin.assert:
-        that: k3s_data_disk_fuser.rc | default(1) == 1
+        that:
+          - k3s_data_disk_fuser.rc | default(-1) == 1
+          - (k3s_data_disk_fuser.stdout | default('x')) | length == 0
+          - (k3s_data_disk_fuser.stderr | default('x')) | length == 0
         fail_msg: >-
-          fuser still reports processes on {{ k3s_data_disk_mount }} (exit {{ k3s_data_disk_fuser.rc | default('?') }}:
-          {{ k3s_data_disk_fuser.stdout | default('') }}). Stop them before moving the volumes.
+          files are still open under {{ k3s_data_disk_mount }} (drain the node first) (exit {{ k3s_data_disk_fuser.rc | default('?') }}:
+          {{ k3s_data_disk_fuser.stdout | default('') }} {{ k3s_data_disk_fuser.stderr | default('') }}). Stop them before moving the volumes.
         quiet: true
       when: not ansible_check_mode
 
@@ -257,6 +277,27 @@
         fstype: ext4
         opts: defaults
         state: ephemeral
+
+    # The disk must still be empty (only mkfs's lost+found): a disk that already holds volumes was
+    # moved before and later came up unmounted (nofail); copying the stale root copy over it would
+    # put old data over new. Stop and look instead.
+    - name: Look for volumes already on the data disk
+      ansible.builtin.find:
+        paths: "{{ k3s_data_disk_temp_mount }}"
+        file_type: any
+        hidden: true
+        excludes: [lost+found]
+      register: k3s_data_disk_on_disk
+      when: not ansible_check_mode
+
+    - name: Refuse to copy over a data disk that already holds volumes
+      ansible.builtin.assert:
+        that: (k3s_data_disk_on_disk.matched | default(0)) | int == 0
+        fail_msg: >-
+          {{ k3s_data_disk_device }} already holds {{ k3s_data_disk_on_disk.matched }} entries: it was moved to
+          before. Mount it ({{ k3s_data_disk_mount }}) and compare by hand; never rsync the root copy over it.
+        quiet: true
+      when: not ansible_check_mode
 
     - name: Copy the existing volumes onto the data disk
       # noqa: command-instead-of-module - rsync with the exact flags is the copy; synchronize is
@@ -272,6 +313,7 @@
       register: k3s_data_disk_rsync_check
       changed_when: false
       failed_when: k3s_data_disk_rsync_check.stdout | length > 0
+      when: not ansible_check_mode   # --check never copied, so a diff here would be meaningless
 
     - name: Unmount the temporary copy before mounting the final path
       # noqa: command-instead-of-module - ansible.posix.mount cannot drop an ephemeral mount without
@@ -304,12 +346,12 @@
   # On a blank disk in check mode nothing was formatted, so the label does not exist yet.
   when:
     - (k3s_data_disk_existing.matched | default(0)) | int == 0
-    - not (ansible_check_mode and k3s_data_disk_fstype.stdout | length == 0)
+    - not (ansible_check_mode and k3s_data_disk_fstype_now | length == 0)
 
 - name: The mount path is on the data disk
   ansible.builtin.command: "findmnt -n -o SOURCE --mountpoint {{ k3s_data_disk_mount }}"
   register: k3s_data_disk_verify
   changed_when: false
-  failed_when: not (k3s_data_disk_verify.stdout is search('^/dev/sd[b-z]'))
+  failed_when: k3s_data_disk_verify.stdout | trim != k3s_data_disk_real.stdout | trim
   check_mode: false
   when: not ansible_check_mode

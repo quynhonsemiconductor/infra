@@ -44,6 +44,15 @@ locals {
     { hostname = "opshub.qnsc.vn", path = "^/readyz$", service = "http://api.opshub-prod.svc:3000", bypass = true },
     { hostname = "opshub.qnsc.vn", path = null, service = "http://web.opshub-prod.svc:8080" },
 
+    # kb prod (P3, owner decision 2026-11-05): staff + MFA Access app on the host (live/edge, same `access = "staff"`
+    # model as opshub.qnsc.vn), SPA from the cluster. Everything under /api (incl. the Entra callback) and /readyz,
+    # the alias of /health/ready that Synthetic Monitoring probes. Inert until edge publishes DNS for the host (its
+    # cutover entry is in this PR; the data layer comes first, gitops#255). The host joins access_jwt_hosts in a
+    # follow-up, once its Access app exists (the data lookup needs it).
+    { hostname = "kb.qnsc.vn", path = "^/api/", service = "http://api.kb-prod.svc:8000" },
+    { hostname = "kb.qnsc.vn", path = "^/readyz$", service = "http://api.kb-prod.svc:8000", bypass = true },
+    { hostname = "kb.qnsc.vn", path = null, service = "http://web.kb-prod.svc:8080" },
+
     # rova dev — one Access app on the host (live/edge); the webhook bypass
     # lives in live/edge too, this file only routes what reaches the origin
     # The webhook rule MUST come before ^/v1/ (first match wins) and carries
@@ -95,7 +104,8 @@ locals {
 # unchecked silently.
 locals {
   # opshub.qnsc.vn: its staff Access app exists since infra#343 (same name = hostname).
-  access_jwt_hosts = toset(["rova-dev.qnsc.vn", "opshub-dev.qnsc.vn", "kb-dev.qnsc.vn", "opshub.qnsc.vn"])
+  # kb.qnsc.vn: its staff Access app exists since infra#395 (edge applied 2026-11-05).
+  access_jwt_hosts = toset(["rova-dev.qnsc.vn", "opshub-dev.qnsc.vn", "kb-dev.qnsc.vn", "opshub.qnsc.vn", "kb.qnsc.vn"])
   # A rule may name a different Access app than its host's (`access_app`): /mcp is behind the MCP server
   # apps (live/edge mcp.tf, mcp_rova_prod.tf), whose JWT carries THEIR aud, not the host web app's.
   access_jwt_apps = setunion(local.access_jwt_hosts, toset(compact([for r in local.qnsc_apps_ingress : try(r.access_app, "")])))
