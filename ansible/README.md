@@ -207,15 +207,22 @@ node_admin_users:
   - { name: <admin login>, sudo: true, hosts: [ai-01] }
 ```
 
-The role (tags `ssh_infra`, included by `k3s-server.yml`, `k3s-agent.yml` and
-`k3s-agent-gpu.yml`) writes `/etc/ssh/ca.pub` and a `sshd_config.d` drop-in
-with `TrustedUserCAKeys`, validates the merged config with `sshd -t`, then
-reloads sshd (never restarts). For each listed account it creates the user
-with **no password and no authorized_keys**, adds `video,render` on the GPU
-node, and writes a `sudoers.d` file when `sudo: true`. Removed from the list →
-the account is locked (expiry in the past) and its sudoers file removed; the
-home stays. The break-glass operator account (`qnsc`/`ubuntu` + its key) is
-never touched.
+The role (tags `ssh_infra`) is included by `k3s-agent-gpu.yml` only — ai-01
+today. **A node with no entry in `node_admin_users` is never touched**; add the
+role to another playbook and a target in `TF_VAR_ssh_infra_targets` when that
+node gets users. It writes `/etc/ssh/ca.pub` and a `sshd_config.d` drop-in with
+`TrustedUserCAKeys` plus `AuthorizedPrincipalsFile` (one principal per account,
+`%u`), validates the MERGED config with `sshd -t`, and on failure restores the
+previous drop-in and fails without reloading. For each listed account it creates
+the user with **no password and no authorized_keys**, adds `video,render` on the
+GPU node, writes a `sudoers.d` file when `sudo: true`, and a principal file
+containing exactly the login name. Reserved/operator names (`root`, `qnsc`,
+`ubuntu`, system accounts) are refused, and so is any pre-existing account this
+role did not create. Removed from the list → the account is locked (expiry in
+the past), its sudoers and principal files are removed, and the home stays; the
+name stays in the marker so a failed lock is retried next run. An empty CA key
+**removes** the drop-in, `/etc/ssh/ca.pub` and the principal directory (a real
+revoke, not a silent skip). The break-glass operator account is never touched.
 
 ```sh
 ansible-playbook k3s-agent-gpu.yml --tags ssh_infra --check --diff   # plan
@@ -224,15 +231,29 @@ ansible-playbook k3s-agent-gpu.yml --tags ssh_infra                  # apply
 
 Re-run the same command: `changed=0`.
 
+**Dry-run a removal** (proves offboarding before it happens): delete one
+`node_admin_users` entry, run `--check --diff`; expect
+`would lock <login> (home kept) and remove its certificate principal`. Re-add
+the entry to cancel, or run without `--check` to complete the offboarding.
+
 ### 3. Verify
 
-1. Owner: WARP connected, `warp-cli status`; then `ssh <admin login>@<ai-01 address>`
-   (no password prompt, no local key prompt; `ssh -v` shows the certificate).
-2. Cloudflare dashboard → Access → Logs shows the SSH session for the user.
-3. On the node: `getent passwd <login>`, `sudo -n true` works for a sudo
+1. Owner: WARP connected, `warp-cli status`; then `ssh <login>@<ai-01 address>`
+   (no password prompt, no local key prompt).
+2. **Certificate principal:** `ssh -v` shows the offered certificate; run
+   `ssh-keygen -L -f <cert file>` on it and confirm `Principals:` equals the
+   UNIX login exactly (one principal per account, enforced by
+   `AuthorizedPrincipalsFile`). A different name is refused even with a valid
+   Cloudflare signature.
+3. Cloudflare dashboard → Access → Logs shows the SSH session for the user.
+4. On the node: `getent passwd <login>`, `sudo -n true` works for a sudo
    account, and `nvidia-smi` works on ai-01 (the single 16 GiB GPU is shared
    with kb prod TEI: check it is not mid-job before testing, and never start a
    model to "test" access).
+
+`NOPASSWD` sudo for a certificate-only account is **accepted by the owner
+(2026-11-06)**: the account has no password or key, and the identity + MFA
+check happens at Cloudflare before sudo is reachable.
 
 ## PBS API token
 

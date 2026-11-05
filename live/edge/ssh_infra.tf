@@ -11,7 +11,7 @@
 # owner environment file). Empty = feature off (plan unchanged).
 #
 #   {
-#     "ai-01": { "hostname": "ai-01", "ipv4": "192.0.2.21", "usernames": ["sinh"] }
+#     "ai-01": { "hostname": "ai-01", "ipv4": "192.0.2.21", "usernames": ["<login>"] }
 #   }
 #
 # The account's GATEWAY CA is not exposed by the provider (the
@@ -42,9 +42,9 @@ variable "ssh_infra_targets" {
       can(regex("^(?:[0-9]{1,3}\\.){3}[0-9]{1,3}$", t.ipv4)) &&
       can(cidrhost("${t.ipv4}/32", 0)) &&
       length(t.usernames) > 0 &&
-      alltrue([for u in t.usernames : can(regex("^[a-z_][a-z0-9_-]{0,31}$", u))])
+      alltrue([for u in t.usernames : (can(regex("^[a-z_][a-z0-9_-]{0,31}$", u)) && u != "root" && u != "qnsc" && u != "ubuntu")])
     ])
-    error_message = "Each ssh_infra_targets entry needs a DNS-label key, a plain hostname, a bare IPv4 address and a non-empty list of valid UNIX usernames."
+    error_message = "Each ssh_infra_targets entry needs a DNS-label key, a plain hostname, a bare IPv4 address and a non-empty list of valid UNIX usernames (root/qnsc/ubuntu are refused)."
   }
 }
 

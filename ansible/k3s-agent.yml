@@ -10,8 +10,6 @@
   roles:
     - role: vm_guest
       tags: [vm_guest]
-    - role: ssh_infra
-      tags: [ssh_infra]
     - role: k3s_data_disk
       tags: [k3s_data_disk]
     - role: k3s_registries
