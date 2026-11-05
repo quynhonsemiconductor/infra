@@ -75,7 +75,7 @@ locals {
         "4. Is the tier supposed to be tight? DEFAULT is 1200/min per user (sized so a page-refresh burst never touches it) — a DEFAULT refusal is the defect. STRICT is 20/min and guards uploads and invitation email; a refusal there can be the control working on a genuine loop, so confirm before changing it.",
         "5. Genuine abuse from one compromised account: the logged userId answers that directly.",
         "DO NOT raise STRICT to clear the alert before step 4 says the client is looping.",
-        "A runbook in the rova repo for this alert does not exist yet (rova#905 shipped none).",
+        "Runbook: https://github.com/quynhonsemiconductor/rova/blob/main/docs/runbooks/alerts/rova-prod-authenticated-429.md",
       ])
     }
     opshub = {
