@@ -6,7 +6,7 @@
 # duplicates, no new client IDs. This file is RECONCILED to the live exports
 # (~/signin-export/*.json, 2026-10-27): everything below matches the live
 # shape except the changes named in the PR body (the v8 callbacks, loopbacks,
-# opshub's offline_access + User.Read, the owners).
+# opshub's offline_access + User.Read, KB's email, the owners).
 #
 # Rules (§7.2):
 #   - delegated Graph scopes + (rova) the User.Invite.All APPLICATION role for
@@ -60,8 +60,9 @@ locals {
   #               the plan (no local opshub sign-in flow uses it).
   #   kb        : the ECS live host kb-api-dev is replaced by the in-cluster
   #               kb-dev host (ONPREM-PLAN §8.2: the tunnel serves /api/* there);
-  #               localhost:8000 is already live on both callbacks. This is the
-  #               one app UPDATE this change makes — named in the PR body.
+  #               localhost:8000 is already live on both callbacks. The live
+  #               AllPrincipals grant carries `email` (the app did not request
+  #               it), so `email` is ADDED to the app — named in the PR body.
   signin_apps = {
     rova_prod = {
       display_name = "Rova Prod"
@@ -96,7 +97,11 @@ locals {
         "http://localhost:8000/api/v1/auth/entra/callback", # live
         "http://localhost:8000/api/v1/connectors/oauth/callback",
       ]
-      scopes          = ["openid", "profile", "offline_access", "User_Read", "Files_Read", "Files_Read_All", "Sites_Read_All"] # live 7 (no email — that was never on the live app)
+      # Live 7 + ADDED email: the live AllPrincipals grant already carries
+      # `email` although the app never requested it, so the derived grant set
+      # must request it too or an apply revokes it (the guard below enforces
+      # this for every app, not just KB).
+      scopes          = ["openid", "profile", "email", "offline_access", "User_Read", "Files_Read", "Files_Read_All", "Sites_Read_All"]
       optional_claims = []
     }
   }
@@ -314,6 +319,20 @@ variable "signin_delegated_grant_ids" {
   }
 }
 
+variable "signin_delegated_grant_scopes" {
+  type        = map(list(string))
+  default     = {}
+  description = "Delegated scopes already present in each live AllPrincipals Graph grant, keyed like local.signin_delegated_grant_targets. Built by scripts/owner/identity-env/identity-env.sh from the same read-only oauth2PermissionGrants lookup as the id map; never committed. A listed scope missing from the derived set fails the plan: an apply must never narrow a live grant."
+
+  validation {
+    condition = alltrue([
+      for scopes in values(var.signin_delegated_grant_scopes) :
+      alltrue([for scope in scopes : can(regex("^[A-Za-z0-9._-]+$", scope))])
+    ])
+    error_message = "signin_delegated_grant_scopes values must be lists of Graph delegated scope names."
+  }
+}
+
 locals {
   signin_delegated_grant_targets = merge(
     { for k, sp in azuread_service_principal.signin : k => sp.object_id },
@@ -352,6 +371,32 @@ resource "azuread_service_principal_delegated_permission_grant" "signin" {
   service_principal_object_id          = each.value
   resource_service_principal_object_id = data.azuread_service_principal.msgraph.object_id
   claim_values                         = local.signin_delegated_scopes[each.key]
+
+  # An apply REPLACES claim_values with the derived set, so a delegated scope
+  # the LIVE grant carries but the app no longer requests would be revoked
+  # silently (the KB Dev `email` case, found on the #381 plan). The kit reads
+  # each live grant's scope list into signin_delegated_grant_scopes; fail the
+  # plan instead of narrowing a live grant.
+  lifecycle {
+    precondition {
+      condition = alltrue([
+        for scope in try(var.signin_delegated_grant_scopes[each.key], []) :
+        contains(local.signin_delegated_scopes[each.key], scope)
+      ])
+      error_message = "The live AllPrincipals grant for '${each.key}' carries a delegated scope the app does not request. Add it to that app's delegated scope set in apps.tf (local.signin_apps[*].scopes): an apply would remove it from the live grant."
+    }
+
+    # An imported grant with no scope list would make the check above vacuous
+    # (an older kit exports the ids only). Both maps come from one lookup, so
+    # their key sets must agree.
+    precondition {
+      condition = (
+        !contains(keys(var.signin_delegated_grant_ids), each.key) ||
+        contains(keys(var.signin_delegated_grant_scopes), each.key)
+      )
+      error_message = "signin_delegated_grant_scopes has no entry for '${each.key}' although its live grant is imported. Run the current scripts/owner/identity-env/identity-env.sh; planning with an ids-only environment would skip the no-narrowing check."
+    }
+  }
 }
 
 # Admin -> the existing admin group. The other OpsHub roles stay per-user:
