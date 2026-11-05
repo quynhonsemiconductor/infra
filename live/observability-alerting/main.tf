@@ -412,15 +412,19 @@ resource "grafana_rule_group" "security_fail_open" {
 
   dynamic "rule" {
     for_each = {
-      # `env` is the Loki resource-attribute VALUE ("develop"); `alert_env` is the
-      # alert label, which must match the notification policy and every other
-      # dev rule in this stack ("development").
-      develop    = { env = "develop", alert_env = "development", severity = "warning" }
-      production = { env = "production", alert_env = "production", severity = "critical" }
+      # `namespaces` is the ACTUAL Loki stream dimension (`service_namespace`,
+      # e.g. `rova-prod`, `opshub-prod`, `kb-prod`). The rule previously filtered
+      # `deployment_environment_name="production|develop"`, which does NOT exist
+      # in Loki — label values over 24 h came back empty, so the rule evaluated
+      # NoData and reported OK forever. `alert_env` is the alert label, which
+      # must match the notification policy and every other dev rule
+      # ("development"), not the stream value.
+      develop    = { namespaces = ".+-dev", alert_env = "development", severity = "warning" }
+      production = { namespaces = ".+-prod", alert_env = "production", severity = "critical" }
     }
     iterator = env_rule
     content {
-      name          = "security-control-failed-open-${env_rule.value.env}"
+      name          = "security-control-failed-open-${env_rule.key}"
       condition     = "C"
       for           = "0m"
       no_data_state = "OK"
@@ -443,7 +447,7 @@ resource "grafana_rule_group" "security_fail_open" {
         model = jsonencode({
           refId      = "A"
           datasource = { type = "loki", uid = data.grafana_data_source.logs.uid }
-          expr       = "sum by (service_namespace) (count_over_time({service_namespace=~\".+\", deployment_environment_name=\"${env_rule.value.env}\"} | json | securityFailOpen != \"\" [5m]))"
+          expr       = "sum by (service_namespace) (count_over_time({service_namespace=~\"${env_rule.value.namespaces}\"} | json | securityFailOpen != \"\" [5m]))"
           queryType  = "instant"
           instant    = true
           intervalMs = 1000
@@ -502,7 +506,7 @@ resource "grafana_rule_group" "security_fail_open" {
       }
 
       annotations = {
-        summary = "A security control failed open in ${env_rule.value.env} — service {{ $labels.service_namespace }}. Check Valkey health."
+        summary = "A security control failed open in ${env_rule.key} — service {{ $labels.service_namespace }}. Check Valkey health."
       }
     }
   }
