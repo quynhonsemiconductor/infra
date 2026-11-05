@@ -17,8 +17,8 @@ Run from `ansible/`, with `op run` for the join token, in a maintenance window: 
   type, no partition table and no `wipefs` signature at all.
 - It refuses to mount over a non-empty `/var/lib/rancher/k3s/storage` unless
   `-e k3s_data_disk_allow_move=true`. Mounting over that directory would hide every existing PV.
-- With the move opt-in it stops `k3s-agent`, asserts the unit is stopped and no process holds the
-  volume path (`fuser -m`), copies with `rsync -aHAX --numeric-ids`, proves a second dry run has no
+- With the move opt-in it stops `k3s-agent`, asserts the unit is stopped and no file is open under the
+  volume path (`lsof +D`), copies with `rsync -aHAX --numeric-ids`, proves a second dry run has no
   differences, mounts, and **always** starts the agent again (a `block`/`always`, even on failure).
 - fstab uses `defaults,noatime,nofail,x-systemd.device-timeout=30`.
 
@@ -27,7 +27,22 @@ Run from `ansible/`, with `op run` for the join token, in a maintenance window: 
 The cache PV (`tei-e5-model-cache`) already exists under the root. The copy keeps its directory
 name, so the existing PersistentVolume and the pod's mount are unchanged; nothing re-downloads.
 
-First find the disk's stable id **inside ai-01** (never pass `/dev/sdb`):
+**Drain the node first.** Stopping `k3s-agent` does not stop running containers (k3s uses
+`KillMode=process`), so TEI would keep its cache files open and the role refuses the move
+(`files are still open under ...`). Drain moves the workloads off; DaemonSets stay but do not use the
+storage path. The TEI pod stays Pending while drained (its PV is pinned to ai-01) — that is the window.
+emptyDir data on ai-01 is scratch only (TEI tmp, clamd's signature DB re-downloads on start).
+
+Run these on **k3s-01** (the agents carry no admin kubeconfig):
+
+```sh
+# what runs on ai-01; review the volumes of each pod that survives a drain (DaemonSets): none may
+# mount the storage path (a local-path PVC or a hostPath under /var/lib/rancher/k3s/storage)
+sudo k3s kubectl get pods -A -o wide --field-selector spec.nodeName=ai-01
+sudo k3s kubectl drain ai-01 --ignore-daemonsets --delete-emptydir-data --timeout=5m
+```
+
+Then find the disk's stable id **inside ai-01** (never pass `/dev/sdb`):
 
 ```sh
 ls -l /dev/disk/by-id/ | grep -i virtio     # pick the 300G scsi1, not the 40G scsi0
@@ -46,14 +61,25 @@ op run --env-file=<local template> -- \
   -e k3s_data_disk_format=true -e k3s_data_disk_allow_move=true
 ```
 
+Then let the workloads back (on k3s-01):
+
+```sh
+sudo k3s kubectl uncordon ai-01
+```
+
 Verify on ai-01:
 
 ```sh
 findmnt --mountpoint /var/lib/rancher/k3s/storage     # SOURCE /dev/sdb
 df -h /var/lib/rancher/k3s/storage                     # ~300G, not 40G
 sudo du -sh /var/lib/rancher/k3s/storage/pvc-*         # the model cache is here
-kubectl -n ai get pods                                 # tei-e5 Running and Ready, clamd Running
-kubectl -n ai logs deploy/tei-e5 --tail=20             # no download, it starts offline from the cache
+```
+
+and on k3s-01:
+
+```sh
+sudo k3s kubectl -n ai get pods                        # tei-e5 Running and Ready
+sudo k3s kubectl -n ai logs deploy/tei-e5 --tail=20    # no download, it starts offline from the cache
 ```
 
 The old copy is now hidden by the mount point and still occupies root. It is a few GB; delete it only
@@ -61,7 +87,13 @@ in a later window by unmounting, removing the stale directory and mounting again
 
 If the role stops with an error after `k3s-agent` was stopped, the old data is still intact and the
 final mount has not happened: run `sudo systemctl start k3s-agent` on the node to restore service,
-then read the failing task (it names the file or the copy check) before re-running.
+then `sudo k3s kubectl uncordon ai-01` on k3s-01 (a drain, even a timed-out one, leaves the node
+cordoned), and read the failing task (it names the file or the copy check) before re-running.
+A failure after the temporary mount leaves the disk mounted at `/mnt/k3s-storage-new` (check with
+`findmnt /mnt/k3s-storage-new`). If the copy had started, the next run refuses with "already holds
+... entries": unmount it (`sudo umount /mnt/k3s-storage-new`), check whether that partial copy matters
+(it does not, because the root copy is still the source), and wipe it only after it has been
+reviewed. Never run a second rsync over it by hand.
 
 ## vlsi-01 — mount before the first workspace
 
