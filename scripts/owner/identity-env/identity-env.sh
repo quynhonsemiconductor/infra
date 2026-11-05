@@ -81,15 +81,21 @@ put TF_VAR_second_owner_object_id "$SECOND"
 # The platform admins ARE the group's user members (README: keep the two in step). ONE list drives
 # the Proxmox app's direct assignments and the OpsHub Dev/Prod Admin role: group-based app-role
 # assignment needs Entra ID P1/P2, which the tenant does not have.
-ADMINS=$(az_json platform-admins-members ad group member list --group grp-qnsc-platform-admins \
-  | jq -c '[.[]|select(.["@odata.type"]=="#microsoft.graph.user")|.id]|sort')
-[[ "$(jq 'length' <<<"$ADMINS")" -gt 0 ]] || die "grp-qnsc-platform-admins has no user members"
+MEMBERS=$(az_json platform-admins-members ad group member list --group grp-qnsc-platform-admins)
+# A guest, a nested group or any non-user member would turn the direct-assignment list into something
+# Entra cannot assign to an app role: stop instead of silently filtering it out.
+[[ "$(jq '[.[] | select((.["@odata.type"] // "") != "#microsoft.graph.user" or (.userType // "") != "Member")] | length' <<<"$MEMBERS")" == 0 ]] \
+  || die "grp-qnsc-platform-admins has a guest, nested group or non-user member — remove it first"
+ADMINS=$(jq -c '[.[].id]|sort' <<<"$MEMBERS")
 while read -r g; do need_guid platform_admin_object_ids "$g"; done < <(jq -r '.[]' <<<"$ADMINS")
 put TF_VAR_platform_admin_object_ids "$ADMINS"
-host_ok "${IDENTITY_PROXMOX_HOST:-}" || die "set IDENTITY_PROXMOX_HOST (a bare DNS hostname)"
-host_ok "${IDENTITY_PBS_HOST:-}" || die "set IDENTITY_PBS_HOST (a bare DNS hostname)"
-[[ "$IDENTITY_PROXMOX_HOST" != "$IDENTITY_PBS_HOST" ]] || die "IDENTITY_PROXMOX_HOST and IDENTITY_PBS_HOST must differ"
-put TF_VAR_proxmox_redirect_uris "$(jq -cn --arg pve "$IDENTITY_PROXMOX_HOST" --arg pbs "$IDENTITY_PBS_HOST" '["https://\($pve)/", "https://\($pbs)/"]')"
+# Hostnames are case-insensitive: normalise before validation, the PVE != PBS check and the URI build.
+PVE_HOST=$(tr '[:upper:]' '[:lower:]' <<<"${IDENTITY_PROXMOX_HOST:-}")
+PBS_HOST=$(tr '[:upper:]' '[:lower:]' <<<"${IDENTITY_PBS_HOST:-}")
+host_ok "$PVE_HOST" || die "set IDENTITY_PROXMOX_HOST (a bare DNS hostname)"
+host_ok "$PBS_HOST" || die "set IDENTITY_PBS_HOST (a bare DNS hostname)"
+[[ "$PVE_HOST" != "$PBS_HOST" ]] || die "IDENTITY_PROXMOX_HOST and IDENTITY_PBS_HOST must differ"
+put TF_VAR_proxmox_redirect_uris "$(jq -cn --arg pve "$PVE_HOST" --arg pbs "$PBS_HOST" '["https://\($pve)/", "https://\($pbs)/"]')"
 
 # --- app registrations ---------------------------------------------------------------------------
 # bash 3.2 (macOS /bin/bash) has no associative arrays: slot -> display name by function.

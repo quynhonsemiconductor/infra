@@ -470,10 +470,13 @@ plan carries #402 (rova invite scope).
    ```
 
    pve-manager and the PBS UI send `location.origin` (no slash) and Entra
-   normalises the root.
+   normalises the root. This first plan is a scout: existing direct Admin
+   assignments appear as creates until step 3a imports them; the go/no-go
+   gate is the re-plan in step 3d.
 
-2. Go/no-go: the ONE plan must contain exactly these three change sets and
-   nothing else.
+2. Go/no-go — this review applies to the FINAL plan produced in step 3d, not
+   to the scout plan above. It must contain exactly these three change sets
+   and nothing else.
 
    **Proxmox (`proxmox.tf`)** — ONE in-place update,
    `azuread_application.proxmox`, adding the PBS origin:
@@ -500,10 +503,11 @@ plan carries #402 (rova invite scope).
    `User.Invite.All` application role from `required_resource_access`; at most
    the removal of a wizard-default delegated `User.Read` on "Rova Prod Service"
    / "Rova Dev Service" when the live export still shows it. NO grant is
-   created (dev keeps no `User.Invite.All`; the absent grant is the control)
-   and no certificate changes. #402 must be in the same tree (merged main or
-   its branch) — one plan, not two; run its "before apply" assignment checks
-   first.
+   created, and no assignment may remain on either sign-in SP (they carry
+   secrets and can mint app-only tokens); #402's pre-apply GET gate proves
+   zero, and the dev service app stays empty. No certificate changes. #402
+   must be in the same tree (merged main or its branch) — one plan, not two;
+   run its gate first.
 
    **OpsHub Admin direct assignment (`apps.tf`, `prod_apps.tf`)** — the Admin
    role moves off `grp-qnsc-platform-admins` and onto each platform admin
@@ -513,30 +517,106 @@ plan carries #402 (rova invite scope).
    Microsoft Learn, "Manage access to apps": "Group-based assignment (requires
    Microsoft Entra ID P1 or P2)",
    <https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/what-is-access-management#assigning-users-and-groups-to-an-app>).
-   Expected: 2 creates for
-   `azuread_app_role_assignment.opshub_dev_admin["<admin object id>"]` and 2
-   for `...opshub_prod_admin[...]` — one user assignment per admin per app. If
-   #381 was already applied, the plan ALSO destroys the two unkeyed
-   `opshub_dev_admin` / `opshub_prod_admin` group assignments; that one
-   destroy pair is the point of the change and is GO. Any other destroy is
-   NO-GO; 0 replace.
+   Expected in the FINAL plan (3d): **0 creates** under
+   `azuread_app_role_assignment.opshub_dev_admin[...]` /
+   `opshub_prod_admin[...]` — every live direct assignment was imported in 3a
+   or created and verified in 3b. The two legacy unkeyed group assignments
+   (`opshub_dev_admin`, `opshub_prod_admin`) are DESTROYED; live check
+   2026-11-05 confirms #381 was applied and both exist. A user-key create in
+   the final plan is the duplicate path — import it in 3a instead. 0 replace;
+   any other destroy is NO-GO.
 
    Any other resource in the plan, any destroy beyond the group assignments
    named above, and any `must be replaced` is NO-GO: stop and reconcile in a
    reviewed commit before the apply.
 
-3. Apply the saved plan and record the two outputs. Neither is a secret. The
-   plan file holds the values, so delete it after the apply. Run every `tofu
-   output` through the kit: the azurerm backend needs `ARM_SUBSCRIPTION_ID`,
-   which the kit exports for the child (`tofu output` alone fails in a fresh
-   shell):
+3. Apply in two phases so no admin loses Admin while the group assignment is
+   destroyed. The live tenant holds the group assignment AND some direct
+   Admin user assignments (#381 applied; the API allowed the group without
+   P1).
+
+   **3a. Import every existing direct Admin assignment first.** A CREATE for
+   an assignment already live is a duplicate Entra rejects (409). This loop
+   lists the `admin` role's assignments on each OpsHub sign-in SP, excludes
+   the group principal, keeps only platform-admin users, and imports each at
+   its `for_each` address:
 
    ```sh
-   tofu -chdir=live/identity apply tfplan
+   GROUP=$(az ad group show --group grp-qnsc-platform-admins --query id -o tsv)
+   USERS=$(az ad group member list --group grp-qnsc-platform-admins \
+     --query "[?userType=='Member'].id" -o tsv)
+   for pair in "OpsHub Dev:opshub_dev_admin" "OpsHub Prod:opshub_prod_admin"; do
+     app=${pair%%:*}; res=${pair##*:}
+     appId=$(az ad app list --filter "displayName eq '$app'" --query "[0].appId" -o tsv)
+     sp=$(az ad sp list --filter "appId eq '$appId'" --query "[0].id" -o tsv)
+     role=$(az ad app show --id "$appId" --query "appRoles[?value=='admin'].id | [0]" -o tsv)
+     az rest --method get \
+       --url "https://graph.microsoft.com/v1.0/servicePrincipals/$sp/appRoleAssignments" \
+       --query "value[?appRoleId=='$role' && principalId!='$GROUP'].{principalId:principalId,assignment:id}" -o tsv |
+     while IFS=$'\t' read -r principal assignment; do
+       [ -n "$principal" ] || continue
+       printf '%s\n' "$USERS" | grep -qx "$principal" || continue
+       scripts/owner/identity-env/identity-env.sh -- tofu import \
+         "azuread_app_role_assignment.${res}[\"$principal\"]" \
+         "/servicePrincipals/$sp/appRoleAssignedTo/$assignment"
+     done
+   done
+   ```
+
+   A principal outside the group (a stale Admin) is intentionally NOT
+   imported: it is not in the shared list, and per-user grants are additive,
+   so the apply leaves it alone. Remove it by hand if it should not have
+   Admin.
+
+   **3b. Create only the missing user assignments.** Target the user-keyed
+   instances explicitly — targeting the bare resource address would include
+   the legacy group instance and destroy it in this phase:
+
+   ```sh
+   targets=()
+   while IFS= read -r u; do
+     [ -n "$u" ] || continue
+     targets+=(-target="azuread_app_role_assignment.opshub_dev_admin[\"$u\"]")
+     targets+=(-target="azuread_app_role_assignment.opshub_prod_admin[\"$u\"]")
+   done <<<"$USERS"
+   scripts/owner/identity-env/identity-env.sh -- tofu apply "${targets[@]}"
+   ```
+
+   **3c. Verify every admin holds Admin on BOTH apps** (one assignment per
+   user per app, exact GET):
+
+   ```sh
+   for app in "OpsHub Dev" "OpsHub Prod"; do
+     appId=$(az ad app list --filter "displayName eq '$app'" --query "[0].appId" -o tsv)
+     sp=$(az ad sp list --filter "appId eq '$appId'" --query "[0].id" -o tsv)
+     role=$(az ad app show --id "$appId" --query "appRoles[?value=='admin'].id | [0]" -o tsv)
+     while IFS= read -r u; do
+       [ -n "$u" ] || continue
+       n=$(az rest --method get \
+         --url "https://graph.microsoft.com/v1.0/servicePrincipals/$sp/appRoleAssignments" \
+         --query "value[?principalId=='$u' && appRoleId=='$role'] | length" -o tsv)
+       [ "$n" = 1 ] || { echo "STOP: $u does not hold Admin on $app"; exit 1; }
+     done <<<"$USERS"
+   done
+   echo "ok: every platform admin holds Admin on both apps"
+   ```
+
+   **3d. Re-plan, apply the FINAL plan, record the outputs.** The plan must
+   match step 2 (group destroys + Proxmox redirect + #402 only). The plan
+   file holds the values, so delete it after the apply:
+
+   ```sh
+   scripts/owner/identity-env/identity-env.sh -- tofu plan -out=tfplan
+   # review against step 2 before this line
+   scripts/owner/identity-env/identity-env.sh -- tofu apply tfplan
    scripts/owner/identity-env/identity-env.sh -- tofu output -raw proxmox_oidc_client_id
    scripts/owner/identity-env/identity-env.sh -- tofu output -raw proxmox_oidc_issuer_url
    rm live/identity/tfplan
    ```
+
+   Every `tofu` call goes through the kit: the azurerm backend needs
+   `ARM_SUBSCRIPTION_ID`, which the kit exports for the child (`tofu output`
+   alone fails in a fresh shell).
 
 4. Create the client secret OUT OF BAND straight into the admin vault: nothing
    printed, nothing in state, ≤ 6 months. Reuse the sign-in rotation script —
@@ -565,7 +645,7 @@ plan carries #402 (rova invite scope).
 5. Fill the LOCAL Ansible inventory with the four non-secret site values
    (git-ignored; this repo is public). The block is in ansible/README.md
    "Entra OpenID login": `proxmox_oidc_issuer_url` and
-   `proxmox_oidc_client_id` from step 3, `proxmox_oidc_admin_group_oid` from
+   `proxmox_oidc_client_id` from step 3d, `proxmox_oidc_admin_group_oid` from
    `az ad group show --group grp-qnsc-platform-admins --query id -o tsv`, and
    `pbs_entra_admin_emails` = the Entra `email` claim of the two platform
    admins (owner-held addresses, never committed; keep the list equal to the
@@ -894,10 +974,12 @@ scopes into `TF_VAR_signin_delegated_grant_scopes`. A live scope the derived set
 would drop fails the plan (the KB Dev `email` case in #381): declare it on the
 app first, or the apply revokes it.
 
-OpsHub Dev and Prod app-role `admin` is assigned to `grp-qnsc-platform-admins`
-in IaC. The other six roles stay per-user: no role-specific Entra group exists
-(owner decision 2026-11-05). A group assignment is additive and never removes
-the live user assignments.
+The OpsHub Dev and Prod `admin` role is assigned DIRECTLY to each user in
+`var.platform_admin_object_ids` (the same list as the Proxmox app); group-based
+app-role assignment is an Entra ID P1/P2 feature this tenant does not have.
+The other six roles stay per-user: no role-specific Entra group exists (owner
+decision 2026-11-05). Per-user assignments are additive and never remove the
+live user grants of the other roles.
 
 ## Prod identity: OpsHub (`prod_apps.tf`)
 

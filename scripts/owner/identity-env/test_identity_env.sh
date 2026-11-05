@@ -61,7 +61,7 @@ build() { # build the fixture set from scratch
   echo "{\"id\":\"$(g 2 2)\"}" >"$FX/group-grp-qnsc-dev-users"
   echo "{\"id\":\"$(g 3 1)\"}" >"$FX/me"
   echo "{\"id\":\"$(g 3 2)\"}" >"$FX/user-second@tenant.example"
-  echo "[{\"@odata.type\":\"#microsoft.graph.user\",\"id\":\"$(g 3 1)\"},{\"@odata.type\":\"#microsoft.graph.group\",\"id\":\"$(g 9 9)\"},{\"@odata.type\":\"#microsoft.graph.user\",\"id\":\"$(g 3 2)\"}]" >"$FX/members"
+  echo "[{\"@odata.type\":\"#microsoft.graph.user\",\"userType\":\"Member\",\"id\":\"$(g 3 1)\"},{\"@odata.type\":\"#microsoft.graph.user\",\"userType\":\"Member\",\"id\":\"$(g 3 2)\"}]" >"$FX/members"
   for k in "${KEYS[@]}"; do
     i=$((i+1)); mkcert "$k"
     jq -n --arg id "$(g 10 $i)" --arg app "$(g 11 $i)" '{id:$id,appId:$app,appRoles:[]}' >"$FX/app-$(signin_name "$k" | tr " " -)"
@@ -234,7 +234,10 @@ jq -e --arg a "$(g 22 99)" --arg b "$(g 22 98)" 'keys|sort==([$a,$b]|sort)' "$T/
 build; grep -v 'rova_dev' "$T/stack/mail.tf" >"$T/m" && mv "$T/m" "$T/stack/mail.tf"
 expect_stop "missing pinned slot" "must pin exactly these slots"
 build; echo '{"value":[{"verifiedDomains":[{"name":"a","isDefault":true,"isInitial":false}]}]}' >"$FX/org"; expect_stop "no initial domain" "lookup for TF_VAR_break_glass_upn_domain is empty"
-build; echo '[{"@odata.type":"#microsoft.graph.group","id":"x"}]' >"$FX/members"; expect_stop "no admin users" "grp-qnsc-platform-admins has no user members"
+build; echo '[]' >"$FX/members"; expect_stop "empty member list" "az lookup empty: platform-admins-members"
+build; echo '[{"@odata.type":"#microsoft.graph.group","id":"x"}]' >"$FX/members"; expect_stop "nested group member" "has a guest, nested group or non-user member"
+build; echo '[{"@odata.type":"#microsoft.graph.user","userType":"Guest","id":"x"}]' >"$FX/members"; expect_stop "guest member" "has a guest, nested group or non-user member"
+build; echo '[{"@odata.type":"#microsoft.graph.servicePrincipal","id":"x"}]' >"$FX/members"; expect_stop "non-user member" "has a guest, nested group or non-user member"
 build; out="$T/out.noupn"; if PATH="$BIN:$PATH" FX="$FX" IDENTITY_STACK_DIR="$T/stack" IDENTITY_PROXMOX_HOST=h.test IDENTITY_PBS_HOST=h2.test bash "$SCRIPT" >"$out" 2>&1; then fail "missing UPN did not stop"; fi
 grep -q 'STOP: set IDENTITY_SECOND_OWNER_UPN' "$out" || fail "missing UPN reason"
 build; out="$T/out.nohost"; if run env -u IDENTITY_PROXMOX_HOST bash "$SCRIPT" >"$out" 2>&1; then fail "missing host did not stop"; fi
@@ -245,8 +248,11 @@ build; out="$T/out.badpvehost"; if run env IDENTITY_PROXMOX_HOST="pve.example.te
 grep -q 'STOP: set IDENTITY_PROXMOX_HOST' "$out" || fail "malformed PVE host reason"
 build; out="$T/out.badpbshost"; if run env IDENTITY_PBS_HOST="pbs.example.test/" bash "$SCRIPT" >"$out" 2>&1; then fail "malformed PBS host did not stop"; fi
 grep -q 'STOP: set IDENTITY_PBS_HOST' "$out" || fail "malformed PBS host reason"
-build; out="$T/out.samehost"; if run env IDENTITY_PBS_HOST="pve.example.test" bash "$SCRIPT" >"$out" 2>&1; then fail "identical PVE/PBS host did not stop"; fi
+build; out="$T/out.samehost"; if run env IDENTITY_PROXMOX_HOST="PVE.example.test" IDENTITY_PBS_HOST="pve.example.test" bash "$SCRIPT" >"$out" 2>&1; then fail "case-insensitive identical host did not stop"; fi
 grep -q 'STOP: IDENTITY_PROXMOX_HOST and IDENTITY_PBS_HOST must differ' "$out" || fail "identical host reason"
+build; run env IDENTITY_PROXMOX_HOST="PVE.Example.Test" bash "$SCRIPT" -- sh -c 'printf "%s" "$TF_VAR_proxmox_redirect_uris"' >"$T/upper.json" 2>/dev/null \
+  || fail "uppercase host rejected"
+grep -q '"https://pve.example.test/"' "$T/upper.json" || fail "hostname was not lowercased"
 build; out="$T/out.badlabel"; if run env IDENTITY_PBS_HOST="-pbs.example.test" bash "$SCRIPT" >"$out" 2>&1; then fail "leading-dash label did not stop"; fi
 grep -q 'STOP: set IDENTITY_PBS_HOST' "$out" || fail "leading-dash label reason"
 build; if run bash "$SCRIPT" -- 2>/dev/null; then fail "empty command after -- accepted"; fi
