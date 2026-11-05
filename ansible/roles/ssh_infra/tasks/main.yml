@@ -77,13 +77,12 @@
         that:
           - ssh_infra_ca_public_key is match('^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256|sk-ssh-ed25519@openssh.com) AAAA')
           - ssh_infra_admin_users is sequence
-          - >-
-            alltrue([
-              for u in ssh_infra_admin_users
-              u.name is defined and u.name is match('^[a-z_][a-z0-9_-]{0,31}$')
-              and u.name not in ssh_infra_reserved_users
-              and u.hosts is defined and u.hosts is sequence
-            ])
+          - ssh_infra_admin_users | selectattr('name', 'defined') | list | length == ssh_infra_admin_users | length
+          - ssh_infra_admin_users | selectattr('name', 'defined') | map(attribute='name')
+            | select('match', '^[a-z_][a-z0-9_-]{0,31}$') | list | length == ssh_infra_admin_users | length
+          - ssh_infra_admin_users | selectattr('name', 'defined') | map(attribute='name')
+            | reject('in', ssh_infra_reserved_users) | list | length == ssh_infra_admin_users | length
+          - ssh_infra_admin_users | selectattr('hosts', 'defined') | list | length == ssh_infra_admin_users | length
         fail_msg: >-
           node_ssh_ca_public_key must be the Gateway SSH CA public key
           (scripts/owner/cloudflare-ssh-ca.sh); node_admin_users entries need a
