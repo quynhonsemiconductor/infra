@@ -70,12 +70,12 @@ module "edge" {
   #            STRICT 60/60s, AI 10/60s, UPLOAD 30/60s
   rate_limit_rules = [{
     ref = "auth_default"
-    # `log` is not available on this zone's plan (apply 2026-11-05: "failed to use the log action in
-    # ratelimiting"). Block instead, at a threshold the whole office behind one NAT IP cannot reach by signing
-    # in normally (a sign-in is 2-4 /api/auth calls; 20 people at 9am ≈ 80 per minute, not per 10 s) while a
-    # credential-stuffing burst still trips it.
-    description         = "Block an IP that sends more than 100 authentication requests in 10 seconds"
-    expression          = "(starts_with(http.request.uri.path, \"/api/auth/\") or starts_with(http.request.uri.path, \"/api/v1/auth/\"))"
+    # Only the PUBLIC sign-in of rova prod: every other host is behind Cloudflare Access (an unauthenticated
+    # client never reaches its /api/auth), and the apps rate-limit per IP and per user themselves (Valkey).
+    # Only the real sign-in endpoints — never get-session — so normal staff traffic (whole office behind one
+    # NAT IP) cannot trip it, while a credential-stuffing burst does. `log` is not on the zone plan.
+    description         = "Block an IP that sends more than 100 rova prod sign-in requests in 10 seconds"
+    expression          = "(http.host eq \"rova.qnsc.vn\" and (starts_with(http.request.uri.path, \"/api/auth/sign-in\") or starts_with(http.request.uri.path, \"/api/auth/callback\")))"
     period              = 10
     requests_per_period = 100
     mitigation_timeout  = 10
