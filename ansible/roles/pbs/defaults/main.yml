@@ -4,6 +4,12 @@
 pbs_apt_suite: "{{ ansible_facts['distribution_release'] }}"
 pbs_repository_file: /etc/apt/sources.list.d/pbs-no-subscription.sources
 
+# The enterprise sources need a subscription. pbs-enterprise.sources on pve01 made every
+# `apt-get update` fail with 401 (so no security updates) until the owner disabled it by hand
+# on 2026-11-05; this role keeps it disabled. pve_base disables the PVE and Ceph ones.
+pbs_disable_enterprise_repos: true
+pbs_enterprise_repo_file: /etc/apt/sources.list.d/pbs-enterprise.sources
+
 pbs_zfs_dataset: backup/pbs
 pbs_datastore_name: qnsc
 pbs_datastore_path: /backup/pbs
