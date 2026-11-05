@@ -40,12 +40,14 @@
 #
 # No Mail.* permission anywhere (§7.2): Exchange RBAC
 # ("Application Mail.Send" scoped to the product mailbox) is EXCHANGE-side and
-# stays owner-run in scripts/owner/mail-prod-tenant/. rova and kb Service
-# apps hold NO Graph permissions at all; opshub_dev models EXACTLY the three
-# LIVE application roles (2026-10-28 export; the write roles come later in
-# their own PR) so the import does not REMOVE them (azuread 3.x does not
-# treat required_resource_access as Computed); ids are resolved from the
-# msgraph SP — no literal UUIDs.
+# stays owner-run in scripts/owner/mail-prod-tenant/. Only the rova PROD
+# Service app holds a Graph permission, User.Invite.All (app-only guest
+# invite — see below); rova DEV Service and the kb Service apps hold NO Graph
+# permissions at all; opshub_dev models EXACTLY the three LIVE application
+# roles (2026-10-28 export; the write roles come later in their own PR) so the
+# import does not REMOVE them (azuread 3.x does not treat
+# required_resource_access as Computed); ids are resolved from the msgraph SP
+# — no literal UUIDs.
 
 locals {
   mail_service_apps = {
@@ -54,14 +56,30 @@ locals {
       notes        = "github.com/quynhonsemiconductor/rova"
       # The one Graph permission the plan gives the rova Service app (§7.3,
       # H-D14, backlog P0-7): tenant-wide guest invite — the sign-in apps
-      # must keep NO application permissions. The app UPDATE is in this
-      # plan; the ADMIN CONSENT is a separate manual step right after apply
+      # hold NO application permissions. The app UPDATE is in this plan; the
+      # ADMIN CONSENT is a separate manual step right after apply
       # (az ad app permission admin-consent, README step 4).
       graph_app_role_values = ["User.Invite.All"]
     }
     rova_dev = {
-      display_name          = "Rova Dev Service"
-      notes                 = "github.com/quynhonsemiconductor/rova"
+      display_name = "Rova Dev Service"
+      notes        = "github.com/quynhonsemiconductor/rova"
+      # PROD ONLY (SA decision 2026-11-05): the ONE tenant is shared by dev and
+      # prod, and a dev-vault certificate must never be able to invite guests
+      # into it. So dev does NOT get User.Invite.All — the ABSENT GRANT is the
+      # security control.
+      #
+      # The flag is NOT a security control. ENTRA_GUEST_INVITE_ENABLED=false
+      # (gitops values/rova/dev.yaml) gates ENQUEUE only —
+      # GuestInviteSchedulerService.schedule() returns false. The client is a
+      # DI singleton and the worker relay still drains rows already queued in
+      # messaging.guest_invite_outbox; with no grant, each Graph call is 403
+      # and the row dead-letters on attempt 1. Check the outbox before
+      # deploying the flag flip (gitops PR body).
+      #
+      # An empty list here also removes the wizard-default delegated User.Read
+      # on apply; export the live requiredResourceAccess and check the plan
+      # (README go/no-go).
       graph_app_role_values = []
     }
     opshub_dev = {
