@@ -45,6 +45,11 @@
     mode: "0644"
   notify: Restart node-exporter
 
+# Apply the flags NOW: if a later task fails, a pending handler is dropped and the package's default
+# (all collectors on *:9100) keeps running — seen on the first owner run 2026-11-05.
+- name: Restart node-exporter with the managed flags before continuing
+  ansible.builtin.meta: flush_handlers
+
 - name: Create the textfile directory
   ansible.builtin.file:
     path: "{{ pve_monitoring_textfile_dir }}"
@@ -92,6 +97,8 @@
     state: started
     enabled: true
     daemon_reload: true
+  # --check writes no unit files, so the timer does not exist yet in a dry run.
+  when: not ansible_check_mode
 
 - name: Seed the first textfile snapshot before Alloy starts
   ansible.builtin.command: "{{ pve_monitoring_script }}"
@@ -132,7 +139,15 @@
     mode: "0600"
 
 # Versioned unpack directory: a version bump cannot reuse the previous
-# binary via `creates`.
+# binary via `creates`. unarchive needs the destination to exist already.
+- name: Create the versioned unpack directory
+  ansible.builtin.file:
+    path: "{{ pve_monitoring_download_dir }}/alloy-{{ pve_monitoring_alloy_version }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
 - name: Unpack Alloy
   ansible.builtin.unarchive:
     src: "{{ pve_monitoring_download_dir }}/alloy-linux-amd64-{{ pve_monitoring_alloy_version }}.zip"
