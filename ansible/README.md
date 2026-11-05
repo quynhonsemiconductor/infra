@@ -110,9 +110,16 @@ only the OIDC standard name/subject/email claims and **cannot be customized** â€
 <https://learn.microsoft.com/en-us/entra/identity-platform/userinfo>). So `pve_base_entra` does not rely on
 the claim: it pre-creates `<email>@<realm>` for every list entry, makes each one a member of
 `<group-oid>-entra`, and removes members no longer listed (offboarding). The realm keeps `autocreate=0`
-(only listed admins may exist) and `groups-overwrite=0` (a login never wipes the membership). PBS already
-works this way: pre-created user + per-user ACL. A `--check` run reports each pending create/addition/
-removal; a second run is `changed=0`.
+(only listed admins may exist) and `groups-overwrite=0` (a login never wipes the membership). On an
+existing realm the role also deletes the legacy `groups-claim` / `groups-autocreate` settings
+(`pveum realm modify <realm> --delete groups-claim,groups-autocreate`) so the configuration converges and
+drift includes them. PBS already works this way: pre-created user + per-user ACL. A `--check` run reports
+each pending create/addition/removal; a second run is `changed=0`.
+
+A **PVE-only** inventory may omit the shared list entirely: the realm, group and ACL are still managed,
+and only the user pre-creation/membership/offboarding tasks are skipped. When the list is present it must
+hold exact Entra email strings with no duplicates, and the same `proxmox_entra_admin_emails` (canonical)
+wins over the legacy `pbs_entra_admin_emails` in both roles.
 
 The client secret comes from the environment of the run (Key Vault `kv-qnsc-admin`,
 `admin-proxmox-oidc-secret`, created in identity step 4 with `scripts/rotate-signin-secret.sh`):
