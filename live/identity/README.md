@@ -768,6 +768,20 @@ reviewed change of the same shape (pin + import of the new keyId), not an
 apply: this resource keeps the one credential it created.
 
 
+### Delegated consent and app-role groups
+
+Every sign-in app (Rova Dev/Prod, OpsHub Dev/Prod, KB Dev) has an AllPrincipals
+`azuread_service_principal_delegated_permission_grant` for `openid profile email
+offline_access User.Read`, so no user sees a consent prompt. Grant ids that
+already exist are imported through `TF_VAR_signin_delegated_grant_ids` (the
+apply kit discovers them); a missing key plans a create, which Entra rejects as
+a duplicate against a live grant.
+
+OpsHub Dev and Prod app-role `admin` is assigned to `grp-qnsc-platform-admins`
+in IaC. The other six roles stay per-user: no role-specific Entra group exists
+(owner decision 2026-11-05). A group assignment is additive and never removes
+the live user assignments.
+
 ## Prod identity: OpsHub (`prod_apps.tf`)
 
 Unlike the dev pair, the prod pair does not exist: this stack CREATES it.
@@ -1115,6 +1129,7 @@ product-docs), so the owner reads the rest from Entra or `az` as shown.
 | `TF_VAR_mail_service_certificates` | JSON, 4 PEM public certs (the pinned primary of each app) | dev: 1Password "Entra mail cert – <product>-dev – certificate"; rova_prod: `az keyvault secret show ... | openssl x509` (mail step 3) |
 | `TF_VAR_mail_service_rotated_certificates` | JSON map `{keyId: PEM}`, REQUIRED, no default | built by the kit from Entra `keyCredentials`; today one entry: KB Dev's 2026-11-04 credential. Keyed by the keyIds pinned in `mail.tf`, never hand-built |
 | `TF_VAR_mail_service_graph_grant_ids` | JSON map `{"<slot>/<role>": <assignment id>}`, REQUIRED, no default | built by the kit from each service app's live `appRoleAssignments` (README "Graph permission grants") |
+| `TF_VAR_signin_delegated_grant_ids` | JSON map `{<slot>: <grant id>}`, optional (default `{}`) | built by the kit from each sign-in app's live AllPrincipals `oauth2PermissionGrants`; absent apps plan a create |
 | `TF_VAR_opshub_prod_service_graph_grant_ids` | JSON map `{<role>: <assignment id>}`, REQUIRED, no default | built by the kit from "OpsHub Prod Service" `appRoleAssignments` |
 | `TF_VAR_opshub_prod_service_certificate` | PEM PUBLIC cert (one string), optional | `$HOME/keys/opshub-prod-cert.pem` from "Prod identity: OpsHub" step 1. Unset = the prod service app is not created (and the app's precondition stops the plan) |
 

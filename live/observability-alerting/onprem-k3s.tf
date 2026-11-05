@@ -22,10 +22,9 @@
 # NOT here, deliberately: backup failed/missed (Healthchecks.io owns the
 # batch-job pings), cert expiry (weekly expiry-check Action; CNPG server
 # certs auto-renew ~90 d), /readyz failing and tunnel down (Synthetic
-# Monitoring's readyz check + the node-down rule), ZFS pool capacity/health
-# (the pools live on the pve01 HOST, not in the k3s VM this scrapes — the
-# host-metrics design is in the server-setup runbook, with the 80/90 tiers
-# documented there for the host textfile collector).
+# Monitoring's readyz check + the node-down rule). ZFS/NVMe/PBS signals on
+# the pve01 HOST are not in this file: they come from the host textfile
+# collector and live in onprem-host.tf (job="pve-host").
 # =============================================================================
 
 variable "onprem_alerts_enabled" {

@@ -24,7 +24,8 @@ Priority: **P1** wave 1 (in `ansible/` now), **P2** wave 2 (next), **P3** later,
 | `--check` state report of the script | same script | Ansible `--check --diff` + the role's verify tasks | P1 | the script can be deleted after the first clean Ansible run |
 | VM template 9000 build | `scripts/owner/pve-template-9000.sh` | Ansible role `pve_template` (qm commands, idempotent) | P2 | stays a script until then; an image rebuild is a deliberate act, not drift |
 | ai-01: NVIDIA driver + toolkit + k3s agent join | `scripts/owner/qnsc-k3s-agent-join.sh` | Ansible `k3s_agent_gpu` | P1 | the join token comes from 1Password through the environment of the run, never a vars file |
-| k3s server config and version pin | `live/onprem-vm/files/k3s/config.yaml`, `version` | Ansible `k3s_server` (the files stay as the record until the role has a clean run, then are deleted) | P1 | the two `service-account-issuer` lines of infra#252 are a variable, default off |
+| k3s server config and version pin | (was `live/onprem-vm/files/k3s/`) | Ansible `k3s_server` + `group_vars/k3s.yml` | done | ONE source; the files/ copy was deleted (it lacked the ESO issuer lines). OIDC issuer is a site value, default off |
+| kubelet reservations, eviction and graceful shutdown (all nodes) | hand-written `90-qnsc.conf` on k3s-01 only | Ansible `kubelet` (drop-in `/var/lib/rancher/k3s/agent/etc/kubelet.conf.d/90-qnsc.conf`) | P1 | server 1 CPU/2 Gi, agents 500m/1 Gi; shutdown 120 s/60 s; image GC 336 h; restart gated |
 | Azure state account preflight | `scripts/owner/bootstrap-state.sh` | keep | keep | a one-time Azure bootstrap run from a laptop with `az`; chicken-and-egg with OpenTofu |
 | Exchange mailbox scoping (PowerShell) | `scripts/owner/mail-prod-tenant/` | keep (no provider for Exchange RBAC) | keep | documented in live/identity README |
 | Read-only kubeconfig for the operator | `scripts/owner/kubeconfig-ro.sh` | keep | keep | secret handling into 1Password |

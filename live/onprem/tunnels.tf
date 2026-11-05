@@ -94,7 +94,8 @@ locals {
 # lookup fails the plan if an app is missing, so a host is never left
 # unchecked silently.
 locals {
-  access_jwt_hosts = toset(["rova-dev.qnsc.vn", "opshub-dev.qnsc.vn"])
+  # opshub.qnsc.vn: its staff Access app exists since infra#343 (same name = hostname).
+  access_jwt_hosts = toset(["rova-dev.qnsc.vn", "opshub-dev.qnsc.vn", "kb-dev.qnsc.vn", "opshub.qnsc.vn"])
   # A rule may name a different Access app than its host's (`access_app`): /mcp is behind the MCP server
   # apps (live/edge mcp.tf, mcp_rova_prod.tf), whose JWT carries THEIR aud, not the host web app's.
   access_jwt_apps = setunion(local.access_jwt_hosts, toset(compact([for r in local.qnsc_apps_ingress : try(r.access_app, "")])))
@@ -137,6 +138,19 @@ data "cloudflare_zero_trust_access_application" "argocd" {
   account_id = var.cloudflare_account_id
   filter = {
     name  = var.admin_hostnames["argocd"]
+    exact = true
+  }
+}
+
+# The pve and pbs doors (qnsc-admin tunnel). Same lookup, same reason: the rules
+# below refuse a request that did not come through the host's Access app. The
+# two keys are REQUIRED by the variable validation, so the lookup always exists.
+data "cloudflare_zero_trust_access_application" "admin_doors" {
+  for_each = toset(["pve", "pbs"])
+
+  account_id = var.cloudflare_account_id
+  filter = {
+    name  = var.admin_hostnames[each.key]
     exact = true
   }
 }
@@ -222,15 +236,23 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "qnsc_admin" {
   config = {
     ingress = [
       # §12.1 (runbook): the operator doors. Access apps on BOTH hosts are
-      # owned by live/edge (Allow grp-qnsc-platform-admins, Require amr=mfa);
-      # these rules only decide where an authenticated request lands. Order
-      # matters: host rules BEFORE the catch-all.
+      # owned by live/edge (Allow grp-qnsc-platform-admins, Require amr=mfa).
+      # cloudflared ALSO checks each host's Cf-Access-Jwt-Assertion here
+      # (audit N-M4), exactly as the qnsc-apps rules and the argocd rule do:
+      # if the Access app is detached or mis-edited at the edge, the Proxmox
+      # or PBS login is not reachable from the internet. Order matters: host
+      # rules BEFORE the catch-all.
       {
         hostname = var.admin_hostnames["pve"]
         path     = null
         service  = "https://localhost:8006"
         origin_request = {
           no_tls_verify = true # Proxmox pveproxy ships a self-signed cert
+          access = {
+            required  = true
+            team_name = local.access_team_name
+            aud_tag   = [data.cloudflare_zero_trust_access_application.admin_doors["pve"].aud]
+          }
         }
       },
       {
@@ -239,6 +261,11 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "qnsc_admin" {
         service  = "https://localhost:8007"
         origin_request = {
           no_tls_verify = true # PBS ships a self-signed cert
+          access = {
+            required  = true
+            team_name = local.access_team_name
+            aud_tag   = [data.cloudflare_zero_trust_access_application.admin_doors["pbs"].aud]
+          }
         }
       },
       {

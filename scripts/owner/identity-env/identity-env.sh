@@ -245,6 +245,38 @@ case "$(jq 'length' <<<"$OPS")" in
   *) die "expected at most 1 app named 'OpsHub Prod Service'" ;;
 esac
 
+# --- Delegated permission grants already live (AllPrincipals, resource = Microsoft Graph) ---------------------
+# Without an import the grant resource would plan a CREATE and Entra answers 409 (duplicate). The id map is
+# keyed like local.signin_delegated_grant_targets; an app with no AllPrincipals grant is simply absent and plans
+# a create. Principal (single-user) grants are NOT imported: they are a different object and not the tenant-wide
+# consent this stack manages.
+delegated_grant_id() { # <sign-in SP object id>: one AllPrincipals Graph grant id, or empty
+  az_json "delegated grants" rest --method get \
+      --url "https://graph.microsoft.com/v1.0/servicePrincipals/$1/oauth2PermissionGrants" \
+    | jq -r --arg g "$GRAPH_SP" '
+        [.value[] | select(.consentType == "AllPrincipals" and .resourceId == $g) | .id]
+        | if length == 0 then "" elif length == 1 then .[0] else error("more than one AllPrincipals Graph grant") end'
+}
+SIGNIN_GRANTS='{}'
+for k in "${KEYS[@]}"; do
+  dg=$(delegated_grant_id "$(<"$APPS_DIR/signin-$k.sp")")
+  [[ -n "$dg" ]] || continue
+  SIGNIN_GRANTS=$(jq -c --arg k "$k" --arg v "$dg" '.[$k]=$v' <<<"$SIGNIN_GRANTS")
+done
+# OpsHub Prod sign-in app (prod_apps.tf): optional; it exists after the 2026-11-04 prod apply.
+OPS_SIGNIN=$(az ad app list --filter "displayName eq 'OpsHub Prod'" -o json 2>/dev/null) \
+  || die "az lookup failed: OpsHub Prod"
+case "$(jq 'length' <<<"$OPS_SIGNIN")" in
+  0) ;;
+  1) osapp=$(jq -r '.[0].appId // empty' <<<"$OPS_SIGNIN"); need_guid "OpsHub Prod appId" "$osapp"
+     ossp=$(az_json "service principal of OpsHub Prod" ad sp list --filter "appId eq '$osapp'")
+     [[ "$(jq 'length' <<<"$ossp")" == "1" ]] || die "expected exactly 1 service principal for 'OpsHub Prod'"
+     dg=$(delegated_grant_id "$(jq -r '.[0].id' <<<"$ossp")")
+     [[ -z "$dg" ]] || SIGNIN_GRANTS=$(jq -c --arg k opshub_prod --arg v "$dg" '.[$k]=$v' <<<"$SIGNIN_GRANTS") ;;
+  *) die "expected at most 1 app named 'OpsHub Prod'" ;;
+esac
+[[ "$SIGNIN_GRANTS" == "{}" ]] || put TF_VAR_signin_delegated_grant_ids "$SIGNIN_GRANTS"
+
 # --- ESO certificates: only while the stack still declares the variable (removed by the #254 PR) -------------
 # The PUBLIC certificate live on each ESO app, from Graph like the mail certs: a file on disk can be stale (rotation)
 # and a stale value plans a REPLACE that takes the ClusterSecretStores' credential away.

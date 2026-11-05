@@ -40,6 +40,25 @@ Results are PASS, FAIL, N/A (rule does not apply) or SKIP (data not collected: t
 step). Every FAIL has a concrete fix line. Also reported: expected apps that are missing (a Service app with no sign-in app
 and vice versa), Exchange mail role assignments that match no app, and collection notes.
 
+## Tenant-wide consents (separate, narrower report)
+
+`tenant-consents.sh` answers one question the app-registration audit does not: **which apps hold a
+tenant-wide grant**? It lists every delegated grant with `consentType AllPrincipals` (every user is an actor
+for those scopes) and the application permissions held on Microsoft Graph and Exchange Online (admin consent
+for an app role is tenant-wide by nature), with the client app, the resource and the scopes/roles. It is the
+tool for the 2026-11-04 audit finding: third-party AI/mail connectors consented for the whole tenant that are
+not in IaC.
+
+```bash
+scripts/entra-audit/tenant-consents.sh                 # collect + print; output in ~/tenant-consents-<date>/
+scripts/entra-audit/tenant-consents.sh --report-only DIR   # re-render an existing collection
+```
+
+It is read-only in the same sense as the audit above (one `az rest` GET call site, enforced by
+`check-readonly.sh`), writes `tenant-consents.json` and `tenant-consents-report.md` outside any git
+repository, and lists no secret value. The report is a decision aid, not a pass/fail gate: for each row,
+keep a sanctioned tool (and move it to per-user grants for its actual users) or revoke the grant.
+
 ## Prerequisites
 
 - **Global Reader** in the tenant; no write role is needed or used. Azure CLI (`az`), `jq`, and **Python 3.10 or newer**

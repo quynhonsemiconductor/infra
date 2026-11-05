@@ -238,6 +238,15 @@ resource "azuread_app_role_assignment" "opshub_prod_service" {
   resource_object_id  = data.azuread_service_principal.msgraph.object_id
 }
 
+# Admin -> grp-qnsc-platform-admins, same mapping as OpsHub Dev. The other
+# six roles have no Entra group yet (owner decision 2026-11-05: admin only
+# now); the live per-user grants are not touched.
+resource "azuread_app_role_assignment" "opshub_prod_admin" {
+  app_role_id         = local.opshub_prod_app_role_ids["admin"]
+  principal_object_id = var.platform_admins_object_id
+  resource_object_id  = azuread_service_principal.opshub_prod.object_id
+}
+
 output "opshub_prod_client_ids" {
   description = "Client (application) ids for gitops values/opshub/prod.yaml: signin = <OPSHUB_PROD_ENTRA_CLIENT_ID>, service = <OPSHUB_PROD_SERVICE_APP_ID>. Public identifiers, never a secret."
   value = {

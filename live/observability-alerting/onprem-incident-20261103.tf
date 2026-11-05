@@ -21,11 +21,15 @@
 # =============================================================================
 locals {
   onprem_incident_rules = {
+    # CNPG series carry `cluster` = the POSTGRES cluster name (pg-rova,
+    # pg-opshub, pg-dev), not the Alloy `qnsc-onprem` cluster. Filtering
+    # cluster="qnsc-onprem" on cnpg_* matched nothing (silent rules, fixed
+    # 2026-11-04); scope by namespace + cnpg_cluster instead.
     pg_connections_prod = {
       name = "k3s-pg-connections-over-80-percent-prod"
       # Client backends (every state, idle included: an idle session still holds
       # a slot) over max_connections, per instance pod.
-      expr      = "sum by (namespace, cnpg_cluster, pod) (cnpg_backends_total{cluster=\"qnsc-onprem\", namespace=\"data-prod\"}) / on (namespace, cnpg_cluster, pod) max by (namespace, cnpg_cluster, pod) (cnpg_pg_settings_setting{cluster=\"qnsc-onprem\", namespace=\"data-prod\", name=\"max_connections\"})"
+      expr      = "sum by (namespace, cnpg_cluster, pod) (cnpg_backends_total{namespace=\"data-prod\"}) / on (namespace, cnpg_cluster, pod) max by (namespace, cnpg_cluster, pod) (cnpg_pg_settings_setting{namespace=\"data-prod\", name=\"max_connections\"})"
       op        = "gt"
       threshold = 0.8
       for       = "5m"
@@ -37,7 +41,7 @@ locals {
     }
     pg_connections_dev = {
       name      = "k3s-pg-connections-over-80-percent-dev"
-      expr      = "sum by (namespace, cnpg_cluster, pod) (cnpg_backends_total{cluster=\"qnsc-onprem\", namespace=\"data-dev\"}) / on (namespace, cnpg_cluster, pod) max by (namespace, cnpg_cluster, pod) (cnpg_pg_settings_setting{cluster=\"qnsc-onprem\", namespace=\"data-dev\", name=\"max_connections\"})"
+      expr      = "sum by (namespace, cnpg_cluster, pod) (cnpg_backends_total{namespace=\"data-dev\"}) / on (namespace, cnpg_cluster, pod) max by (namespace, cnpg_cluster, pod) (cnpg_pg_settings_setting{namespace=\"data-dev\", name=\"max_connections\"})"
       op        = "gt"
       threshold = 0.8
       for       = "5m"
