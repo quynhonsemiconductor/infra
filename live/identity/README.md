@@ -770,14 +770,15 @@ apply: this resource keeps the one credential it created.
 
 ### Delegated consent and app-role groups
 
-Every sign-in app (Rova Dev/Prod, OpsHub Dev/Prod, KB Dev) has an AllPrincipals
-`azuread_service_principal_delegated_permission_grant` for the delegated scopes
-that app requests (`openid profile email offline_access User.Read`, plus KB's
-`Files.Read`, `Files.Read.All` and `Sites.Read.All`), so no user sees a consent
-prompt. The set is DERIVED from the app's `requiredResourceAccess`, never a
-fixed list. Grant ids that already exist are imported through
-`TF_VAR_signin_delegated_grant_ids` (the apply kit discovers them); a missing
-key plans a create, which Entra rejects as a duplicate against a live grant.
+Every sign-in app (Rova Dev/Prod, OpsHub Dev/Prod, KB Dev/Prod) has an
+AllPrincipals `azuread_service_principal_delegated_permission_grant` for the
+delegated scopes that app requests (`openid profile email offline_access
+User.Read`, plus KB's `Files.Read`, `Files.Read.All` and `Sites.Read.All`), so
+no user sees a consent prompt. The set is DERIVED from the app's
+`requiredResourceAccess`, never a fixed list. Grant ids that already exist are
+imported through `TF_VAR_signin_delegated_grant_ids` (the apply kit discovers
+them); a missing key plans a create, which Entra rejects as a duplicate against
+a live grant.
 
 An apply replaces a grant's scope list, so the kit also reads each live grant's
 scopes into `TF_VAR_signin_delegated_grant_scopes`. A live scope the derived set
@@ -1041,27 +1042,146 @@ expects these names in `kv-qnsc-prod`:
 | `opshub-prod-db-app`, `-db-worker`, `-db-migrator`, `-db-readonly`, `-redis-url` | owner bootstrap / pg-opshub provisioning |
 | `opshub-prod-storage-access-key-id`, `-storage-secret-access-key` | R2 token (live/storage-prod) |
 
-### KB prod — open questions (no resources until decided)
+## Prod identity: KB (`kb_prod_apps.tf`)
 
-KB dev's apps tell us the shape but not the prod addresses:
+The prod pair does not exist: this stack CREATES it, exactly like OpsHub prod.
 
-1. **Sign-in redirects**: dev has two on the `kb-api-dev` host
-   (`/api/v1/auth/entra/callback` and `/api/v1/connectors/oauth/callback`)
-   plus their localhost forms. What are the PROD host names? They are not in
-   live/edge or gitops yet, so they are deliberately not written here.
-2. **OAuth connector**: do the `/api/v1/connectors/oauth/callback` redirect
-   and the delegated `Files.Read`, `Files.Read.All`, `Sites.Read.All` scopes
-   ship in prod? Dev has them.
-3. **Mail**: the KB dev service app holds NO Graph application roles. If kb
-   prod sends mail, the only requirement is the owner's Exchange RBAC
-   (`Application Mail.Send` scoped to `noreply-kb@qnsc.vn`) — no Entra role.
-   Confirm whether kb prod mail is in scope for P3.
-4. **Service certificate / KV names**: same create pattern as opshub (public
-   PEM in, combined PEM to `kv-qnsc-prod/kb-prod-graph-cert` once the name is
-   confirmed against `values/kb/prod.secrets.yaml`).
-5. **Optional id-token claims**: dev declares none (the `email` delegated scope
-   is requested, but no optional id-token claim is); keep none unless KB asks
-   for `preferred_username`.
+- **"KB Prod"** — sign-in app, the dev delegated set (`openid profile email
+  offline_access User.Read Files.Read Files.Read.All Sites.Read.All`), TWO
+  redirects on the decided prod host:
+  `https://kb.qnsc.vn/api/v1/auth/entra/callback` and
+  `https://kb.qnsc.vn/api/v1/connectors/oauth/callback`. No loopback, no
+  optional id-token claims, no app roles (the dev app has none).
+- **"KB Prod Service"** — certificate only, the same EMPTY Graph permission
+  set as KB Dev Service. Mail is Exchange RBAC for Applications, never
+  `Mail.Send` in Entra.
+- **Tenant-wide delegated consent** — the same
+  `azuread_service_principal_delegated_permission_grant.signin["kb_prod"]`
+  resource as every other sign-in app, with the #383 no-narrowing
+  preconditions. It is created by the apply; the kit imports it on a later
+  run.
+
+The known host and the owner decisions (both callbacks, connector scopes,
+mail via Exchange RBAC) close the five questions the earlier draft carried.
+
+### Pre-apply check (run it first)
+
+```sh
+az ad app list --display-name "KB Prod" --query "[].appId" -o tsv
+az ad app list --display-name "KB Prod Service" --query "[].appId" -o tsv
+```
+
+Both must print nothing. A hit belongs to someone else: STOP and adopt it with
+import blocks instead of creating a duplicate.
+
+### Owner steps
+
+1. Generate the service keypair locally (RSA 2048, ≤ 24 months). Only the
+   PUBLIC half goes to Terraform; the combined PEM goes to the vault:
+
+   ```sh
+   umask 077
+   mkdir -p "$HOME/keys" && cd "$HOME/keys"
+   openssl req -x509 -newkey rsa:2048 -nodes \
+     -keyout kb-prod-key.pem -out kb-prod-cert.pem \
+     -days 730 -subj '/CN=KB Prod Service'
+   # ORDER MATTERS: private key (PKCS#8) FIRST, then the certificate — the
+   # order values/kb/prod.secrets.yaml mounts the file in.
+   cat kb-prod-key.pem kb-prod-cert.pem > kb-prod-combined.pem
+   grep -c "PRIVATE KEY" kb-prod-cert.pem   # must print 0
+   export TF_VAR_kb_prod_service_certificate="$(cat "$HOME/keys/kb-prod-cert.pem")"
+   ```
+
+2. `tofu plan` with the full variable set. Go/no-go, exactly: **6 to add,
+   0 to change, 0 to destroy** — 1 sign-in application ("KB Prod"), 1 service
+   principal, 1 service application ("KB Prod Service"), 1 certificate
+   credential, 1 service principal, 1 tenant-wide delegated grant. Without
+   `TF_VAR_kb_prod_service_certificate` the precondition on the sign-in app
+   stops the plan: no partial shape is possible.
+
+3. `tofu apply`, then record the outputs:
+   `tofu output -json kb_prod_client_ids` (gitops placeholders
+   `<KB_PROD_CLIENT_ID>` = `signin`, `<KB_PROD_SERVICE_APP_ID>` = `service`)
+   and `tofu output -json kb_prod_object_ids` (the steps below).
+
+4. **Sign-in client secret** — never in state, ≤ 6 months, straight into the
+   vault under the name `values/kb/prod.secrets.yaml` reads. KB names it
+   `microsoft-client-secret`, not `entra-client-secret` like rova/opshub:
+
+   ```sh
+   ./scripts/rotate-signin-secret.sh \
+     "$(tofu output -json kb_prod_client_ids | jq -r .signin)" \
+     kv-qnsc-prod kb-prod-microsoft-client-secret
+   ```
+
+5. **Service certificate** — combined PEM into the vault; ESO mounts it
+   worker-only at `AZURE_CLIENT_CERTIFICATE_PATH`:
+
+   ```sh
+   az keyvault secret set --vault-name kv-qnsc-prod \
+     --name kb-prod-graph-cert \
+     --file "$HOME/keys/kb-prod-combined.pem" \
+     --tags owner=platform rotate-by=2028-11-05
+   ```
+
+6. **Admin consent** for the delegated grant: created tenant-wide by
+   Terraform (AllPrincipals), so there is nothing to consent by hand. The
+   service app's Graph set is intentionally empty.
+
+7. **The rest of the prod secret bundle** — generated/asked by the bootstrap
+   script (DB passwords, redis URL, gemini key, R2 pair, the client secret it
+   finds already set is skipped):
+
+   ```sh
+   gitops/platform/bootstrap/secrets.sh --product kb --env prod \
+     --vault-app kv-qnsc-prod --skip-site
+   ```
+
+8. **R2 token** — one bucket, one token pair (see "KB prod R2" below).
+
+9. **Exchange RBAC** — after this apply, run the merged infra#340 script at
+   least a day before cutover (RBAC propagation):
+
+   ```powershell
+   ./exchange-prod-mail.ps1 -TenantId dc0f2078-… -Product kb `
+     -ServiceAppId <kb_prod_client_ids.service> `
+     -ServiceObjectId <kb_prod_object_ids.service_sp> `
+     -ControlMailbox noreply-kb-dev@qnsc.vn
+   ```
+
+   Creates `noreply-kb@qnsc.vn`, the `noreply-kb` scope and
+   `Application Mail.Send` for "KB Prod Service". The proof table must read
+   `True` for its own mailbox and `False` everywhere else.
+
+10. **Group access** — the `kb.qnsc.vn` host is gated at the EDGE by
+    `grp-qnsc-staff` (`grp_staff_id` output → repo variable
+    `ENTRA_GRP_STAFF_ID` → live/edge), not in this stack.
+
+### KB prod R2
+
+Confirmed against `live/storage-prod` and `values/kb/prod.secrets.yaml`:
+
+| Item | Value |
+| --- | --- |
+| Bucket | `qnsc-kb-prod-sources` (ONE bucket; the module `qnsc_kb_sources`, outputs `qnsc_kb_sources_name` / `_endpoint`) |
+| Token secret names | `kb-prod-r2-access-key-id`, `kb-prod-r2-secret-access-key` |
+| Scope | The two above, `kv-qnsc-prod`, **scoped to that bucket only**, object read+write; no CORS, no custom domain (uploads are server-side) |
+| Bucket state | `cd infra/live/storage-prod && tofu state list \| grep qnsc_kb_sources` must show the module; if absent, apply that stack first |
+
+Backups do NOT use a kb-specific token: `platform/kb-prod/pg-kb-backup.yaml`
+(gitops#255) reads the shared `r2-backup-rw-*` pair for bucket
+`qnsc-backups`, destination `pg-kb/pg-kb-g1`.
+
+### KB prod Key Vault wiring (`kb-prod-*`)
+
+| Secret | Written by |
+| --- | --- |
+| `kb-prod-microsoft-client-secret` | step 4 (this README) |
+| `kb-prod-graph-cert` | step 5 (this README) |
+| `kb-prod-secret-key`, `-data-encryption-key`, `-gemini-api-key` | `secrets.sh` (step 7) |
+| `kb-prod-r2-access-key-id`, `-r2-secret-access-key` | R2 token (step 8) |
+| `kb-prod-db-app`, `-db-migrator`, `-db-readonly`, `-redis-url` | `secrets.sh` / pg-kb provisioning (step 7) |
+
 
 ## Prod mail readiness: the rova prod fast-track checklist
 
@@ -1141,6 +1261,7 @@ product-docs), so the owner reads the rest from Entra or `az` as shown.
 | `TF_VAR_signin_delegated_grant_scopes` | JSON map `{<slot>: [<scope>...]}`, optional (default `{}`) | built by the kit from the same live grants; a live scope missing from the derived set fails the plan |
 | `TF_VAR_opshub_prod_service_graph_grant_ids` | JSON map `{<role>: <assignment id>}`, REQUIRED, no default | built by the kit from "OpsHub Prod Service" `appRoleAssignments` |
 | `TF_VAR_opshub_prod_service_certificate` | PEM PUBLIC cert (one string), optional | `$HOME/keys/opshub-prod-cert.pem` from "Prod identity: OpsHub" step 1. Unset = the prod service app is not created (and the app's precondition stops the plan) |
+| `TF_VAR_kb_prod_service_certificate` | PEM PUBLIC cert (one string), optional | `$HOME/keys/kb-prod-cert.pem` from "Prod identity: KB" step 1. Unset = the whole KB prod pair is refused (precondition) |
 
 The `existing_*` and `mail_service_*` ids are public identifiers, not secrets,
 and can be read with read-only `az ad app list|show` / `az ad sp show`.
