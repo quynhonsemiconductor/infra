@@ -156,7 +156,13 @@ resource "cloudflare_dns_record" "dmarc" {
   # Exactly what is live (read from the CI plan of the import): TTL 1 = Cloudflare "automatic", no comment, content as typed. Matching it
   # is what makes the first apply a pure IMPORT. Quote the content and set a comment in a follow-up in-place update (as for the SPF record),
   # not in the same change as the import.
-  content = "v=DMARC1; p=none; rua=mailto:devops@qnsc.vn"
+  # 2026-11-05: p=none -> p=quarantine. Aggregate reports 2026-10-27..11-04 (Microsoft + Google, ~25 messages):
+  # every legitimate message came from Microsoft 365 (2a01:111:f403::/48) and passed DMARC through aligned SPF;
+  # the only failure was one message forwarded through a third-party Google Workspace (SPF aligned to the
+  # forwarder, no DKIM yet). Microsoft 365 DKIM for qnsc.vn is Valid since 2026-11-05, so forwarded mail now
+  # carries an aligned signature too. Products send through Graph (Microsoft 365), not SES. Next step, p=reject,
+  # after ~2 clean weeks of reports showing DKIM pass.
+  content = "v=DMARC1; p=quarantine; rua=mailto:devops@qnsc.vn"
   ttl     = 1
 
   lifecycle {
