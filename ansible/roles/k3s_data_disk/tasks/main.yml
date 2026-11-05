@@ -285,6 +285,7 @@
       ansible.builtin.find:
         paths: "{{ k3s_data_disk_temp_mount }}"
         file_type: any
+        hidden: true
         excludes: [lost+found]
       register: k3s_data_disk_on_disk
       when: not ansible_check_mode

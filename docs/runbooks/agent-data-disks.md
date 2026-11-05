@@ -36,7 +36,8 @@ emptyDir data on ai-01 is scratch only (TEI tmp, clamd's signature DB re-downloa
 Run these on **k3s-01** (the agents carry no admin kubeconfig):
 
 ```sh
-# what runs on ai-01, and which of it would survive a drain (DaemonSets): none may mount the storage path
+# what runs on ai-01; review the volumes of each pod that survives a drain (DaemonSets): none may
+# mount the storage path (a local-path PVC or a hostPath under /var/lib/rancher/k3s/storage)
 sudo k3s kubectl get pods -A -o wide --field-selector spec.nodeName=ai-01
 sudo k3s kubectl drain ai-01 --ignore-daemonsets --delete-emptydir-data --timeout=5m
 ```
@@ -88,6 +89,11 @@ If the role stops with an error after `k3s-agent` was stopped, the old data is s
 final mount has not happened: run `sudo systemctl start k3s-agent` on the node to restore service,
 then `sudo k3s kubectl uncordon ai-01` on k3s-01 (a drain, even a timed-out one, leaves the node
 cordoned), and read the failing task (it names the file or the copy check) before re-running.
+A failure after the temporary mount leaves the disk mounted at `/mnt/k3s-storage-new` (check with
+`findmnt /mnt/k3s-storage-new`). If the copy had started, the next run refuses with "already holds
+... entries": unmount it (`sudo umount /mnt/k3s-storage-new`), check whether that partial copy matters
+(it does not, because the root copy is still the source), and wipe it only after it has been
+reviewed. Never run a second rsync over it by hand.
 
 ## vlsi-01 — mount before the first workspace
 
