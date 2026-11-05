@@ -262,9 +262,10 @@ to ai-01; vlsi-01 shrinks until the VLSI team starts.
 | `ai-01` (101) | 12 GiB, 8 vCPU, GPU | **28 GiB, 12 vCPU**, GPU (pinned, no ballooning) |
 | `vlsi-01` (102) | 20 GiB, 12 vCPU | **4 GiB, 4 vCPU** |
 
-Totals: 56 GiB of the host's 62 GiB (24 + 28 + 4); the host keeps ~6 GiB for itself and the ZFS ARC.
-44 vCPUs are assigned across 32 host threads — time-sliced, not a hard limit. Inside k3s the shape is
-Burstable (requests ~p95, limits higher); nothing is ballooned.
+Totals: 56 GiB of the host's 62 GiB (24 + 28 + 4) — the same total as today, so the host's headroom
+(~6 GiB for itself and the ZFS ARC) is unchanged by this re-balance. 44 vCPUs are assigned across 32
+host threads — time-sliced, not a hard limit. Inside k3s the shape is Burstable (requests ~p95, limits
+higher); nothing is ballooned. Capping `zfs_arc_max` is a separate small PR.
 
 **Exactly TWO in-place VM updates; k3s-01 shows no line at all.** ai-01 and vlsi-01 both need a
 stop/start for dedicated memory and cores, so their new size lands at the next boot.
@@ -290,6 +291,9 @@ Owner window (TEI / kb search is down ~2-3 min while ai-01 boots; k3s-01 and eve
    ~ cpu    { cores = 12 -> 4 }          # vlsi-01
    ~ memory { dedicated = 20480 -> 4096 }
    ```
+
+   **Both ai-01 lines MUST appear.** If only one does, `site.tfvars` still pins the other old value
+   (8 cores or 12288 MB); update or delete those lines and re-plan — never apply a partial shape.
 
 4. `tofu apply tfplan`, then `qm start 101` and `qm start 102`. Wait for both nodes Ready; confirm
    `nvidia-smi` on ai-01 and the TEI pod healthy.
