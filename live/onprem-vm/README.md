@@ -10,7 +10,7 @@ holds no Proxmox token, and the API endpoint is the admin door.
 
 ## Owns
 
-- `proxmox_virtual_environment_vm.k3s_01` — 28 vCPU, 24 GiB since Phase 3 (balloon off),
+- `proxmox_virtual_environment_vm.k3s_01` — 28 vCPU, 24 GiB (unchanged by the VM re-balance), balloon off,
   q35 + OVMF, virtio-scsi-single, scsi0 120 G, scsi1 1200 G, net0 on the
   server VLAN, serial0 socket, VGA std. `prevent_destroy` is set: the VM holds
   every PVC. `reboot_after_update = false` — this stack never power-cycles the
@@ -181,10 +181,11 @@ Order for a whole new site: `docs/runbooks/site-from-zero.md`.
 
 ## ai-01 — the GPU agent node (§9.1)
 
-Same stack, second VM: `ai-01` (101), cloned from template 9000, 8 vCPU,
-12 GiB (Phase 3; was 20) with ballooning off, 40 GiB system disk + 300 GiB model-cache disk, the
+Same stack, second VM: `ai-01` (101), cloned from template 9000, 12 vCPU,
+28 GiB after the re-balance (was 8 vCPU, 12 GiB) with ballooning off,
+40 GiB system disk + 300 GiB model-cache disk, the
 RTX 5060 Ti via the `gpu-rtx5060ti` mapping, and only the `ai` namespace by
-taint. k3s-01 keeps 28 vCPU; the split leaves the hypervisor headroom.
+taint. k3s-01 keeps 28 vCPU and is not resized.
 
 **Order (a host reboot is in the middle of it):**
 
@@ -248,3 +249,57 @@ moment it decides.
 
 `cpu.units`: vlsi-01 has weight 25, k3s-01 and ai-01 keep the Proxmox default (100 on cgroup v2, 1024 on v1),
 so production wins when the host runs out of CPU. It only matters under contention.
+
+## VM re-balance — 24 / 28 / 4 (2026-11-05)
+
+PLAN-PLATFORM-HARDENING, "VM re-balance". k3s-01 is NOT resized: its memory requests are ~16.4 GiB with
+kb prod plus the 2 GiB systemReserved, so the earlier 18 GiB target is no longer safe. The spare RAM goes
+to ai-01; vlsi-01 shrinks until the VLSI team starts.
+
+| VM | now | after |
+|---|---|---|
+| `k3s-01` (100) | 24 GiB, 28 vCPU | **unchanged** |
+| `ai-01` (101) | 12 GiB, 8 vCPU, GPU | **28 GiB, 12 vCPU**, GPU (pinned, no ballooning) |
+| `vlsi-01` (102) | 20 GiB, 12 vCPU | **4 GiB, 4 vCPU** |
+
+Totals: 56 GiB of the host's 62 GiB (24 + 28 + 4); the host keeps ~6 GiB for itself and the ZFS ARC.
+44 vCPUs are assigned across 32 host threads — time-sliced, not a hard limit. Inside k3s the shape is
+Burstable (requests ~p95, limits higher); nothing is ballooned.
+
+**Exactly TWO in-place VM updates; k3s-01 shows no line at all.** ai-01 and vlsi-01 both need a
+stop/start for dedicated memory and cores, so their new size lands at the next boot.
+
+**Does the provider reboot by itself?** bpg's `reboot_after_update` defaults to **true**, but this stack
+sets it to **false** on all three VMs. false means the provider never power-cycles a VM: an update that
+cannot be applied online fails, and one applied with a pending-until-reboot change emits a warning. So
+the OWNER reboots/restarts, never the provider. In this window the VM is stopped before the apply, so
+there is no pending state at all.
+
+Owner window (TEI / kb search is down ~2-3 min while ai-01 boots; k3s-01 and every other product stay up):
+
+1. Check the GPU is not mid-job (the single 16 GiB RTX 5060 Ti is shared with kb prod TEI):
+   `ssh root@<admin-door host> 'qm config 101 | grep -i hostpci'` and on ai-01 `nvidia-smi`.
+2. Stop the two agent VMs:
+   `qm shutdown 102 --timeout 120`, then `qm shutdown 101 --timeout 180`.
+3. `tofu plan` go/no-go: **`0 to add, 2 to change, 0 to destroy`**, each change in place, no replacement,
+   and **no line for VM 100**:
+
+   ```
+   ~ cpu    { cores = 8 -> 12 }          # ai-01
+   ~ memory { dedicated = 12288 -> 28672 }
+   ~ cpu    { cores = 12 -> 4 }          # vlsi-01
+   ~ memory { dedicated = 20480 -> 4096 }
+   ```
+
+4. `tofu apply tfplan`, then `qm start 101` and `qm start 102`. Wait for both nodes Ready; confirm
+   `nvidia-smi` on ai-01 and the TEI pod healthy.
+5. Apply the kubelet drop-ins in the same window on ai-01 and vlsi-01
+   (`-e kubelet_allow_restart=true`; a drop-in change restarts k3s on that agent only). Profiles:
+   gpu 1 CPU / 2 Gi, vlsi 250m / 512 Mi.
+
+`site.tfvars` (git-ignored) may still carry the old values (`vm_cores`, `vm_memory_mb`, `ai01_cores`,
+`ai01_memory_mb`); delete those lines to take the defaults, or set them to the "after" column.
+`vlsi01_cores` / `vlsi01_memory_mb` are not in the example: the new defaults are the target.
+
+**Next step:** re-audit ALL VM sizes once every product is live, using pod requests/p95 (not guest
+usage) as the input to the next re-balance.

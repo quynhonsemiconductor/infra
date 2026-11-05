@@ -16,7 +16,7 @@
       tags: [k3s_registries]
     - role: kubelet
       vars:
-        kubelet_profile: agent
+        kubelet_profile: gpu
       tags: [kubelet]
     - role: apparmor_containerd
       vars:

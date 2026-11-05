@@ -33,8 +33,8 @@ bridge = "vmbr0"
 # ── ai-01 (GPU agent node) ────────────────────────────────────────────────
 ai01_vm_id     = 101
 ai01_vm_name   = "ai-01"
-ai01_cores     = 8
-ai01_memory_mb = 12288
+ai01_cores     = 12
+ai01_memory_mb = 28672
 ai01_data_disk_gb = 300
 # The GPU node's address on the same VLAN (replace: 192.0.2.x is documentation).
 k3s01_ipv4_address = "192.0.2.20/24"

@@ -7,15 +7,26 @@
 #
 # The reservations are the point: a memory spike on vlsi-01 must OOM a pod, not kubelet or
 # containerd. Reservations are NOT limits: they only reduce the node's allocatable CPU/memory.
-kubelet_profile: agent
+#
+# Recomputed for the VM re-balance (PLAN-PLATFORM-HARDENING; live/onprem-vm defaults):
+#   profile  VM          size          systemReserved      share
+#   server   k3s-01      28 vCPU/24Gi  1 CPU / 2Gi         3.6% / 8.3%
+#   gpu      ai-01       12 vCPU/28Gi  1 CPU / 2Gi         8.3% / 7.1%   (GPU stack + kubelet + containerd)
+#   vlsi     vlsi-01      4 vCPU/4Gi   250m / 512Mi        6.25% / 12.5%
+# With evictionHard at 500Mi the allocatable floors are ~1.5 GiB on a 4 GiB node and
+# ~21.5 GiB on k3s-01, which is the headroom the right-sized pod requests leave.
+kubelet_profile: server
 
 kubelet_profiles:
   server:
     cpu: "1"
     memory: "2Gi"
-  agent:
-    cpu: "500m"
-    memory: "1Gi"
+  gpu:
+    cpu: "1"
+    memory: "2Gi"
+  vlsi:
+    cpu: "250m"
+    memory: "512Mi"
 
 # Keep k3s-01 from filling its root disk with images of finished workloads (kb-worker images are
 # ~1.9 GB each). 14 days is long enough to debug a rollout and short enough to bound imagefs.
