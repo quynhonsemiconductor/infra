@@ -154,13 +154,11 @@ cat /sys/module/zfs/parameters/zfs_arc_max                # 8589934592
 `--check` reports the pending file line and live change; `pve-host.yml --tags pve_base_zfs` converges just this.
 ## SSH for people (`ssh_infra`): Cloudflare Access for Infrastructure
 
-Owner decision 2026-11-05: no shared passwords and no long-lived personal
-keys. A platform admin enables WARP (`live/edge/warp.tf` already mirrors the
-office range into the tunnel: `admin_private_cidr` is removed from the default
-split-tunnel excludes), runs `ssh <user>@<node address>`, and Cloudflare's
-Gateway SSH proxy checks Entra + MFA and issues a **short-lived SSH
-certificate**. The node trusts the account's Access SSH CA; the CA public key
-is the only trust anchor.
+No shared passwords and no long-lived personal keys. A platform admin enables
+WARP (`live/edge/warp.tf`; the office network range is already routed through
+the tunnel), runs `ssh <user>@<node address>`, and Cloudflare's Gateway SSH
+proxy checks Entra + MFA and issues a **short-lived SSH certificate**. The node
+trusts the account's Access SSH CA; the CA public key is the only trust anchor.
 
 **Free-plan check.** Cloudflare's docs list Access for Infrastructure under
 Zero Trust plans **All plans** (<https://developers.cloudflare.com/cloudflare-one/access-controls/applications/non-http/infrastructure-apps/>).
@@ -247,13 +245,11 @@ the entry to cancel, or run without `--check` to complete the offboarding.
    Cloudflare signature.
 3. Cloudflare dashboard → Access → Logs shows the SSH session for the user.
 4. On the node: `getent passwd <login>`, `sudo -n true` works for a sudo
-   account, and `nvidia-smi` works on ai-01 (the single 16 GiB GPU is shared
-   with kb prod TEI: check it is not mid-job before testing, and never start a
-   model to "test" access).
+   account, and `nvidia-smi` works on ai-01. Check the GPU is idle before
+   testing and never start a model just to test access.
 
-`NOPASSWD` sudo for a certificate-only account is **accepted by the owner
-(2026-11-06)**: the account has no password or key, and the identity + MFA
-check happens at Cloudflare before sudo is reachable.
+`NOPASSWD` sudo is accepted for a certificate-only account: it has no password
+or key, and identity + MFA are checked at Cloudflare before sudo is reachable.
 
 ## PBS API token
 

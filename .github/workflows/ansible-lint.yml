@@ -55,3 +55,12 @@ jobs:
       # search: a realm user must actually be selected). No host, no cloud.
       - name: PVE Entra membership selector unit check
         run: ansible-playbook -i localhost, -c local tests/pve_base_entra_membership.yml
+      # The LAST listed account being removed must still be offboarded. Runs
+      # --check with /tmp paths and asserts the report line; writes nothing.
+      - name: SSH offboarding survives an empty admin list (--check)
+        shell: bash
+        run: |
+          set -euo pipefail
+          out=$(ansible-playbook -i localhost, -c local --check tests/ssh_infra_last_account.yml)
+          printf '%s\n' "$out"
+          grep -q "would lock daemon" <<<"$out"

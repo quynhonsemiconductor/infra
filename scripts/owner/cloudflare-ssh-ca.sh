@@ -11,13 +11,15 @@
 # LOCAL Ansible inventory as `node_ssh_ca_public_key`, never in Git (it is the
 # trust anchor for shell access to every node that includes the role).
 #
+# The bearer token is passed to curl through `-K -` (stdin), never in argv.
+# POST happens ONLY when a GET with this token returned a valid success:true
+# response with no CA (or a 404) and the account id is a syntactically valid
+# 32-hex id. A 401/403 or success:false fails closed: never create a CA on a
+# guess.
+#
 # This exists because the cloudflare provider v5 has no gateway-CA resource:
 # cloudflare_zero_trust_access_short_lived_certificate creates a PER-APP CA,
 # which Cloudflare documents as incompatible with the Gateway SSH proxy.
-#
-# POST happens ONLY when a GET with this token returned 200 with no CA or 404,
-# and the account id is a syntactically valid 32-hex id. A 401/403 (scope, plan
-# or wrong account) fails closed: never create a CA on a guess.
 set -euo pipefail
 
 acct="${CLOUDFLARE_ACCOUNT_ID:-}"
@@ -34,17 +36,32 @@ command -v curl >/dev/null || { echo "STOP: need curl" >&2; exit 1; }
 command -v jq >/dev/null || { echo "STOP: need jq" >&2; exit 1; }
 
 api="https://api.cloudflare.com/client/v4/accounts/$acct/access/gateway_ca"
-auth=(-H "Authorization: Bearer $token" -H "Content-Type: application/json")
 body=$(mktemp "${TMPDIR:-/tmp}/cf-gateway-ca.XXXXXX")
 trap 'rm -f "$body"' EXIT
 
-http=$(curl -sS -o "$body" -w '%{http_code}' "${auth[@]}" "$api") || {
-  echo "STOP: cannot reach the Cloudflare API" >&2
-  exit 1
+# Request through a curl config on stdin: the token never appears in argv.
+cf() { # cf <GET|POST>
+  local method="$1" auth
+  auth=$(printf 'header = "Authorization: Bearer %s"' "$token")
+  {
+    printf '%s\n' "$auth"
+    printf '%s\n' 'header = "Content-Type: application/json"'
+    printf '%s\n' 'silent'
+    printf '%s\n' 'show-error'
+    printf '%s\n' 'write-out = "%{http_code}"'
+    [[ "$method" == POST ]] && printf '%s\n' 'request = "POST"'
+    printf 'url = "%s"\n' "$api"
+  } | curl -K - -o "$body"
 }
+
+http=$(cf GET) || { echo "STOP: cannot reach the Cloudflare API" >&2; exit 1; }
 
 case "$http" in
   200)
+    if [[ "$(jq -r '.success // false' "$body")" != "true" ]]; then
+      echo "STOP: GET gateway_ca returned success:false (token scope/plan) — refusing to create" >&2
+      exit 1
+    fi
     key=$(jq -r 'if (.result | type) == "array" then (.result[0].public_key // empty) else (.result.public_key // empty) end' "$body")
     ;;
   404)
@@ -58,12 +75,13 @@ esac
 
 if [[ -z "$key" ]]; then
   echo "no SSH CA on the confirmed account — creating the Gateway CA once" >&2
-  http=$(curl -sS -o "$body" -w '%{http_code}' -X POST "${auth[@]}" "$api") || {
-    echo "STOP: cannot reach the Cloudflare API" >&2
-    exit 1
-  }
+  http=$(cf POST) || { echo "STOP: cannot reach the Cloudflare API" >&2; exit 1; }
   case "$http" in
     200|201)
+      if [[ "$(jq -r '.success // false' "$body")" != "true" ]]; then
+        echo "STOP: POST gateway_ca returned success:false (scope or plan)" >&2
+        exit 1
+      fi
       key=$(jq -r 'if (.result | type) == "array" then (.result[0].public_key // empty) else (.result.public_key // empty) end' "$body")
       ;;
     *)
