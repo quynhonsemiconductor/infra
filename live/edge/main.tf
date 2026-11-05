@@ -43,17 +43,39 @@ module "edge" {
 
   zone_id = var.cloudflare_zone_id
 
-  # Conservative per-IP rate limit on the product API surface. The free plan's
-  # single included rate-limiting rule only permits a 10s counting period, a 10s
-  # mitigation timeout, and simple expression operators (no `matches` regex —
-  # that needs Advanced Rate Limiting). Raise/split once on Pro+.
+  # Per-IP limit on the AUTH paths only (audit N-M7), in LOG mode for the
+  # first 7 days (review 2026-11-04): the office has one NAT address, so a
+  # block threshold that is right per-client is wrong per-office. Log mode
+  # counts and emits Security Events without dropping a sign-in; after a week
+  # of real numbers, switch action to "block" with a threshold chosen from them.
+  #
+  # The free plan allows one rate rule with a 10s counting period, a 10s
+  # mitigation timeout and simple expression operators (no `matches` regex —
+  # that needs Advanced Rate Limiting), so the one rule covers the explicit
+  # auth surface of all three products:
+  #   rova, opshub   /api/auth/*        (tunnel rules: ^/api/auth/)
+  #   kb             /api/v1/auth/*     (incl. /api/v1/auth/entra/callback)
+  #
+  # Everything else is deliberately NOT rate-limited at the edge any more. The
+  # old rule (300 req/10s per IP across all /v1/ and /api/) is REMOVED: it was
+  # too loose to stop credential stuffing, wide enough to throttle a busy
+  # dashboard, and it keyed on the office NAT rather than on an identity. The
+  # apps limit the API themselves, in Valkey:
+  #   rova     libs/platform/src/rate-limit/rate-limit.constants.ts
+  #            PRE_AUTH 1200/60s per IP, DEFAULT 100/60s per user; the
+  #            /api/auth/* routes are further limited in identity (redirects
+  #            120/60s, callbacks 100/10s)
+  #   opshub   libs/platform/src/rate-limit/rate-limit.constants.ts
+  #            PRE_AUTH_IP_BUCKET 1000/60s per IP, DEFAULT 200/60s per user,
+  #            STRICT 60/60s, AI 10/60s, UPLOAD 30/60s
   rate_limit_rules = [{
-    ref                 = "api_default"
-    description         = "Rate-limit product API endpoints per client IP"
-    expression          = "(starts_with(http.request.uri.path, \"/v1/\") or starts_with(http.request.uri.path, \"/api/\"))"
+    ref                 = "auth_default"
+    description         = "Count authentication requests per client IP (log for 7 days, then block)"
+    expression          = "(starts_with(http.request.uri.path, \"/api/auth/\") or starts_with(http.request.uri.path, \"/api/v1/auth/\"))"
     period              = 10
-    requests_per_period = 300
+    requests_per_period = 30
     mitigation_timeout  = 10
+    action              = "log"
   }]
 
   # Managed + OWASP rulesets — requires Pro+. Keep false until the zone plan is
