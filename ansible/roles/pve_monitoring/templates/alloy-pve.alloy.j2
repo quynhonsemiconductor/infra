@@ -4,7 +4,8 @@
 // pve_* families, and push them over OTLP to the cluster's existing
 // alloy-otlp-host receiver. The host's CPU/memory/VM/storage view already
 // arrives through PVE's own OpenTelemetry metric server; this pipeline adds
-// exactly the three things that one cannot see (ZFS, NVMe SMART, PBS fill).
+// exactly the things that one cannot see (ZFS, NVMe SMART, PBS fill, and
+// pending apt updates / reboot).
 //
 // The keep filter is also the series budget: node-exporter is started with
 // every default collector disabled, and this drops even its `up`/scrape
