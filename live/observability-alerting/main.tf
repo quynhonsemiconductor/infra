@@ -367,160 +367,13 @@ resource "grafana_notification_policy" "root" {
   }
 }
 
-# Stack-wide, not per-product — lives here because the "Active Mimir series"
-# panel it alerts on the same number as does too (System Overview dashboard,
-# above). This is the free-tier-cap alert Grafana Cloud's own Cost
-# Management/Usage Alerts feature would otherwise cover, EXCEPT that feature
-# has no Terraform resource (checked the provider source directly — no
-# usage/cost/billing resource exists), so it can only be built as code by
-# reusing the same alerting pipeline every other rule in this stack already
-# uses. 8000 = 80% of the 10k free-tier ceiling, a warning buffer before
-# ingestion starts silently dropping series.
-#
-# NOT covering log/trace GB the same way: there is no Prometheus metric this
-# stack's own Mimir exposes for "GB ingested this month" the way it exposes
-# series count via `{__name__=~".+"}` — that number lives only in Grafana
-# Cloud's billing backend. Set that one threshold by hand in Cost Management
-# and Billing -> Usage Alerts (Logs, ~40 GiB) until Grafana ships a
-# Terraform-manageable equivalent.
-resource "grafana_rule_group" "series_near_cap" {
-  name             = "platform (stack-wide)"
-  folder_uid       = grafana_folder.alerts.uid
-  interval_seconds = 300
-
-  rule {
-    name           = "mimir-series-near-free-tier-cap"
-    condition      = "B"
-    for            = "15m"
-    no_data_state  = "OK"
-    exec_err_state = "KeepLast"
-
-    data {
-      ref_id         = "A"
-      query_type     = "instant"
-      datasource_uid = data.grafana_data_source.prometheus.uid
-
-      relative_time_range {
-        from = 900
-        to   = 0
-      }
-
-      model = jsonencode({
-        refId         = "A"
-        datasource    = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
-        expr          = "count({__name__=~\".+\"})"
-        instant       = true
-        range         = false
-        intervalMs    = 1000
-        maxDataPoints = 43200
-      })
-    }
-
-    data {
-      ref_id         = "B"
-      datasource_uid = "__expr__"
-
-      relative_time_range {
-        from = 0
-        to   = 0
-      }
-
-      model = jsonencode({
-        refId      = "B"
-        type       = "threshold"
-        datasource = { type = "__expr__", uid = "__expr__" }
-        expression = "A"
-        conditions = [
-          {
-            evaluator = {
-              type   = "gt"
-              params = [8000]
-            }
-          }
-        ]
-        intervalMs    = 1000
-        maxDataPoints = 43200
-      })
-    }
-
-    labels = {
-      product  = "platform"
-      severity = "warning"
-    }
-
-    annotations = {
-      summary = "Active Mimir series across the whole stack (all products) is above 8000 — 80% of the 10k free-tier ceiling. New series will start being silently dropped past 10k."
-    }
-  }
-
-  # EARLY tier: 70% of the ceiling, added with OBI phase 1 (see billable-alert.tf for the
-  # same line on the billable meter). Same query as the 80% rule above: the count the stack
-  # itself holds, which is the measurement already proven live here.
-  rule {
-    name           = "mimir-series-70pct-of-free-tier-cap"
-    condition      = "B"
-    for            = "30m"
-    no_data_state  = "OK"
-    exec_err_state = "KeepLast"
-
-    data {
-      ref_id         = "A"
-      query_type     = "instant"
-      datasource_uid = data.grafana_data_source.prometheus.uid
-
-      relative_time_range {
-        from = 900
-        to   = 0
-      }
-
-      model = jsonencode({
-        refId         = "A"
-        datasource    = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
-        expr          = "count({__name__=~\".+\"})"
-        instant       = true
-        range         = false
-        intervalMs    = 1000
-        maxDataPoints = 43200
-      })
-    }
-
-    data {
-      ref_id         = "B"
-      datasource_uid = "__expr__"
-
-      relative_time_range {
-        from = 0
-        to   = 0
-      }
-
-      model = jsonencode({
-        refId      = "B"
-        type       = "threshold"
-        datasource = { type = "__expr__", uid = "__expr__" }
-        expression = "A"
-        conditions = [
-          {
-            evaluator = {
-              type   = "gt"
-              params = [7000]
-            }
-          }
-        ]
-        intervalMs    = 1000
-        maxDataPoints = 43200
-      })
-    }
-
-    labels = {
-      product  = "platform"
-      severity = "warning"
-    }
-
-    annotations = {
-      summary = "Active Mimir series across the whole stack is above 7000, 70% of the 10k free-tier ceiling. Likely cause after 2026-11-02: the OBI/Beyla RED series (gitops platform/alloy). Check `count by (job) ({__name__=~\".+\"})` for the biggest job."
-    }
-  }
-}
+# ── SERIES CAP: one rule, in billable-alert.tf ──────────────────────────────
+# This group used to carry two more copies of the cap signal (active-series
+# count at 70% and 80%). The audit (S-H3) found five rules firing on the same
+# condition; billable-alert.tf now owns the only warning (8,000) and critical
+# (10,000) pair on the org BILLABLE meter, which is the one the Free cap
+# actually enforces. The System Overview dashboard keeps the active-series
+# panel above for eyeballing the number.
 
 # ── Alerting: a security control failed OPEN ─────────────────────────────────
 # The products' JwtAuthGuard token denylist and rate limiter fail open when
@@ -559,15 +412,19 @@ resource "grafana_rule_group" "security_fail_open" {
 
   dynamic "rule" {
     for_each = {
-      # `env` is the Loki resource-attribute VALUE ("develop"); `alert_env` is the
-      # alert label, which must match the notification policy and every other
-      # dev rule in this stack ("development").
-      develop    = { env = "develop", alert_env = "development", severity = "warning" }
-      production = { env = "production", alert_env = "production", severity = "critical" }
+      # `namespaces` is the ACTUAL Loki stream dimension (`service_namespace`,
+      # e.g. `rova-prod`, `opshub-prod`, `kb-prod`). The rule previously filtered
+      # `deployment_environment_name="production|develop"`, which does NOT exist
+      # in Loki — label values over 24 h came back empty, so the rule evaluated
+      # NoData and reported OK forever. `alert_env` is the alert label, which
+      # must match the notification policy and every other dev rule
+      # ("development"), not the stream value.
+      develop    = { namespaces = ".+-dev", alert_env = "development", severity = "warning" }
+      production = { namespaces = ".+-prod", alert_env = "production", severity = "critical" }
     }
     iterator = env_rule
     content {
-      name          = "security-control-failed-open-${env_rule.value.env}"
+      name          = "security-control-failed-open-${env_rule.key}"
       condition     = "C"
       for           = "0m"
       no_data_state = "OK"
@@ -590,7 +447,7 @@ resource "grafana_rule_group" "security_fail_open" {
         model = jsonencode({
           refId      = "A"
           datasource = { type = "loki", uid = data.grafana_data_source.logs.uid }
-          expr       = "sum by (service_namespace) (count_over_time({service_namespace=~\".+\", deployment_environment_name=\"${env_rule.value.env}\"} | json | securityFailOpen != \"\" [5m]))"
+          expr       = "sum by (service_namespace) (count_over_time({service_namespace=~\"${env_rule.value.namespaces}\"} | json | securityFailOpen != \"\" [5m]))"
           queryType  = "instant"
           instant    = true
           intervalMs = 1000
@@ -649,7 +506,7 @@ resource "grafana_rule_group" "security_fail_open" {
       }
 
       annotations = {
-        summary = "A security control failed open in ${env_rule.value.env} — service {{ $labels.service_namespace }}. Check Valkey health."
+        summary = "A security control failed open in ${env_rule.key} — service {{ $labels.service_namespace }}. Check Valkey health."
       }
     }
   }
@@ -719,9 +576,4 @@ import {
 import {
   to = grafana_notification_policy.root
   id = "0:policy"
-}
-
-import {
-  to = grafana_rule_group.series_near_cap
-  id = "0:efwpy0l5x8nwgb:platform (stack-wide)"
 }

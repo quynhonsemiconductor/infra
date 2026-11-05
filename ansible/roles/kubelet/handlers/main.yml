@@ -1,0 +1,5 @@
+---
+- name: Restart k3s for the kubelet configuration
+  ansible.builtin.service:
+    name: "{{ 'k3s' if kubelet_profile == 'server' else 'k3s-agent' }}"
+    state: restarted

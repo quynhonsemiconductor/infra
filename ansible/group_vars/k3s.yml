@@ -1,5 +1,6 @@
 ---
-# One pin for the server and the agent, so they cannot drift (the same value as live/onprem-vm/files/k3s/version).
+# One pin for the server and the agent, so they cannot drift. This IS the version: live/onprem-vm
+# no longer carries a copy under files/k3s/ (deleted with the single-source change).
 k3s_version: "v1.36.5+k3s1"
 # sha256 of the installer at that tag (https://raw.githubusercontent.com/k3s-io/k3s/<tag>/install.sh): the
 # installer is fetched from the tag, not from get.k3s.io, and checked against this hash.

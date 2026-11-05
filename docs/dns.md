@@ -12,6 +12,8 @@ record unless the PR carries the `allow-dns-destroy` label; see `docs/incidents/
 | `mail.qnsc.vn` | MX | SES custom MAIL FROM (`feedback-smtp.<region>.amazonses.com`) | `ses_mail_from_mx` |
 | `mail.qnsc.vn` | TXT | SPF for the MAIL FROM domain, `~all` | `ses_mail_from_spf` |
 | three `*._domainkey` | CNAME | SES DKIM | `ses_dkim[0..2]` |
+| `selector1._domainkey.qnsc.vn` | CNAME | Microsoft 365 DKIM selector 1 | `m365_dkim["selector1"]` |
+| `selector2._domainkey.qnsc.vn` | CNAME | Microsoft 365 DKIM selector 2 | `m365_dkim["selector2"]` |
 | `_dmarc.qnsc.vn` | TXT | DMARC, report-only | `dmarc` (imported, see below) |
 
 ## DMARC policy and its plan
@@ -19,6 +21,9 @@ record unless the PR carries the `allow-dns-destroy` label; see `docs/incidents/
 `v=DMARC1; p=none; rua=mailto:devops@qnsc.vn`. `p=none` only **collects** aggregate reports; it rejects and quarantines nothing, so a legitimate
 sender we forgot (Microsoft 365 for staff mailboxes, SES for the products) cannot have its mail dropped while the reports are unread.
 
+0. **DKIM first** (2026-11-04, audit N-M8): `live/edge/mail_dkim.tf` publishes selector1/selector2; Exchange must then enable signing
+   (`New-DkimSigningConfig -DomainName qnsc.vn -Enabled $true`, or `Set-DkimSigningConfig ... -Enabled $true`), and
+   `Get-DkimSigningConfig` must report `Status: Valid`, `Enabled: True`. Without this step the DMARC reports stay SPF-only.
 1. Read the aggregate reports for **2 to 4 weeks**.
 2. When every legitimate source passes (Microsoft 365 via `spf.protection.outlook.com`, SES via `amazonses.com`, DKIM aligned) and only noise fails,
    move to `p=quarantine` in its own PR, with the reports that justify it.
