@@ -76,15 +76,23 @@ group and the PBS per-user ACLs are Ansible's job; the manual sequence and verif
 platform runbook (product-docs, server-setup §3.2.1). `root@pam` is never touched — it is the break-glass
 account (LAN, password + TOTP); the role fails if it is missing or disabled.
 
-The three non-secret site values live in the LOCAL inventory (nothing in Git), next to the host:
+The full ordered owner sequence is in `live/identity/README.md`, "Proxmox VE + PBS login": **1** identity
+plan (both redirect URIs, same run as #402) → **2** go/no-go → **3** apply + outputs → **4** client secret
+into `kv-qnsc-admin` → **5** this inventory → **6** `--check` then run. Do not start at step 5: the realms
+need the applied app and the vault secret first.
+
+The four non-secret site values live in the LOCAL inventory (nothing in Git), next to the host. The two
+`pbs_entra_admin_emails` are the platform admins' Entra `email` claim values (owner-held; keep them equal
+to the app's direct assignments and `grp-qnsc-platform-admins`). The group object id is
+`az ad group show --group grp-qnsc-platform-admins --query id -o tsv`:
 
 ```yaml
 pve:
   hosts:
     pve01:
       # ...
-      proxmox_oidc_issuer_url: "https://login.microsoftonline.com/<tenant>/v2.0"
-      proxmox_oidc_client_id: "<application (client) id>"
+      proxmox_oidc_issuer_url: "https://login.microsoftonline.com/<tenant>/v2.0"   # step 3 output
+      proxmox_oidc_client_id: "<application (client) id>"                          # step 3 output
       proxmox_oidc_admin_group_oid: "<object id of grp-qnsc-platform-admins>"
       # PBS has no group-claim option: its admins are pre-created and get Admin on /. Keep this list
       # equal to the app's direct assignments and the platform-admins group.
@@ -92,7 +100,7 @@ pve:
 ```
 
 The client secret comes from the environment of the run (Key Vault `kv-qnsc-admin`,
-`admin-proxmox-oidc-secret`; rotate with the identity README "Proxmox VE + PBS login"):
+`admin-proxmox-oidc-secret`, created in identity step 4 with `scripts/rotate-signin-secret.sh`):
 
 ```zsh
 export PROXMOX_OIDC_CLIENT_SECRET="$(az keyvault secret show --vault-name kv-qnsc-admin \
@@ -102,11 +110,12 @@ ansible-playbook pve-host.yml --tags pve_base_entra,pbs_entra
 unset PROXMOX_OIDC_CLIENT_SECRET
 ```
 
-An ordinary run needs no secret once both realms exist (drift changes never rewrite the key). A rotation
-appends a credential, stores it in Key Vault, then runs both roles with
-`-e pve_base_entra_rotate_client_key=true -e pbs_entra_rotate_client_key=true`; the old credential is
-revoked after a green login on both doors. The key is momentarily in `pveum`/`proxmox-backup-manager`
-argv on pve01 (single-admin host); the runbook states the caveat.
+The `--check` run must be clean before the real run, and the first login on each door must show no
+`AADSTS50011` (redirect URI mismatch). An ordinary run needs no secret once both realms exist (drift
+changes never rewrite the key). A rotation appends a credential, stores it in Key Vault, then runs both
+roles with `-e pve_base_entra_rotate_client_key=true -e pbs_entra_rotate_client_key=true`; the old
+credential is revoked after a green login on both doors. The key is momentarily in
+`pveum`/`proxmox-backup-manager` argv on pve01 (single-admin host); the runbook states the caveat.
 
 ## PBS API token
 

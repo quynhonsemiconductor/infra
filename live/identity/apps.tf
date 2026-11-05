@@ -405,12 +405,19 @@ resource "azuread_service_principal_delegated_permission_grant" "signin" {
   }
 }
 
-# Admin -> the existing admin group. The other OpsHub roles stay per-user:
-# no role-specific Entra group exists yet (owner decision 2026-11-05: admin
-# only now). Adding a group assignment never removes the live user grants.
+# Admin -> each platform admin DIRECTLY, one assignment per user: group-based
+# app-role assignment is an Entra ID P1/P2 feature and the tenant has no P1
+# (owner decision 2026-11-04; Microsoft Learn "Manage access to apps" —
+# "Group-based assignment (requires Microsoft Entra ID P1 or P2)"). The SAME
+# list drives the Proxmox app and OpsHub Prod (var.platform_admin_object_ids).
+# The other OpsHub roles stay per-user: no role-specific Entra group exists
+# yet (owner decision 2026-11-05: admin only now). Adding a per-user assignment
+# never removes the live per-user grants of the other roles.
 resource "azuread_app_role_assignment" "opshub_dev_admin" {
+  for_each = var.platform_admin_object_ids
+
   app_role_id         = var.opshub_dev_app_role_ids["admin"]
-  principal_object_id = var.platform_admins_object_id
+  principal_object_id = each.value
   resource_object_id  = azuread_service_principal.signin["opshub_dev"].object_id
 }
 
