@@ -26,6 +26,7 @@
       - jq
       - smartmontools
       - unzip
+      - curl
       - ca-certificates
     state: present
   when: pve_monitoring_enabled | bool
@@ -44,6 +45,11 @@
     group: root
     mode: "0644"
   notify: Restart node-exporter
+
+# Apply the flags NOW: if a later task fails, a pending handler is dropped and the package's default
+# (all collectors on *:9100) keeps running — seen on the first owner run 2026-11-05.
+- name: Restart node-exporter with the managed flags before continuing
+  ansible.builtin.meta: flush_handlers
 
 - name: Create the textfile directory
   ansible.builtin.file:
@@ -92,6 +98,8 @@
     state: started
     enabled: true
     daemon_reload: true
+  # --check writes no unit files, so the timer does not exist yet in a dry run.
+  when: not ansible_check_mode
 
 - name: Seed the first textfile snapshot before Alloy starts
   ansible.builtin.command: "{{ pve_monitoring_script }}"
@@ -132,7 +140,15 @@
     mode: "0600"
 
 # Versioned unpack directory: a version bump cannot reuse the previous
-# binary via `creates`.
+# binary via `creates`. unarchive needs the destination to exist already.
+- name: Create the versioned unpack directory
+  ansible.builtin.file:
+    path: "{{ pve_monitoring_download_dir }}/alloy-{{ pve_monitoring_alloy_version }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
 - name: Unpack Alloy
   ansible.builtin.unarchive:
     src: "{{ pve_monitoring_download_dir }}/alloy-linux-amd64-{{ pve_monitoring_alloy_version }}.zip"
@@ -210,3 +226,28 @@
     state: started
     enabled: true
     daemon_reload: true
+
+# The config/unit writes above notify "Restart Alloy", and handlers otherwise run at the END of the
+# play — after the assertion below, which would then read the OLD process's counters. Apply the
+# restart NOW, the same reason the node-exporter flags are flushed early.
+- name: Restart Alloy with the managed pipeline before checking it
+  ansible.builtin.meta: flush_handlers
+
+# A pipeline that scrapes but never exports is the failure this role shipped once (2026-11-05:
+# node-exporter answered with 16 pve_* series, the scrape was up, and NOTHING left the host, because
+# the relabel stage had dropped the job/instance labels the OTel receiver requires). `up == 1` cannot
+# see that, so assert on the exporter's own counter: a fresh process must reach > 0 within one
+# scrape interval (60s) plus the 2s batch timeout.
+- name: Assert Alloy is exporting metric points
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      curl -fsS http://127.0.0.1:12345/metrics |
+        awk '/^otelcol_exporter_sent_metric_points(_total)?([ {])/ {points += $NF} END {print points + 0}'
+    executable: /bin/bash
+  register: pve_monitoring_exported_points
+  changed_when: false
+  retries: 12
+  delay: 5
+  until: pve_monitoring_exported_points.stdout | int > 0
+  when: not ansible_check_mode
