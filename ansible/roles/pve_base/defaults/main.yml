@@ -44,3 +44,25 @@ pve_base_notify_teams_severities: [warning, error]
 pve_base_notify_teams_webhook_url: "{{ lookup('ansible.builtin.env', 'TEAMS_WEBHOOK_URL') }}"
 # Set true (-e pve_base_notify_teams_rotate=true) to replace the stored URL with the one from the environment.
 pve_base_notify_teams_rotate: false
+
+# ── Entra OpenID login ──────────────────────────────────────────────────────
+# The realm is backed by the "QNSC Proxmox" app in live/identity (one app for PVE and PBS). The three
+# values below are site values: the LOCAL inventory (git-ignored) sets them. The client secret comes from
+# the environment of the run, never from a file in Git or from the inventory:
+#   PROXMOX_OIDC_CLIENT_SECRET   (kv-qnsc-admin/admin-proxmox-oidc-secret; ansible/README.md)
+# The role never disables root@pam: it is the break-glass account (LAN only, password + TOTP).
+pve_base_entra_enabled: true
+pve_base_entra_realm: entra
+pve_base_entra_issuer_url: "{{ proxmox_oidc_issuer_url | default('') }}"
+pve_base_entra_client_id: "{{ proxmox_oidc_client_id | default('') }}"
+# Object id of grp-qnsc-platform-admins. Proxmox appends "-<realm>" to the claim group, so the PVE group
+# is "<object-id>-entra".
+pve_base_entra_admin_group_oid: "{{ proxmox_oidc_admin_group_oid | default('') }}"
+pve_base_entra_group_id: "{{ pve_base_entra_admin_group_oid }}-{{ pve_base_entra_realm }}"
+pve_base_entra_client_secret: "{{ lookup('ansible.builtin.env', 'PROXMOX_OIDC_CLIENT_SECRET') }}"
+pve_base_entra_username_claim: email
+pve_base_entra_scopes: "openid email profile"
+# The username claim is fixed at realm creation (Auth/OpenId.pm): a different value stops the role.
+# The key is only written on creation or when this is true (a rotation), so an ordinary run never needs
+# the secret.
+pve_base_entra_rotate_client_key: false
