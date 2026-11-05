@@ -454,6 +454,43 @@
     label: "{{ item.key }}"
   tags: [pve_base_zfs]
 
+# ── ZFS ARC ceiling ─────────────────────────────────────────────────────────
+# Moved here from pve_gpu: every Proxmox host needs the ceiling, GPU or not.
+- name: ZFS ARC maximum at boot
+  ansible.builtin.copy:
+    dest: /etc/modprobe.d/zfs.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      options zfs zfs_arc_max={{ pve_base_zfs_arc_max_bytes }}
+  notify: Rebuild initramfs for the ZFS ARC ceiling
+  tags: [pve_base_zfs]
+
+- name: Read the live ZFS ARC maximum
+  ansible.builtin.command: cat /sys/module/zfs/parameters/zfs_arc_max
+  register: pve_base_zfs_arc_live
+  changed_when: false
+  check_mode: false
+  tags: [pve_base_zfs]
+
+- name: Report the live ZFS ARC change (check mode)
+  ansible.builtin.debug:
+    msg: "would set zfs_arc_max to {{ pve_base_zfs_arc_max_bytes }}"
+  changed_when: true
+  when:
+    - ansible_check_mode
+    - pve_base_zfs_arc_live.stdout | trim != (pve_base_zfs_arc_max_bytes | string)
+  tags: [pve_base_zfs]
+
+- name: Apply the ZFS ARC maximum to the running system
+  ansible.builtin.shell: "echo {{ pve_base_zfs_arc_max_bytes }} > /sys/module/zfs/parameters/zfs_arc_max"
+  when:
+    - not ansible_check_mode
+    - pve_base_zfs_arc_live.stdout | trim != (pve_base_zfs_arc_max_bytes | string)
+  changed_when: true
+  tags: [pve_base_zfs]
+
 # ── notifications ───────────────────────────────────────────────────────────
 - name: Notifications to Teams
   when: pve_base_notify_teams | bool

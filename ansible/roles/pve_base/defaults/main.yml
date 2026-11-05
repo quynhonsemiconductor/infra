@@ -66,3 +66,11 @@ pve_base_entra_scopes: "openid email profile"
 # The key is only written on creation or when this is true (a rotation), so an ordinary run never needs
 # the secret.
 pve_base_entra_rotate_client_key: false
+
+# ── ZFS ARC ceiling (host memory, shared with the VMs) ──────────────────────
+# 8 GiB. The three VMs ask for 56 GiB of the host's 62 GiB, so the ceiling is
+# NOT extra allocation: ZFS reclaims ARC under pressure. 4 GiB (the old value,
+# set when PBS was not yet serving the backup pool) left the co-located PBS
+# reading chunks and metadata from disk during GC/verify. 8 GiB keeps those hot
+# while the cap still leaves the host and the VM baseline room to breathe.
+pve_base_zfs_arc_max_bytes: 8589934592
