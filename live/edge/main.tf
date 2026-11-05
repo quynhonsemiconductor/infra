@@ -188,11 +188,27 @@ resource "cloudflare_pages_project" "landing" {
   name              = "qnsc-landing"
   production_branch = "main"
 
+  # Codified, not ignored: the provider has no state-preserving plan modifier on build_config /
+  # build_image_auto_upgrade (cloudflare/terraform-provider-cloudflare#7288, #7262), so on a direct-upload
+  # project — where the API's build_config is empty — every plan re-marked the omitted members
+  # "(known after apply)" and edge never converged. `ignore_changes` cannot help: it retains the value
+  # *originally configured*, and build_image_auto_upgrade is provider-computed (OpenTofu warns, no effect).
+  # Naming every member keeps the whole object known; empty strings are what the API returns for a
+  # direct-upload project, so the values are the real config, not a suppression.
+  build_config = {
+    build_caching       = false
+    build_command       = ""
+    destination_dir     = ""
+    root_dir            = ""
+    web_analytics_tag   = ""
+    web_analytics_token = ""
+  }
+
   lifecycle {
     prevent_destroy = true # destroying the Pages project deletes its deployments and detaches its custom domains: the landing site goes down
-    # Direct-upload project: there is no Git build, so these are API-computed. Provider v5 plans them as
-    # "(known after apply)" on every run without ever converging, which kept the daily edge drift job red.
-    ignore_changes = [build_config, build_image_auto_upgrade]
+    # build_image_auto_upgrade is provider-computed (it records Cloudflare's v1→v3 build-image move): it cannot be
+    # named here and needs no entry — with the update above applied once, no other change is planned and it stays
+    # known. Re-check this when the provider gains UseStateForUnknown on these attributes.
   }
 }
 

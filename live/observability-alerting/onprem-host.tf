@@ -599,6 +599,377 @@ resource "grafana_rule_group" "onprem_pve_risk" {
       summary = "PBS datastore {{ $labels.datastore }} on pve01 is over 80% full. Prune or grow it before the next nightly base backup fails; this datastore is the VM restore source."
     }
   }
+
+  # ── PBS backup job: collector, failed / missed, per target ────────────────
+  # The datastore-fill rule above watches capacity; these watch whether the
+  # nightly job actually produced a restore point for EACH guest. The textfile
+  # producer emits, per PBS task `worker_id` (target = "vm/100", "ct/101", …):
+  #   pve_pbs_backup_last_success_timestamp_seconds{target=...}  newest usable
+  #   pve_pbs_backup_last_status{target=...}                     1 usable/0 failed
+  # plus `pve_pbs_collector_ok` (1 only after a successful JSON parse) and
+  # `pve_pbs_backup_targets` (distinct targets in the fetched task window).
+  # Per-target series are deliberate: one VM failing nightly must not be
+  # masked by another VM's OK. `WARNINGS: n` from PBS counts as usable (1) —
+  # it completed and the restore point exists.
+  #
+  # 26 h = one missed night plus slack, the same bound as the CNPG base-backup
+  # rules. no_data_state = OK on the age rule: before a target's first usable
+  # backup its series does not exist, and `pve-pbs-backup-missing` below owns
+  # the "no usable backup at all" state after 26 h.
+  #
+  # COLLECTOR FIRST: a failed `task list` must not read as "never ran", so
+  # `pve_pbs_collector_ok == 0` pages on its own. A host without PBS emits no
+  # PBS backup metric at all (the script skips absent sources), so these rules
+  # stay silent there instead of crying collector-failed.
+  rule {
+    name           = "pve-pbs-collector-failed"
+    condition      = "B"
+    for            = "15m"
+    no_data_state  = "OK"
+    exec_err_state = "KeepLast"
+
+    data {
+      ref_id         = "A"
+      query_type     = "instant"
+      datasource_uid = data.grafana_data_source.prometheus.uid
+
+      relative_time_range {
+        from = 900
+        to   = 0
+      }
+
+      model = jsonencode({
+        refId         = "A"
+        datasource    = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
+        expr          = "min(pve_pbs_collector_ok{job=\"pve-host\"})"
+        instant       = true
+        range         = false
+        intervalMs    = 1000
+        maxDataPoints = 43200
+      })
+    }
+
+    data {
+      ref_id         = "B"
+      datasource_uid = "__expr__"
+
+      relative_time_range {
+        from = 0
+        to   = 0
+      }
+
+      model = jsonencode({
+        refId      = "B"
+        type       = "threshold"
+        datasource = { type = "__expr__", uid = "__expr__" }
+        expression = "A"
+        conditions = [
+          {
+            evaluator = {
+              type   = "lt"
+              params = [1]
+            }
+          }
+        ]
+        intervalMs    = 1000
+        maxDataPoints = 43200
+      })
+    }
+
+    labels = {
+      product  = "platform"
+      env      = "production"
+      severity = "critical"
+    }
+
+    annotations = {
+      summary = "The pve01 textfile collector cannot read the PBS task list (proxmox-backup-manager missing, timed out, or returned non-JSON). The PBS backup alerts are blind while this fires; run `proxmox-backup-manager task list --all --limit 1000 --output-format json` on pve01."
+    }
+  }
+
+  rule {
+    name           = "pve-pbs-backup-too-old"
+    condition      = "B"
+    for            = "15m"
+    no_data_state  = "OK"
+    exec_err_state = "KeepLast"
+
+    data {
+      ref_id         = "A"
+      query_type     = "instant"
+      datasource_uid = data.grafana_data_source.prometheus.uid
+
+      relative_time_range {
+        from = 900
+        to   = 0
+      }
+
+      model = jsonencode({
+        refId         = "A"
+        datasource    = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
+        expr          = "time() - pve_pbs_backup_last_success_timestamp_seconds{job=\"pve-host\"}"
+        instant       = true
+        range         = false
+        intervalMs    = 1000
+        maxDataPoints = 43200
+      })
+    }
+
+    data {
+      ref_id         = "B"
+      datasource_uid = "__expr__"
+
+      relative_time_range {
+        from = 0
+        to   = 0
+      }
+
+      model = jsonencode({
+        refId      = "B"
+        type       = "threshold"
+        datasource = { type = "__expr__", uid = "__expr__" }
+        expression = "A"
+        conditions = [
+          {
+            evaluator = {
+              type   = "gt"
+              params = [26 * 3600]
+            }
+          }
+        ]
+        intervalMs    = 1000
+        maxDataPoints = 43200
+      })
+    }
+
+    labels = {
+      product  = "platform"
+      env      = "production"
+      severity = "critical"
+    }
+
+    annotations = {
+      summary = "The newest usable PBS backup for {{ $labels.target }} on pve01 is over 26 hours old (job skipped, failed, or no longer in the last 1000 tasks). The PBS datastore is the only restore source for the VMs. Check `proxmox-backup-manager task list --all --limit 1000` on pve01."
+    }
+  }
+
+  # A failed nightly pages on its own, not 26 h later: the newest finished
+  # backup task for this target reports failure (status != OK/WARNINGS). It
+  # clears when a later backup for the same target succeeds.
+  rule {
+    name           = "pve-pbs-backup-failed"
+    condition      = "B"
+    for            = "5m"
+    no_data_state  = "OK"
+    exec_err_state = "KeepLast"
+
+    data {
+      ref_id         = "A"
+      query_type     = "instant"
+      datasource_uid = data.grafana_data_source.prometheus.uid
+
+      relative_time_range {
+        from = 300
+        to   = 0
+      }
+
+      model = jsonencode({
+        refId         = "A"
+        datasource    = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
+        expr          = "pve_pbs_backup_last_status{job=\"pve-host\"}"
+        instant       = true
+        range         = false
+        intervalMs    = 1000
+        maxDataPoints = 43200
+      })
+    }
+
+    data {
+      ref_id         = "B"
+      datasource_uid = "__expr__"
+
+      relative_time_range {
+        from = 0
+        to   = 0
+      }
+
+      model = jsonencode({
+        refId      = "B"
+        type       = "threshold"
+        datasource = { type = "__expr__", uid = "__expr__" }
+        expression = "A"
+        conditions = [
+          {
+            evaluator = {
+              type   = "lt"
+              params = [1]
+            }
+          }
+        ]
+        intervalMs    = 1000
+        maxDataPoints = 43200
+      })
+    }
+
+    labels = {
+      product  = "platform"
+      env      = "production"
+      severity = "critical"
+    }
+
+    annotations = {
+      summary = "The newest finished PBS backup for {{ $labels.target }} on pve01 FAILED (status is neither OK nor WARNINGS). Fix the cause; the next successful run for that target clears this alert. Check the task log in the PBS UI or `proxmox-backup-manager task list --all --limit 1000`."
+    }
+  }
+
+  # TARGET COUNT DROP: the per-target rules above can only see a guest while
+  # one of its tasks is still inside the `--limit 1000` window. When a job
+  # stops for good, its old task eventually ages out, the target series
+  # disappears and its age alert goes quiet (no_data = OK). This rule closes
+  # that hole: `pve_pbs_backup_targets` is the number of distinct worker_ids in
+  # the window, so a count below its 7-day maximum means a target left the
+  # window. Chosen over an inventory-maintained expected-target list because it
+  # needs no second source of truth and still catches every target; the
+  # trade-off is a legitimate VM decommission pages until the 7-day maximum
+  # rolls off — confirm the removal before silencing.
+  rule {
+    name           = "pve-pbs-backup-target-dropped"
+    condition      = "B"
+    for            = "1h"
+    no_data_state  = "OK"
+    exec_err_state = "KeepLast"
+
+    data {
+      ref_id         = "A"
+      query_type     = "instant"
+      datasource_uid = data.grafana_data_source.prometheus.uid
+
+      relative_time_range {
+        from = 300
+        to   = 0
+      }
+
+      model = jsonencode({
+        refId         = "A"
+        datasource    = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
+        expr          = "pve_pbs_backup_targets{job=\"pve-host\"} < max_over_time(pve_pbs_backup_targets{job=\"pve-host\"}[7d])"
+        instant       = true
+        range         = false
+        intervalMs    = 1000
+        maxDataPoints = 43200
+      })
+    }
+
+    data {
+      ref_id         = "B"
+      datasource_uid = "__expr__"
+
+      relative_time_range {
+        from = 0
+        to   = 0
+      }
+
+      model = jsonencode({
+        refId      = "B"
+        type       = "threshold"
+        datasource = { type = "__expr__", uid = "__expr__" }
+        expression = "A"
+        conditions = [
+          {
+            evaluator = {
+              type   = "gt"
+              params = [0]
+            }
+          }
+        ]
+        intervalMs    = 1000
+        maxDataPoints = 43200
+      })
+    }
+
+    labels = {
+      product  = "platform"
+      env      = "production"
+      severity = "critical"
+    }
+
+    annotations = {
+      summary = "The number of PBS backup targets on pve01 dropped below its 7-day maximum ({{ $value }} now). A guest's backup job stopped and its old tasks have aged out of the 1000-task window, so no per-target age alert covers it. Confirm the removal or re-enable the PBS job; compare `proxmox-backup-manager task list --all --limit 1000 --output-format json | jq -r '.[].worker_id' | sort -u` with the expected guest list."
+    }
+  }
+
+  # "No usable backup at all": the collector is alive (heartbeat present) AND
+  # the PBS collector series exists (a host without PBS emits no PBS metric,
+  # so it must not page here) but NO target has a usable backup timestamp. 26 h, not 6 h — this must not page
+  # on a fresh install before the first nightly has had a chance to run. A
+  # per-guest "never ran" cannot be derived from PBS task history alone (a
+  # guest with no task has no series); the failed rule covers guests that ran
+  # and failed, this one covers a PBS with no successful backup anywhere.
+  rule {
+    name           = "pve-pbs-backup-missing"
+    condition      = "B"
+    for            = "26h"
+    no_data_state  = "OK"
+    exec_err_state = "KeepLast"
+
+    data {
+      ref_id         = "A"
+      query_type     = "instant"
+      datasource_uid = data.grafana_data_source.prometheus.uid
+
+      relative_time_range {
+        from = 300
+        to   = 0
+      }
+
+      model = jsonencode({
+        refId         = "A"
+        datasource    = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
+        expr          = "((max(pve_metrics_last_success_timestamp_seconds{job=\"pve-host\"}) > 0) and on() (count(pve_pbs_collector_ok{job=\"pve-host\"}) > 0)) unless on() (count(pve_pbs_backup_last_success_timestamp_seconds{job=\"pve-host\"}) > 0)"
+        instant       = true
+        range         = false
+        intervalMs    = 1000
+        maxDataPoints = 43200
+      })
+    }
+
+    data {
+      ref_id         = "B"
+      datasource_uid = "__expr__"
+
+      relative_time_range {
+        from = 0
+        to   = 0
+      }
+
+      model = jsonencode({
+        refId      = "B"
+        type       = "threshold"
+        datasource = { type = "__expr__", uid = "__expr__" }
+        expression = "A"
+        conditions = [
+          {
+            evaluator = {
+              type   = "gt"
+              params = [0]
+            }
+          }
+        ]
+        intervalMs    = 1000
+        maxDataPoints = 43200
+      })
+    }
+
+    labels = {
+      product  = "platform"
+      env      = "production"
+      severity = "critical"
+    }
+
+    annotations = {
+      summary = "The pve01 textfile collector is running but has never exported a usable backup for ANY PBS target. The PBS backup job is not configured, not scheduled, or its tasks are outside the last 1000 entries — the VMs have no restore point. Check the PBS datastore/job configuration."
+    }
+  }
 }
 
 # COLLECTOR DEAD OR STALE — the textfile script is installed by the Ansible

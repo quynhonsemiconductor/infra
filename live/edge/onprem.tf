@@ -51,7 +51,9 @@ locals {
   # 2026-11-01 rova prod (owner fast track): rova.qnsc.vn moves off AWS on the
   # move night. Merge ONLY on the night of the move — this line is the switch.
   # 2026-11-04 opshub.qnsc.vn (P3): opshub-prod live in the cluster (gitops#205/#264), tunnel rules (infra#356).
-  cutover = ["rova-dev.qnsc.vn", "opshub-dev.qnsc.vn", "rova.qnsc.vn", "kb-dev.qnsc.vn", "opshub.qnsc.vn"]
+  # 2026-11-05 kb.qnsc.vn (P3): DRAFT — merge only once the kb-prod data layer is live (gitops#255). Tunnel rules
+  # live in live/onprem/tunnels.tf; this entry is the switch that publishes DNS and creates the staff Access app.
+  cutover = ["rova-dev.qnsc.vn", "opshub-dev.qnsc.vn", "rova.qnsc.vn", "kb-dev.qnsc.vn", "opshub.qnsc.vn", "kb.qnsc.vn"]
 
   # Nothing goes live before the tunnels exist (DNS targets them).
   cutover_live = var.tunnels_exist ? local.cutover : []
@@ -353,4 +355,37 @@ resource "cloudflare_zero_trust_access_policy" "prod_staff" {
   require = [{
     auth_method = { auth_method = "mfa" }
   }]
+}
+
+# ── ArgoCD GitHub webhook (audit M4): Access bypass for ONE path ───────────────────────────────────────────────
+# GitHub cannot present an Access session, so POST <argocd>/api/webhook would be challenged forever. The bypass
+# is scoped to that exact path (the most specific Access app wins over the admin app's `<host>/*`), and the
+# endpoint is not open: ArgoCD verifies the `webhook.github.secret` shared secret on every delivery. The matching
+# no-JWT tunnel rule is in live/onprem/tunnels.tf. Gated on the `argocd` admin-door label like that rule.
+locals {
+  argocd_enabled = contains(nonsensitive(keys(var.admin_hostnames)), "argocd")
+}
+
+resource "cloudflare_zero_trust_access_application" "argocd_webhook_bypass" {
+  for_each = local.argocd_enabled ? toset(["argocd"]) : toset([])
+
+  account_id = var.cloudflare_account_id
+  type       = "self_hosted"
+  name       = "bypass ${var.admin_hostnames[each.key]}/api/webhook"
+  domain     = "${var.admin_hostnames[each.key]}/api/webhook"
+
+  policies = [{
+    id         = cloudflare_zero_trust_access_policy.argocd_webhook_bypass[each.key].id
+    precedence = 1
+  }]
+}
+
+resource "cloudflare_zero_trust_access_policy" "argocd_webhook_bypass" {
+  for_each = local.argocd_enabled ? toset(["argocd"]) : toset([])
+
+  account_id = var.cloudflare_account_id
+  name       = "everyone-bypass"
+  decision   = "bypass"
+
+  include = [{ everyone = {} }]
 }
