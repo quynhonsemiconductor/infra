@@ -515,11 +515,13 @@ in `prod_apps.tf` (below); kb prod's service app comes with its own prod PR.
 Guest invitation is **prod-only** in this sense: the ONE Entra tenant is
 shared by dev and prod, and only the **PROD service app** ("Rova Prod
 Service") holds the `User.Invite.All` grant (tenant-wide, §7.3/H-D14, backlog
-P0-7), admin-consented on apply. rova's sign-in apps hold NO Graph permission.
-N-M10 removed the inert `User.Invite.All` the two sign-in apps used to
-declare: a sign-in app has no credential, so it can never run the app-only
-invite flow, and rova#763 moved the only Graph invitation call to
-`EntraGuestInviteClient` on the SERVICE certificate (`MAIL_GRAPH_CLIENT_ID`).
+P0-7), admin-consented on apply. rova's sign-in apps must hold NO Graph
+application permission or assignment. N-M10 removes the `User.Invite.All`
+role both sign-in apps still declare **and** the live assignments they carry:
+a sign-in app DOES have a client secret, so it can mint an app-only token —
+the control is "no `User.Invite.All` assignment on any sign-in SP", proven by
+the pre-apply GET gate below. rova#763 moved the only Graph invitation call
+to `EntraGuestInviteClient` on the SERVICE certificate (`MAIL_GRAPH_CLIENT_ID`).
 
 **Dev must NOT hold the grant.** A dev-vault certificate must not be able to
 invite guests into that shared production tenant (SA decision 2026-11-05), so
@@ -723,12 +725,36 @@ to destroy the object — and `prevent_destroy` makes that a hard error.
 
    **N-M10 delta (this PR; it does not change the paragraph above).** The
    plan now also shows:
-   - an UPDATE on the "Rova Prod" and "Rova Dev" SIGN-IN apps removing their
-     inert `User.Invite.All` application role. Before apply, prove no
-     assignment exists on either sign-in SP (removing
-     `required_resource_access` does NOT revoke a live assignment; the owner
-     command is in the PR body). No role is added to "Rova Dev Service", and
-     no grant is created there.
+   - an UPDATE on the "Rova Prod" and "Rova Dev" SIGN-IN apps removing the
+     `User.Invite.All` application role. Removing `required_resource_access`
+     does NOT revoke a live assignment, and both sign-in apps carry client
+     secrets, so they can mint app-only tokens and invite guests TODAY (the
+     assignments were created 2026-08-16/17). The owner deletes both live
+     assignments by hand (SA commands, 2026-11-05), then runs this gate; it
+     must pass before the plan is approved:
+
+     ```sh
+     for app in "Rova Prod" "Rova Dev"; do
+       apps=$(az ad app list --filter "displayName eq '$app'" -o json) || exit 1
+       [ "$(jq 'length' <<<"$apps")" = 1 ] || { echo "STOP: expected exactly 1 app named '$app'"; exit 1; }
+       appId=$(jq -r '.[0].appId' <<<"$apps")
+       sps=$(az ad sp list --filter "appId eq '$appId'" -o json) || exit 1
+       [ "$(jq 'length' <<<"$sps")" = 1 ] || { echo "STOP: expected exactly 1 SP for $app"; exit 1; }
+       sp=$(jq -r '.[0].id' <<<"$sps")
+       left=$(az rest --method get -o json \
+         --url "https://graph.microsoft.com/v1.0/servicePrincipals/$sp/appRoleAssignments") || exit 1
+       [ "$(jq '.value | length' <<<"$left")" = 0 ] || {
+         echo "STOP: $app still holds app-role assignments — delete them before the apply"
+         jq '.value[] | {assignment: .id, appRoleId, principalId}' <<<"$left"
+         exit 1
+       }
+     done
+     echo "gate OK: no app-role assignment on either rova sign-in SP"
+     ```
+
+     The gate stops on a missing/duplicate app or SP and on ANY remaining
+     assignment (not only `User.Invite.All`). No role is added to "Rova Dev
+     Service", and no grant is created there.
    - no change to "Rova Prod Service".
 
    **State after the 2026-11-04 identity apply:** the 4 applications, their 4

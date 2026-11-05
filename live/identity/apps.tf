@@ -11,9 +11,11 @@
 # Rules (§7.2):
 #   - DELEGATED Graph scopes only — never Mail.Send, and NO application role
 #     on a sign-in app. rova's guest invite is app-only on its SERVICE app's
-#     certificate (mail.tf, User.Invite.All) since rova#763; the role the two
-#     sign-in apps used to declare was inert (a sign-in app has no credential
-#     to run an app-only flow with) and is REMOVED here (N-M10).
+#     certificate (mail.tf, User.Invite.All) since rova#763. The two sign-in
+#     apps DO carry client secrets, so they can mint app-only tokens: the
+#     control is that NO sign-in SP holds a User.Invite.All assignment, not
+#     the absence of a credential. This PR removes the declared role; the
+#     pre-apply GET gate proves both sign-in SPs hold zero assignments.
 #   - callbacks are SERVER-side code flows → web.redirect_uris only; dev
 #     loopbacks use the org's fixed dev-stack ports from
 #     .github/docs/LOCAL-DEVELOPMENT.md (rova 5175, KB 8000 —

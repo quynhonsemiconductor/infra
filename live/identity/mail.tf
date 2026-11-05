@@ -55,8 +55,10 @@ locals {
       display_name = "Rova Prod Service"
       notes        = "github.com/quynhonsemiconductor/rova"
       # The one Graph permission the plan gives the rova Service app (§7.3,
-      # H-D14, backlog P0-7): tenant-wide guest invite — the sign-in apps
-      # hold NO application permissions. The app UPDATE is in this plan; the
+      # H-D14, backlog P0-7): tenant-wide guest invite. The sign-in apps must
+      # hold NO application permission or assignment (they carry secrets and
+      # CAN mint app-only tokens; the pre-apply GET gate proves zero
+      # assignments on both sign-in SPs). The app UPDATE is in this plan; the
       # ADMIN CONSENT is a separate manual step right after apply
       # (az ad app permission admin-consent, README step 4).
       graph_app_role_values = ["User.Invite.All"]
@@ -66,8 +68,10 @@ locals {
       notes        = "github.com/quynhonsemiconductor/rova"
       # PROD ONLY (SA decision 2026-11-05): the ONE tenant is shared by dev and
       # prod, and a dev-vault certificate must never be able to invite guests
-      # into it. So dev does NOT get User.Invite.All — the ABSENT GRANT is the
-      # security control.
+      # into it. So dev does NOT get User.Invite.All — and no sign-in SP may
+      # hold an assignment either (they carry secrets and can mint app-only
+      # tokens): the pre-apply GET gate proves zero assignments on both
+      # sign-in SPs, and this list stays empty.
       #
       # The flag is NOT a security control. ENTRA_GUEST_INVITE_ENABLED=false
       # (gitops values/rova/dev.yaml) gates ENQUEUE only —
