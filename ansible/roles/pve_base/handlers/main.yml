@@ -11,3 +11,7 @@
   ansible.builtin.service:
     name: ssh
     state: reloaded
+
+- name: Rebuild initramfs for the ZFS ARC ceiling
+  ansible.builtin.command: update-initramfs -u -k all
+  changed_when: true

@@ -77,31 +77,6 @@
     - Refresh the boot loader
   tags: [pve_gpu_cmdline]
 
-# ── ZFS ARC ceiling ─────────────────────────────────────────────────────────
-- name: ZFS ARC maximum at boot
-  ansible.builtin.copy:
-    dest: /etc/modprobe.d/zfs.conf
-    owner: root
-    group: root
-    mode: "0644"
-    content: |
-      options zfs zfs_arc_max={{ pve_gpu_arc_max_bytes }}
-  notify: Rebuild the initramfs
-  tags: [pve_gpu_arc]
-
-- name: Read the live ZFS ARC maximum
-  ansible.builtin.command: cat /sys/module/zfs/parameters/zfs_arc_max
-  register: pve_gpu_arc_live
-  changed_when: false
-  check_mode: false
-  tags: [pve_gpu_arc]
-
-- name: Apply the ARC maximum to the running system
-  ansible.builtin.shell: "echo {{ pve_gpu_arc_max_bytes }} > /sys/module/zfs/parameters/zfs_arc_max"
-  when: pve_gpu_arc_live.stdout | trim != (pve_gpu_arc_max_bytes | string)
-  changed_when: true
-  tags: [pve_gpu_arc]
-
 # ── verify: is vfio-pci holding the card? (a host that has not rebooted since the change says no) ──
 - name: Read the kernel driver in use for each function
   ansible.builtin.command: "lspci -nnk -d {{ item }}"

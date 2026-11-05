@@ -603,6 +603,72 @@
     label: "{{ item.key }}"
   tags: [pve_base_zfs]
 
+# ── ZFS ARC ceiling ─────────────────────────────────────────────────────────
+# Moved here from pve_gpu: every Proxmox host needs the ceiling, GPU or not.
+- name: Read the current ZFS module options
+  ansible.builtin.slurp:
+    src: /etc/modprobe.d/zfs.conf
+  register: pve_base_zfs_conf_raw
+  failed_when: false
+  tags: [pve_base_zfs]
+
+# The role owns one `options zfs` line. Refuse to overwrite a file that has a
+# DIFFERENT zfs option: merging that by hand is deliberate, not a silent drop.
+- name: The existing zfs.conf may only carry the ARC ceiling
+  ansible.builtin.assert:
+    that:
+      - (pve_base_zfs_conf_lines | length) <= 1
+      - pve_base_zfs_conf_lines | length == 0 or 'zfs_arc_max=' in pve_base_zfs_conf_lines[0]
+    fail_msg: >-
+      /etc/modprobe.d/zfs.conf has an 'options zfs' line with other settings.
+      Merge zfs_arc_max={{ pve_base_zfs_arc_max_bytes }} into it by hand, then re-run.
+    quiet: true
+  vars:
+    pve_base_zfs_conf_lines: >-
+      {{ (pve_base_zfs_conf_raw.content | default('') | b64decode).splitlines()
+         | select('match', '^options\s+zfs(\s|$)') | list }}
+  when: pve_base_zfs_conf_raw.content is defined
+  tags: [pve_base_zfs]
+
+- name: ZFS ARC maximum at boot
+  ansible.builtin.lineinfile:
+    path: /etc/modprobe.d/zfs.conf
+    regexp: '^options\s+zfs(\s|$)'
+    line: "options zfs zfs_arc_max={{ pve_base_zfs_arc_max_bytes }}"
+    create: true
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Rebuild initramfs for the ZFS ARC ceiling
+  tags: [pve_base_zfs]
+
+- name: Read the live ZFS ARC maximum (absent when ZFS is not loaded)
+  ansible.builtin.command: cat /sys/module/zfs/parameters/zfs_arc_max
+  register: pve_base_zfs_arc_live
+  changed_when: false
+  check_mode: false
+  failed_when: false
+  tags: [pve_base_zfs]
+
+- name: Report the live ZFS ARC change (check mode)
+  ansible.builtin.debug:
+    msg: "would set zfs_arc_max to {{ pve_base_zfs_arc_max_bytes }}"
+  changed_when: true
+  when:
+    - ansible_check_mode
+    - pve_base_zfs_arc_live.rc | default(1) == 0
+    - pve_base_zfs_arc_live.stdout | trim != (pve_base_zfs_arc_max_bytes | string)
+  tags: [pve_base_zfs]
+
+- name: Apply the ZFS ARC maximum to the running system
+  ansible.builtin.shell: "echo {{ pve_base_zfs_arc_max_bytes }} > /sys/module/zfs/parameters/zfs_arc_max"
+  when:
+    - not ansible_check_mode
+    - pve_base_zfs_arc_live.rc | default(1) == 0
+    - pve_base_zfs_arc_live.stdout | trim != (pve_base_zfs_arc_max_bytes | string)
+  changed_when: true
+  tags: [pve_base_zfs]
+
 # ── notifications ───────────────────────────────────────────────────────────
 - name: Notifications to Teams
   when: pve_base_notify_teams | bool
