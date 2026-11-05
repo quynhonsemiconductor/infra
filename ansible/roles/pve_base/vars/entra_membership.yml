@@ -1,0 +1,13 @@
+---
+# Shared membership expressions. The role includes this AFTER reading the realm's users, and the
+# offline unit test (tests/pve_base_entra_membership.yml) includes the SAME file, so the test cannot
+# drift from the role.
+#
+# `search`, not `match`: Jinja's match test anchors at the START, so '@entra$' never matched
+# 'alice@qnsc.vn@entra' and offboarding silently removed nobody.
+pve_base_entra_realm_users: >-
+  {{ (pve_base_entra_users.stdout | from_json)
+     | selectattr('userid', 'search', '@' ~ pve_base_entra_realm ~ '$') | list }}
+pve_base_entra_desired_userids: "{{ pve_base_entra_admin_emails | map('regex_replace', '$', '@' ~ pve_base_entra_realm) | list }}"
+pve_base_entra_removed_users: >-
+  {{ pve_base_entra_realm_users | rejectattr('userid', 'in', pve_base_entra_desired_userids) | list }}

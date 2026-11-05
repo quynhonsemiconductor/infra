@@ -1,11 +1,11 @@
 ---
-# Offline regression check for the PVE Entra offboarding selectors in
-# roles/pve_base/tasks/main.yml. No host, no cloud: it proves the filters that
-# decide which realm users are dropped from <oid>-entra.
+# Offline regression check for the PVE Entra membership/offboarding expressions.
+# It includes the ROLE'S OWN vars/entra_membership.yml (not a re-implementation),
+# so the test and the role cannot drift.
 #
 # The original bug: `selectattr('userid', 'match', '@entra$')` anchors at the
 # START (Jinja match == re.match), so it matched nothing and offboarding never
-# removed an account. The role now uses `search`.
+# removed an account. The shared expression uses `search`.
 - name: PVE Entra membership selectors
   hosts: localhost
   connection: local
@@ -13,6 +13,7 @@
   vars:
     pve_base_entra_realm: entra
     pve_base_entra_group_id: g-entra
+    pve_base_entra_admin_emails: ["bob@qnsc.vn"]
     # alice is no longer listed; bob is; carol is a suffix decoy; root is PAM.
     sim_users:
       - userid: "alice@qnsc.vn@entra"
@@ -23,40 +24,26 @@
         groups: ""
       - userid: "root@pam"
         groups: ""
-    sim_admin_emails: ["bob@qnsc.vn"]
+    pve_base_entra_users:
+      stdout: "{{ sim_users | to_json }}"
   tasks:
-    - name: The role's realm-user selector matches by suffix
-      ansible.builtin.set_fact:
-        sim_realm_users: "{{ sim_users | selectattr('userid', 'search', '@' ~ pve_base_entra_realm ~ '$') | list }}"
+    - name: Load the role's own membership expressions
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../roles/pve_base/vars/entra_membership.yml"
 
-    - name: A removed admin email is selected for removal; the decoy and root@pam are not
+    - name: The role's selector matches by suffix and drops the removed admin
       ansible.builtin.assert:
         that:
-          - sim_realm_users | map(attribute='userid') | list == ['alice@qnsc.vn@entra', 'bob@qnsc.vn@entra']
+          - pve_base_entra_realm_users | map(attribute='userid') | list == ['alice@qnsc.vn@entra', 'bob@qnsc.vn@entra']
+          - pve_base_entra_removed_users | map(attribute='userid') | list == ['alice@qnsc.vn@entra']
           # the OLD filter (match) selects nothing: this is the regression guard
           - (sim_users | selectattr('userid', 'match', '@' ~ pve_base_entra_realm ~ '$') | list | length) == 0
-        quiet: true
-
-    - name: The ids still allowed to hold the admin group
-      ansible.builtin.set_fact:
-        sim_desired_ids: "{{ sim_admin_emails | map('regex_replace', '$', '@' ~ pve_base_entra_realm) | list }}"
-
-    - name: Work out the removals exactly as the role does (email not in the shared list)
-      ansible.builtin.set_fact:
-        sim_removed: >-
-          {{ sim_realm_users | rejectattr('userid', 'in', sim_desired_ids)
-             | map(attribute='userid') | list }}
-
-    - name: Only the dropped admin is removed
-      ansible.builtin.assert:
-        that:
-          - sim_removed == ['alice@qnsc.vn@entra']
         quiet: true
 
     - name: The removed account loses the admin group but keeps other groups
       ansible.builtin.set_fact:
         sim_alice_groups: >-
-          {{ (sim_users | selectattr('userid', 'equalto', 'alice@qnsc.vn@entra') | first).groups
+          {{ (pve_base_entra_removed_users | selectattr('userid', 'equalto', 'alice@qnsc.vn@entra') | first).groups
              | split(',') | map('trim') | reject('equalto', '')
              | reject('equalto', pve_base_entra_group_id) | join(',') }}
         sim_bob_groups: >-
@@ -64,9 +51,27 @@
              | split(',') | map('trim') | reject('equalto', '')
              | reject('equalto', pve_base_entra_group_id) | join(',') }}
 
-    - name: Group removal leaves alice with no admin group for a re-run to preserve
+    - name: Group removal leaves alice without the admin group
       ansible.builtin.assert:
         that:
           - pve_base_entra_group_id not in sim_alice_groups.split(',')
           - sim_bob_groups == 'other'
+        quiet: true
+
+    # An EXPLICITLY empty list must still prune (unset is different: that is the
+    # PVE-only inventory case and is asserted by the role's manage_admins gate).
+    - name: An explicit empty admin list prunes every realm user
+      ansible.builtin.set_fact:
+        pve_base_entra_admin_emails: []
+        pve_base_entra_users:
+          stdout: "{{ sim_users | to_json }}"
+
+    - name: Re-evaluate the shared expressions with an empty list
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../roles/pve_base/vars/entra_membership.yml"
+
+    - name: Both realm users are now removed from the admin group
+      ansible.builtin.assert:
+        that:
+          - pve_base_entra_removed_users | map(attribute='userid') | list == ['alice@qnsc.vn@entra', 'bob@qnsc.vn@entra']
         quiet: true

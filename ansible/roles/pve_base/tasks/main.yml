@@ -440,6 +440,10 @@
           changed_when: false
           check_mode: false
 
+        - name: The membership decisions (shared with the offline unit test)
+          ansible.builtin.include_vars:
+            file: "{{ role_path }}/vars/entra_membership.yml"
+
         # Base users are pre-created exactly like PBS's: with autocreate=0 an Entra user who is not on the
         # shared list cannot sign in even if Entra hands out a token.
         - name: Report the Entra user creation (check mode)
@@ -511,13 +515,14 @@
           ansible.builtin.debug:
             msg: "would remove {{ item.userid }} from group {{ pve_base_entra_group_id }}"
           changed_when: true
-          loop: "{{ pve_base_entra_users.stdout | from_json
-                    | selectattr('userid', 'search', '@' ~ pve_base_entra_realm ~ '$') | list }}"
+          loop: "{{ pve_base_entra_removed_users }}"
           when:
             - ansible_check_mode
             - pve_base_entra_group_id in (item.groups | default('') | split(',') | map('trim') | list)
-            - (item.userid | regex_replace('@' ~ pve_base_entra_realm ~ '$', '')) not in pve_base_entra_admin_emails
 
+        # Removing the LAST group: PVE::API2::User's update path calls delete_user_group whenever
+        # `groups` is defined (an empty string counts), then split_list("") adds none. pveum user modify
+        # has no --delete option, so --groups "" is the clear.
         - name: Remove unlisted users from the Entra admins group
           ansible.builtin.command:
             argv:
@@ -529,12 +534,10 @@
               - "{{ item.groups | default('') | split(',') | map('trim')
                     | reject('equalto', '') | reject('equalto', pve_base_entra_group_id) | join(',') }}"
           changed_when: true
-          loop: "{{ pve_base_entra_users.stdout | from_json
-                    | selectattr('userid', 'search', '@' ~ pve_base_entra_realm ~ '$') | list }}"
+          loop: "{{ pve_base_entra_removed_users }}"
           when:
             - not ansible_check_mode
             - pve_base_entra_group_id in (item.groups | default('') | split(',') | map('trim') | list)
-            - (item.userid | regex_replace('@' ~ pve_base_entra_realm ~ '$', '')) not in pve_base_entra_admin_emails
 
     - name: Read the PVE ACLs
       ansible.builtin.command: pvesh get /access/acl --output-format json

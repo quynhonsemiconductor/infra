@@ -52,9 +52,13 @@ pbs_entra_client_id: "{{ proxmox_oidc_client_id | default('') }}"
 pbs_entra_client_secret: "{{ lookup('ansible.builtin.env', 'PROXMOX_OIDC_CLIENT_SECRET') }}"
 pbs_entra_username_claim: email
 pbs_entra_scopes: "openid email profile"
-pbs_entra_admin_emails: []
+# null = not set (a PVE-only inventory must not look like an explicit empty list). An explicit
+# pbs_entra_admin_emails: [] is honoured and prunes, exactly like proxmox_entra_admin_emails: [].
+pbs_entra_admin_emails: null
 # Same precedence as the PVE role: the canonical name wins, the old key is only a fallback. Computed
 # separately so an inventory that still sets pbs_entra_admin_emails cannot shadow proxmox_entra_admin_emails.
-pbs_entra_admin_emails_effective: "{{ proxmox_entra_admin_emails | default(pbs_entra_admin_emails | default([])) }}"
+pbs_entra_admin_emails_effective: >-
+  {{ proxmox_entra_admin_emails if proxmox_entra_admin_emails is defined
+     else (pbs_entra_admin_emails if pbs_entra_admin_emails is not none else []) }}
 # The username claim is fixed at realm creation: a different value stops the role.
 pbs_entra_rotate_client_key: false
