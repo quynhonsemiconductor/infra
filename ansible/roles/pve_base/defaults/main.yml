@@ -68,8 +68,8 @@ pve_base_entra_scopes: "openid email profile"
 # groups claim, and groups-overwrite stays off). Canonical name: proxmox_entra_admin_emails. The old
 # pbs_entra_admin_emails key is still honoured as a fallback.
 # pbs_entra_admin_emails is null when the owner never set it (the PBS role's compat default), so
-# "unset" and "explicitly empty" are different: an explicit list (even []) prunes; neither key being
-# present leaves the user tasks off for a PVE-only inventory.
+# "unset" and "explicitly empty" are different. Only the CANONICAL proxmox_entra_admin_emails: []
+# prunes; a leftover legacy pbs_entra_admin_emails: [] is treated as unset (a compatibility guard).
 pve_base_entra_admin_emails: >-
   {{ proxmox_entra_admin_emails if proxmox_entra_admin_emails is defined
      else (pbs_entra_admin_emails if pbs_entra_admin_emails is defined and pbs_entra_admin_emails is not none
@@ -79,7 +79,8 @@ pve_base_entra_admin_emails: >-
 # empty list still RUNS them, which prunes every pre-created account from the admin group.
 pve_base_entra_manage_admins: >-
   {{ proxmox_entra_admin_emails is defined
-     or (pbs_entra_admin_emails is defined and pbs_entra_admin_emails is not none) }}
+     or (pbs_entra_admin_emails is defined and pbs_entra_admin_emails is not none
+         and (pbs_entra_admin_emails | length) > 0) }}
 # The username claim is fixed at realm creation (Auth/OpenId.pm): a different value stops the role.
 # The key is only written on creation or when this is true (a rotation), so an ordinary run never needs
 # the secret.

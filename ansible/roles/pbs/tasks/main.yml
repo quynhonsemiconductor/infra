@@ -112,7 +112,6 @@
           - pbs_entra_issuer_url is match('^https://login\.microsoftonline\.com/[^/]+/v2\.0$')
           - pbs_entra_client_id is match('^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
           - pbs_entra_realm is match('^[a-z][a-z0-9]*$')
-          - pbs_entra_admin_emails_effective | length > 0
           - pbs_entra_admin_emails_effective | select('match', '^[^@\s]+@[^@\s]+$') | list | length == pbs_entra_admin_emails_effective | length
         fail_msg: >-
           Set proxmox_oidc_issuer_url and proxmox_oidc_client_id plus proxmox_entra_admin_emails in the

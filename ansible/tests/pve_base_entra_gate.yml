@@ -20,6 +20,24 @@
           - pve_base_entra_admin_emails | length == 0
         quiet: true
 
+- name: A leftover legacy empty list is NOT a prune request
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    pbs_entra_admin_emails: []
+  tasks:
+    - name: Load the role defaults
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../roles/pve_base/defaults/main.yml"
+
+    - name: Only the canonical key may prune
+      ansible.builtin.assert:
+        that:
+          - not pve_base_entra_manage_admins | bool
+          - pve_base_entra_admin_emails | length == 0
+        quiet: true
+
 - name: Neither key set is the PVE-only case
   hosts: localhost
   connection: local
