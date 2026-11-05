@@ -236,18 +236,25 @@
 # A pipeline that scrapes but never exports is the failure this role shipped once (2026-11-05:
 # node-exporter answered with 16 pve_* series, the scrape was up, and NOTHING left the host, because
 # the relabel stage had dropped the job/instance labels the OTel receiver requires). `up == 1` cannot
-# see that, so assert on the exporter's own counter: a fresh process must reach > 0 within one
-# scrape interval (60s) plus the 2s batch timeout.
+# see that, so assert on the exporter's own counter.
+#
+# The exposition name is `otelcol_exporter_sent_metric_points_total` (OTel counters get the `_total`
+# suffix), with or without component labels, so match the PREFIX of the first field — `$1` is either
+# `name` or `name{labels}` — and sum the last field.
+#
+# The window is TWO scrape intervals plus export slack: Alloy is restarted immediately above, and if
+# the start-up scrape loses a race with node-exporter the next one is 60s away. A 60s window failed
+# a healthy host for exactly that reason on the first live run.
 - name: Assert Alloy is exporting metric points
   ansible.builtin.shell:
     cmd: |
       set -o pipefail
       curl -fsS http://127.0.0.1:12345/metrics |
-        awk '/^otelcol_exporter_sent_metric_points(_total)?([ {])/ {points += $NF} END {print points + 0}'
+        awk '$1 ~ /^otelcol_exporter_sent_metric_points/ {points += $NF} END {print points + 0}'
     executable: /bin/bash
   register: pve_monitoring_exported_points
   changed_when: false
-  retries: 12
+  retries: 24
   delay: 5
   until: pve_monitoring_exported_points.stdout | int > 0
   when: not ansible_check_mode

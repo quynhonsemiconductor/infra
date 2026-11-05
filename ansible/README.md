@@ -41,10 +41,13 @@ ansible-playbook ping.yml
 
 ## Proxmox host metrics (`pve_monitoring`)
 
-`pve-host.yml --tags pve_monitoring` installs node-exporter (textfile collector only), a 5-minute ZFS/NVMe/PBS
-script, and Grafana Alloy, which pushes the resulting `pve_*` series over OTLP to the cluster's
-`alloy-otlp-host` NodePort. It needs one site value in the git-ignored local inventory — the endpoint of a k3s
-node on that NodePort:
+`pve-host.yml --tags pve_monitoring` installs node-exporter (textfile collector only), a 5-minute
+ZFS/NVMe/PBS/apt script, and Grafana Alloy, which pushes the resulting `pve_*` series over OTLP to the
+cluster's `alloy-otlp-host` NodePort. Besides ZFS, NVMe, PBS fill and the heartbeat, the script exports
+`pve_apt_updates_pending`, `pve_apt_security_updates_pending` (`-1` = apt simulation failed, unknown) and
+`pve_apt_reboot_required` (1 = `/run/reboot-required` exists, or the newest installed kernel is not the
+running one). It needs one site value in the git-ignored
+local inventory — the endpoint of a k3s node on that NodePort:
 
 ```yaml
 pve:
@@ -64,6 +67,46 @@ the host's address in the public GitOps repo (NetworkPolicy `ipBlock` cannot rea
 engine here), so the source restriction is deliberately left out of GitOps. Mitigations in place: RFC1918-only
 NetworkPolicy, the PVE metric-name allowlist, and the host sending only `pve_.*`. If the owner wants a strict source
 pin, add a node-firewall rule allowing only pve01 → 30418; that keeps the address in the site firewall, not in Git.
+
+## Entra OpenID login (`pve_base_entra`, `pbs_entra`)
+
+Both the Proxmox VE realm and the Proxmox Backup Server realm use the ONE "QNSC Proxmox" app from
+`live/identity/proxmox.tf` (one client id, one secret, one direct-assignment list). The realms, the PVE
+group and the PBS per-user ACLs are Ansible's job; the manual sequence and verification are in the
+platform runbook (product-docs, server-setup §3.2.1). `root@pam` is never touched — it is the break-glass
+account (LAN, password + TOTP); the role fails if it is missing or disabled.
+
+The three non-secret site values live in the LOCAL inventory (nothing in Git), next to the host:
+
+```yaml
+pve:
+  hosts:
+    pve01:
+      # ...
+      proxmox_oidc_issuer_url: "https://login.microsoftonline.com/<tenant>/v2.0"
+      proxmox_oidc_client_id: "<application (client) id>"
+      proxmox_oidc_admin_group_oid: "<object id of grp-qnsc-platform-admins>"
+      # PBS has no group-claim option: its admins are pre-created and get Admin on /. Keep this list
+      # equal to the app's direct assignments and the platform-admins group.
+      pbs_entra_admin_emails: ["<admin1>@<domain>", "<admin2>@<domain>"]
+```
+
+The client secret comes from the environment of the run (Key Vault `kv-qnsc-admin`,
+`admin-proxmox-oidc-secret`; rotate with the identity README "Proxmox VE + PBS login"):
+
+```zsh
+export PROXMOX_OIDC_CLIENT_SECRET="$(az keyvault secret show --vault-name kv-qnsc-admin \
+  --name admin-proxmox-oidc-secret --query value -o tsv --only-show-errors)"
+ansible-playbook pve-host.yml --check --diff --tags pve_base_entra,pbs_entra
+ansible-playbook pve-host.yml --tags pve_base_entra,pbs_entra
+unset PROXMOX_OIDC_CLIENT_SECRET
+```
+
+An ordinary run needs no secret once both realms exist (drift changes never rewrite the key). A rotation
+appends a credential, stores it in Key Vault, then runs both roles with
+`-e pve_base_entra_rotate_client_key=true -e pbs_entra_rotate_client_key=true`; the old credential is
+revoked after a green login on both doors. The key is momentarily in `pveum`/`proxmox-backup-manager`
+argv on pve01 (single-admin host); the runbook states the caveat.
 
 ## PBS API token
 
