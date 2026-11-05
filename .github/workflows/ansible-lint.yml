@@ -74,6 +74,9 @@ jobs:
           trap 'sudo userdel -r qnsc-test-admin 2>/dev/null || true' EXIT
           sudo useradd -m qnsc-test-admin
           sudo usermod -L -e 1 qnsc-test-admin
-          out=$(ansible-playbook -i localhost, -c local --check tests/ssh_infra_readd.yml)
+          if ! out=$(ansible-playbook -i localhost, -c local --check tests/ssh_infra_readd.yml 2>&1); then
+            printf '%s\n' "$out"
+            exit 1
+          fi
           printf '%s\n' "$out"
           grep -q "would re-enable qnsc-test-admin" <<<"$out"
