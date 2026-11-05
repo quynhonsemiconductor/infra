@@ -16,6 +16,7 @@
       loop:
         - /etc/apt/sources.list.d/pve-enterprise.sources
         - /etc/apt/sources.list.d/ceph.sources
+        - /etc/apt/sources.list.d/pbs-enterprise.sources
       register: pve_base_enterprise_files
       failed_when: false
 
@@ -153,6 +154,294 @@
       ansible.builtin.command: sshd -t
       changed_when: false
       check_mode: false
+
+# ── Entra OpenID login ──────────────────────────────────────────────────────
+# The realm is the "QNSC Proxmox" app in live/identity. Proxmox VE reads the token's groups claim
+# (SecurityGroup object ids, no Entra ID P1 here), so the group "<grp object id>-entra" carries the
+# Administrator role on /. root@pam is NOT touched: it is the break-glass account, LAN only.
+- name: Entra OpenID realm and admin group
+  when: pve_base_entra_enabled | bool
+  tags: [pve_base_entra]
+  block:
+    - name: The Entra site values are present (local inventory)
+      ansible.builtin.assert:
+        that:
+          - pve_base_entra_issuer_url is match('^https://login\.microsoftonline\.com/[^/]+/v2\.0$')
+          - pve_base_entra_client_id is match('^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
+          - pve_base_entra_admin_group_oid is match('^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
+          - pve_base_entra_realm is match('^[a-z][a-z0-9]*$')
+        fail_msg: >-
+          Set proxmox_oidc_issuer_url, proxmox_oidc_client_id and proxmox_oidc_admin_group_oid in the
+          LOCAL inventory (ansible/README.md, "Entra OpenID login"), or set pve_base_entra_enabled=false.
+        quiet: true
+
+    # The list carries every realm's client key: hide it. Only non-secret fields are compared below.
+    - name: Read the authentication realms (client keys stay hidden)
+      ansible.builtin.command: pvesh get /access/domains --output-format json
+      register: pve_base_entra_realms
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Find the realm among them
+      ansible.builtin.set_fact:
+        pve_base_entra_existing: >-
+          {{ (pve_base_entra_realms.stdout | from_json)
+             | selectattr('realm', 'equalto', pve_base_entra_realm) | list }}
+
+    # The list endpoint carries only realm/type/comment; the settings (and the client key) come from the
+    # single-realm call.
+    - name: Read the realm configuration (the client key stays hidden)
+      ansible.builtin.command: pvesh get /access/domains/{{ pve_base_entra_realm }} --output-format json
+      register: pve_base_entra_config_raw
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when: pve_base_entra_existing | length == 1
+
+    - name: Keep the realm configuration
+      ansible.builtin.set_fact:
+        pve_base_entra_config: "{{ pve_base_entra_config_raw.stdout | from_json }}"
+      when: pve_base_entra_existing | length == 1
+
+    - name: An existing realm must be OpenID with the fixed username claim
+      ansible.builtin.assert:
+        that:
+          - pve_base_entra_config.type | default('') == 'openid'
+          - pve_base_entra_config['username-claim'] | default('') == pve_base_entra_username_claim
+        fail_msg: >-
+          realm "{{ pve_base_entra_realm }}" exists with another type or username claim. The claim is
+          fixed at creation (Auth/OpenId.pm): delete and recreate the realm deliberately
+          (`pveum realm delete {{ pve_base_entra_realm }}`), then re-run this role.
+        quiet: true
+      when: pve_base_entra_existing | length == 1
+
+    - name: Read the scopes the realm reports
+      ansible.builtin.set_fact:
+        pve_base_entra_have_scopes_raw: "{{ pve_base_entra_config['scopes'] | default('') }}"
+      when: pve_base_entra_existing | length == 1
+
+    - name: Work out the drift (the key and the username claim are excluded by design)
+      ansible.builtin.set_fact:
+        pve_base_entra_drift: >-
+          {{ pve_base_entra_config['issuer-url'] | default('') != pve_base_entra_issuer_url
+             or pve_base_entra_config['client-id'] | default('') != pve_base_entra_client_id
+             or not (pve_base_entra_config['autocreate'] | default(false) | bool)
+             or pve_base_entra_config['groups-claim'] | default('') != 'groups'
+             or (pve_base_entra_config['groups-autocreate'] | default(false) | bool)
+             or not (pve_base_entra_config['groups-overwrite'] | default(false) | bool)
+             or not (pve_base_entra_config['default'] | default(false) | bool)
+             or ((pve_base_entra_have_scopes_raw | join(' ') if pve_base_entra_have_scopes_raw is not string
+                  else pve_base_entra_have_scopes_raw) | split | sort | join(' '))
+                != (pve_base_entra_scopes.split() | sort | join(' ')) }}
+      when: pve_base_entra_existing | length == 1
+
+    - name: Refuse to create or rotate the realm without the client secret
+      ansible.builtin.assert:
+        that: pve_base_entra_client_secret | length > 0
+        fail_msg: >-
+          PROXMOX_OIDC_CLIENT_SECRET is empty. Run with it exported from
+          kv-qnsc-admin/admin-proxmox-oidc-secret (ansible/README.md, "Entra OpenID login").
+        quiet: true
+      when: >-
+        pve_base_entra_existing | length == 0
+        or pve_base_entra_rotate_client_key | bool
+
+    - name: Report the realm creation (check mode)
+      ansible.builtin.debug:
+        msg: "would create the {{ pve_base_entra_realm }} OpenID realm"
+      changed_when: true
+      when:
+        - ansible_check_mode
+        - pve_base_entra_existing | length == 0
+
+    # The client key is momentarily in pveum's argv (/proc/<pid>/cmdline). pve01 is a single-admin
+    # host; the runbook and ansible/README.md state the caveat.
+    - name: Create the realm (auto-create users, sync the Entra group, default at login)
+      ansible.builtin.command:
+        argv:
+          - pveum
+          - realm
+          - add
+          - "{{ pve_base_entra_realm }}"
+          - --type
+          - openid
+          - --issuer-url
+          - "{{ pve_base_entra_issuer_url }}"
+          - --client-id
+          - "{{ pve_base_entra_client_id }}"
+          - --client-key
+          - "{{ pve_base_entra_client_secret }}"
+          - --username-claim
+          - "{{ pve_base_entra_username_claim }}"
+          - --autocreate
+          - "1"
+          - --groups-claim
+          - groups
+          - --groups-autocreate
+          - "0"
+          - --groups-overwrite
+          - "1"
+          - --scopes
+          - "{{ pve_base_entra_scopes }}"
+          - --default
+          - "1"
+      no_log: true
+      changed_when: true
+      when:
+        - not ansible_check_mode
+        - pve_base_entra_existing | length == 0
+
+    - name: Report the realm drift fix (check mode)
+      ansible.builtin.debug:
+        msg: "would align the {{ pve_base_entra_realm }} OpenID realm with the inventory"
+      changed_when: true
+      when:
+        - ansible_check_mode
+        - pve_base_entra_existing | length == 1
+        - pve_base_entra_drift | bool
+
+    # Never includes --client-key or --username-claim: the key is only written on create/rotate, the claim
+    # is immutable.
+    - name: Align the realm settings
+      ansible.builtin.command:
+        argv:
+          - pveum
+          - realm
+          - modify
+          - "{{ pve_base_entra_realm }}"
+          - --issuer-url
+          - "{{ pve_base_entra_issuer_url }}"
+          - --client-id
+          - "{{ pve_base_entra_client_id }}"
+          - --autocreate
+          - "1"
+          - --groups-claim
+          - groups
+          - --groups-autocreate
+          - "0"
+          - --groups-overwrite
+          - "1"
+          - --scopes
+          - "{{ pve_base_entra_scopes }}"
+          - --default
+          - "1"
+      changed_when: true
+      when:
+        - not ansible_check_mode
+        - pve_base_entra_existing | length == 1
+        - pve_base_entra_drift | bool
+
+    - name: Report the client-key rotation (check mode)
+      ansible.builtin.debug:
+        msg: "would replace the client key of realm {{ pve_base_entra_realm }}"
+      changed_when: true
+      when:
+        - ansible_check_mode
+        - pve_base_entra_existing | length == 1
+        - pve_base_entra_rotate_client_key | bool
+
+    - name: Rotate the client key
+      ansible.builtin.command:
+        argv:
+          - pveum
+          - realm
+          - modify
+          - "{{ pve_base_entra_realm }}"
+          - --client-key
+          - "{{ pve_base_entra_client_secret }}"
+      no_log: true
+      changed_when: true
+      when:
+        - not ansible_check_mode
+        - pve_base_entra_existing | length == 1
+        - pve_base_entra_rotate_client_key | bool
+
+    - name: Read the PVE groups
+      ansible.builtin.command: pvesh get /access/groups --output-format json
+      register: pve_base_entra_groups
+      changed_when: false
+      check_mode: false
+
+    - name: Report the PVE group creation (check mode)
+      ansible.builtin.debug:
+        msg: "would create PVE group {{ pve_base_entra_group_id }}"
+      changed_when: true
+      when:
+        - ansible_check_mode
+        - (pve_base_entra_groups.stdout | from_json
+           | selectattr('groupid', 'equalto', pve_base_entra_group_id) | list | length) == 0
+
+    - name: Create the Entra admins group
+      ansible.builtin.command:
+        argv:
+          - pveum
+          - group
+          - add
+          - "{{ pve_base_entra_group_id }}"
+          - --comment
+          - "Entra grp-qnsc-platform-admins (realm {{ pve_base_entra_realm }})"
+      changed_when: true
+      when:
+        - not ansible_check_mode
+        - (pve_base_entra_groups.stdout | from_json
+           | selectattr('groupid', 'equalto', pve_base_entra_group_id) | list | length) == 0
+
+    - name: Read the PVE ACLs
+      ansible.builtin.command: pvesh get /access/acl --output-format json
+      register: pve_base_entra_acls
+      changed_when: false
+      check_mode: false
+
+    - name: Report the Administrator ACL (check mode)
+      ansible.builtin.debug:
+        msg: "would grant Administrator on / to group {{ pve_base_entra_group_id }}"
+      changed_when: true
+      when:
+        - ansible_check_mode
+        - (pve_base_entra_acls.stdout | from_json
+           | selectattr('path', 'equalto', '/')
+           | selectattr('type', 'equalto', 'group')
+           | selectattr('ugid', 'equalto', pve_base_entra_group_id)
+           | selectattr('roleid', 'equalto', 'Administrator') | list | length) == 0
+
+    - name: Grant Administrator on / to the Entra admins group
+      ansible.builtin.command:
+        argv:
+          - pveum
+          - acl
+          - modify
+          - /
+          - --groups
+          - "{{ pve_base_entra_group_id }}"
+          - --roles
+          - Administrator
+      changed_when: true
+      when:
+        - not ansible_check_mode
+        - (pve_base_entra_acls.stdout | from_json
+           | selectattr('path', 'equalto', '/')
+           | selectattr('type', 'equalto', 'group')
+           | selectattr('ugid', 'equalto', pve_base_entra_group_id)
+           | selectattr('roleid', 'equalto', 'Administrator') | list | length) == 0
+
+    # The realm must never close the last door: root@pam stays enabled for LAN/TOTP break-glass.
+    - name: Read root@pam
+      ansible.builtin.command: pvesh get /access/users/root@pam --output-format json
+      register: pve_base_entra_root
+      changed_when: false
+      check_mode: false
+      failed_when: false
+
+    - name: The root@pam account stays enabled (break-glass)
+      ansible.builtin.assert:
+        that:
+          - pve_base_entra_root.rc == 0
+          - ((pve_base_entra_root.stdout | from_json)['enable'] | default(true)) | bool
+        fail_msg: >-
+          root@pam is missing or disabled: it is the break-glass account (LAN, password + TOTP). Re-enable
+          it before changing the realm.
+        quiet: true
 
 # ── ZFS properties ──────────────────────────────────────────────────────────
 - name: ZFS dataset properties

@@ -4,6 +4,8 @@
 # bucket, qnsc-backups-dev, at the end of this file: a dev token must never be
 # able to reach a prod WAL/base backup.) Prefixes:
 #   pg-rova/    CNPG barman base+WAL        PITR 14 d (barman prunes, not us)
+#   pg-opshub/  CNPG barman base+WAL        PITR 14 d (same rules)
+#   pg-kb/      CNPG barman base+WAL        PITR 14 d (same rules)
 #   dumps/      pg_dump daily 15 d / weekly 35 d / monthly 100 d
 #   files/      rova attachments 35 d; full-<YYYY-MM>/ 35 d
 #   dev/        RETIRED 2026-11-04: pg-dev dumps moved to qnsc-backups-dev
@@ -13,8 +15,8 @@
 #
 # The lock is the immutability control: RW tokens scoped to this bucket, no
 # "write-only" claim (§10.3). Lock covers pg-rova/<server>/wals/,
-# pg-opshub/<server>/wals/, dumps/, files/ — 14 days, never longer than the
-# shortest locked lifecycle (daily 15 d > 14 d).
+# pg-opshub/<server>/wals/, pg-kb/<server>/wals/, dumps/, files/ — 14 days,
+# never longer than the shortest locked lifecycle (daily 15 d > 14 d).
 #
 # Product buckets (rova-dev/opshub-dev/kb-dev + rova-prod files) are imported
 # from live/storage-dev/-prod in their move PRs — this file is only the
@@ -63,6 +65,24 @@ resource "cloudflare_r2_bucket_lock" "qnsc_backups" {
       condition = {
         type            = "Age"
         max_age_seconds = 1209600
+      }
+    },
+    {
+      # WAL segments of the kb CNPG cluster — the same shape and the same
+      # reason as pg-rova below (barman-cloud rewrites backup.info, so the
+      # base/ prefixes stay unlocked; WAL files are written once).
+      # pg-kb is not deployed yet (gitops platform/kb-prod is still disabled),
+      # so this rule locks nothing until it is: the prefix is fixed NOW so the
+      # cluster's first archive is immutable from the first WAL.
+      # The path carries the archive generation (serverName in the future
+      # gitops platform/cnpg/pg-kb.yaml): keep it at pg-kb-g1 and bump this
+      # prefix together with that file if the archive is ever rebuilt.
+      id      = "lock-pg-kb-14d"
+      prefix  = "pg-kb/pg-kb-g1/wals/"
+      enabled = true
+      condition = {
+        type            = "Age"
+        max_age_seconds = 1209600 # 14 days
       }
     },
     {

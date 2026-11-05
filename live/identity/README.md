@@ -424,42 +424,55 @@ owner exports the live shape first and the plan is a hard go/no-go.
 4. After apply: record `signin_app_client_ids`; rotate/land client secrets
    with `scripts/rotate-signin-secret.sh` (≤ 6 months, into the vault).
 
-## Proxmox login (`proxmox.tf`): app "QNSC Proxmox", plan, secret
+## Proxmox VE + PBS login (`proxmox.tf`): app "QNSC Proxmox", plan, secret
 
-Adds the Entra half of Proxmox's OpenID realm; the Proxmox half is the
-platform runbook (server-setup §3.2.1, product-docs, private). The tenant has
-NO Entra ID P1, so group-based app assignment and `ApplicationGroup` claims
-are unavailable: the admin USERS are assigned directly and the ID token
-carries security-group object ids (`SecurityGroup`).
+Adds the Entra half of the Proxmox VE and Proxmox Backup Server OpenID realms;
+ONE app backs both, so there is one client id, one client secret, one
+direct-assignment list and one consent grant. The Proxmox half is the platform
+runbook (server-setup §3.2.1, product-docs, private) and the `pve_base`/`pbs`
+Ansible roles (ansible/README.md), run by the owner. The tenant has NO Entra ID
+P1, so group-based app assignment and `ApplicationGroup` claims are unavailable:
+the admin USERS are assigned directly and the ID token carries security-group
+object ids (`SecurityGroup`).
+
+Proxmox VE reads the `groups` claim (group `<group-object-id>-entra`). PBS has
+no group-claim option in its OpenID realm, so PBS authorization is one ACL per
+pre-created `<email>@entra` user; the app's assignment list still gates sign-in
+on both.
 
 **Adding or removing an admin = edit `TF_VAR_proxmox_admin_object_ids` (and
-re-apply) AND the Entra group `grp-qnsc-platform-admins` (Cloudflare Access
-and the Proxmox ACL key on it).** Keep the two in step.
+re-apply), the Entra group `grp-qnsc-platform-admins` (Cloudflare Access and the
+Proxmox VE ACL key on it), AND `pbs_entra_admin_emails` in the local Ansible
+inventory. Keep all three in step.**
 
-1. Export the two new variables on top of the existing ones (the Proxmox
-   origin is an admin-door hostname, so it stays out of the repo):
+1. Export the two new variables on top of the existing ones (the admin-door
+   origins are hostnames, so they stay out of the repo) — one URI per door:
 
    ```sh
-   export TF_VAR_proxmox_redirect_uris='["https://<proxmox-host>/"]'   # trailing slash REQUIRED (azuread 3.10)
+   export TF_VAR_proxmox_redirect_uris='["https://<proxmox-host>/", "https://<pbs-host>/"]'   # trailing slash REQUIRED (azuread 3.10)
    export TF_VAR_proxmox_admin_object_ids='["<user-object-id>", "<user-object-id>"]'
    ```
 
-   pve-manager sends `location.origin` (no slash) and Entra normalises the
-   root. The FIRST login must confirm there is no `AADSTS50011` (redirect URI
-   mismatch); if there is, STOP and tell the SA.
-2. Plan and apply as in the sections above, locally. Expected: **adds only**:
-   `azuread_application.proxmox`, `azuread_service_principal.proxmox`, one
-   `azuread_app_role_assignment.proxmox_admins[...]` per listed user, and
+   pve-manager and the PBS UI send `location.origin` (no slash) and Entra
+   normalises the root. The FIRST login on each door must confirm there is no
+   `AADSTS50011` (redirect URI mismatch); if there is, STOP and tell the SA.
+2. Plan and apply as in the sections above, locally. On a first apply: **adds
+   only** — `azuread_application.proxmox`, `azuread_service_principal.proxmox`,
+   one `azuread_app_role_assignment.proxmox_admins[...]` per listed user, and
    `azuread_service_principal_delegated_permission_grant.proxmox`; 0 to change,
-   0 to destroy, 0 to replace; two new outputs. ANY change or destroy on an
-   existing resource is NO-GO: stop and reconcile in a reviewed PR.
+   0 to destroy, 0 to replace; two new outputs. If the app already exists (it may
+   have been applied for PVE alone), the ONLY accepted change is an in-place
+   update of its `redirect_uris` to the two origins. ANY destroy or replace is
+   NO-GO: stop and reconcile in a reviewed PR.
 3. Record `proxmox_oidc_client_id` and `proxmox_oidc_issuer_url` from the
-   outputs (the runbook needs them). Neither is a secret.
+   outputs (the runbook and the local Ansible inventory need them). Neither is a
+   secret.
 4. Create the client secret OUT OF BAND (never in state; same shape as
    `scripts/rotate-signin-secret.sh`) straight into the admin vault, nothing
    printed, 6 months (sign-in app policy), then set a calendar reminder to
    rotate. The new credential's `keyId` goes to stderr so an orphaned
-   credential can be revoked if the vault write fails:
+   credential can be revoked if the vault write fails. BOTH realms use this
+   secret, so a rotation updates both (ansible/README.md, "Entra OpenID login"):
 
    ```sh
    new=$(az ad app credential reset --id <proxmox_oidc_client_id> --append \
@@ -770,14 +783,15 @@ apply: this resource keeps the one credential it created.
 
 ### Delegated consent and app-role groups
 
-Every sign-in app (Rova Dev/Prod, OpsHub Dev/Prod, KB Dev) has an AllPrincipals
-`azuread_service_principal_delegated_permission_grant` for the delegated scopes
-that app requests (`openid profile email offline_access User.Read`, plus KB's
-`Files.Read`, `Files.Read.All` and `Sites.Read.All`), so no user sees a consent
-prompt. The set is DERIVED from the app's `requiredResourceAccess`, never a
-fixed list. Grant ids that already exist are imported through
-`TF_VAR_signin_delegated_grant_ids` (the apply kit discovers them); a missing
-key plans a create, which Entra rejects as a duplicate against a live grant.
+Every sign-in app (Rova Dev/Prod, OpsHub Dev/Prod, KB Dev/Prod) has an
+AllPrincipals `azuread_service_principal_delegated_permission_grant` for the
+delegated scopes that app requests (`openid profile email offline_access
+User.Read`, plus KB's `Files.Read`, `Files.Read.All` and `Sites.Read.All`), so
+no user sees a consent prompt. The set is DERIVED from the app's
+`requiredResourceAccess`, never a fixed list. Grant ids that already exist are
+imported through `TF_VAR_signin_delegated_grant_ids` (the apply kit discovers
+them); a missing key plans a create, which Entra rejects as a duplicate against
+a live grant.
 
 An apply replaces a grant's scope list, so the kit also reads each live grant's
 scopes into `TF_VAR_signin_delegated_grant_scopes`. A live scope the derived set
@@ -1041,27 +1055,146 @@ expects these names in `kv-qnsc-prod`:
 | `opshub-prod-db-app`, `-db-worker`, `-db-migrator`, `-db-readonly`, `-redis-url` | owner bootstrap / pg-opshub provisioning |
 | `opshub-prod-storage-access-key-id`, `-storage-secret-access-key` | R2 token (live/storage-prod) |
 
-### KB prod — open questions (no resources until decided)
+## Prod identity: KB (`kb_prod_apps.tf`)
 
-KB dev's apps tell us the shape but not the prod addresses:
+The prod pair does not exist: this stack CREATES it, exactly like OpsHub prod.
 
-1. **Sign-in redirects**: dev has two on the `kb-api-dev` host
-   (`/api/v1/auth/entra/callback` and `/api/v1/connectors/oauth/callback`)
-   plus their localhost forms. What are the PROD host names? They are not in
-   live/edge or gitops yet, so they are deliberately not written here.
-2. **OAuth connector**: do the `/api/v1/connectors/oauth/callback` redirect
-   and the delegated `Files.Read`, `Files.Read.All`, `Sites.Read.All` scopes
-   ship in prod? Dev has them.
-3. **Mail**: the KB dev service app holds NO Graph application roles. If kb
-   prod sends mail, the only requirement is the owner's Exchange RBAC
-   (`Application Mail.Send` scoped to `noreply-kb@qnsc.vn`) — no Entra role.
-   Confirm whether kb prod mail is in scope for P3.
-4. **Service certificate / KV names**: same create pattern as opshub (public
-   PEM in, combined PEM to `kv-qnsc-prod/kb-prod-graph-cert` once the name is
-   confirmed against `values/kb/prod.secrets.yaml`).
-5. **Optional id-token claims**: dev declares none (the `email` delegated scope
-   is requested, but no optional id-token claim is); keep none unless KB asks
-   for `preferred_username`.
+- **"KB Prod"** — sign-in app, the dev delegated set (`openid profile email
+  offline_access User.Read Files.Read Files.Read.All Sites.Read.All`), TWO
+  redirects on the decided prod host:
+  `https://kb.qnsc.vn/api/v1/auth/entra/callback` and
+  `https://kb.qnsc.vn/api/v1/connectors/oauth/callback`. No loopback, no
+  optional id-token claims, no app roles (the dev app has none).
+- **"KB Prod Service"** — certificate only, the same EMPTY Graph permission
+  set as KB Dev Service. Mail is Exchange RBAC for Applications, never
+  `Mail.Send` in Entra.
+- **Tenant-wide delegated consent** — the same
+  `azuread_service_principal_delegated_permission_grant.signin["kb_prod"]`
+  resource as every other sign-in app, with the #383 no-narrowing
+  preconditions. It is created by the apply; the kit imports it on a later
+  run.
+
+The known host and the owner decisions (both callbacks, connector scopes,
+mail via Exchange RBAC) close the five questions the earlier draft carried.
+
+### Pre-apply check (run it first)
+
+```sh
+az ad app list --display-name "KB Prod" --query "[].appId" -o tsv
+az ad app list --display-name "KB Prod Service" --query "[].appId" -o tsv
+```
+
+Both must print nothing. A hit belongs to someone else: STOP and adopt it with
+import blocks instead of creating a duplicate.
+
+### Owner steps
+
+1. Generate the service keypair locally (RSA 2048, ≤ 24 months). Only the
+   PUBLIC half goes to Terraform; the combined PEM goes to the vault:
+
+   ```sh
+   umask 077
+   mkdir -p "$HOME/keys" && cd "$HOME/keys"
+   openssl req -x509 -newkey rsa:2048 -nodes \
+     -keyout kb-prod-key.pem -out kb-prod-cert.pem \
+     -days 730 -subj '/CN=KB Prod Service'
+   # ORDER MATTERS: private key (PKCS#8) FIRST, then the certificate — the
+   # order values/kb/prod.secrets.yaml mounts the file in.
+   cat kb-prod-key.pem kb-prod-cert.pem > kb-prod-combined.pem
+   grep -c "PRIVATE KEY" kb-prod-cert.pem   # must print 0
+   export TF_VAR_kb_prod_service_certificate="$(cat "$HOME/keys/kb-prod-cert.pem")"
+   ```
+
+2. `tofu plan` with the full variable set. Go/no-go, exactly: **6 to add,
+   0 to change, 0 to destroy** — 1 sign-in application ("KB Prod"), 1 service
+   principal, 1 service application ("KB Prod Service"), 1 certificate
+   credential, 1 service principal, 1 tenant-wide delegated grant. Without
+   `TF_VAR_kb_prod_service_certificate` the precondition on the sign-in app
+   stops the plan: no partial shape is possible.
+
+3. `tofu apply`, then record the outputs:
+   `tofu output -json kb_prod_client_ids` (gitops placeholders
+   `<KB_PROD_CLIENT_ID>` = `signin`, `<KB_PROD_SERVICE_APP_ID>` = `service`)
+   and `tofu output -json kb_prod_object_ids` (the steps below).
+
+4. **Sign-in client secret** — never in state, ≤ 6 months, straight into the
+   vault under the name `values/kb/prod.secrets.yaml` reads. KB names it
+   `microsoft-client-secret`, not `entra-client-secret` like rova/opshub:
+
+   ```sh
+   ./scripts/rotate-signin-secret.sh \
+     "$(tofu output -json kb_prod_client_ids | jq -r .signin)" \
+     kv-qnsc-prod kb-prod-microsoft-client-secret
+   ```
+
+5. **Service certificate** — combined PEM into the vault; ESO mounts it
+   worker-only at `AZURE_CLIENT_CERTIFICATE_PATH`:
+
+   ```sh
+   az keyvault secret set --vault-name kv-qnsc-prod \
+     --name kb-prod-graph-cert \
+     --file "$HOME/keys/kb-prod-combined.pem" \
+     --tags owner=platform rotate-by=2028-11-05
+   ```
+
+6. **Admin consent** for the delegated grant: created tenant-wide by
+   Terraform (AllPrincipals), so there is nothing to consent by hand. The
+   service app's Graph set is intentionally empty.
+
+7. **The rest of the prod secret bundle** — generated/asked by the bootstrap
+   script (DB passwords, redis URL, gemini key, R2 pair, the client secret it
+   finds already set is skipped):
+
+   ```sh
+   gitops/platform/bootstrap/secrets.sh --product kb --env prod \
+     --vault-app kv-qnsc-prod --skip-site
+   ```
+
+8. **R2 token** — one bucket, one token pair (see "KB prod R2" below).
+
+9. **Exchange RBAC** — after this apply, run the merged infra#340 script at
+   least a day before cutover (RBAC propagation):
+
+   ```powershell
+   ./exchange-prod-mail.ps1 -TenantId dc0f2078-… -Product kb `
+     -ServiceAppId <kb_prod_client_ids.service> `
+     -ServiceObjectId <kb_prod_object_ids.service_sp> `
+     -ControlMailbox noreply-kb-dev@qnsc.vn
+   ```
+
+   Creates `noreply-kb@qnsc.vn`, the `noreply-kb` scope and
+   `Application Mail.Send` for "KB Prod Service". The proof table must read
+   `True` for its own mailbox and `False` everywhere else.
+
+10. **Group access** — the `kb.qnsc.vn` host is gated at the EDGE by
+    `grp-qnsc-staff` (`grp_staff_id` output → repo variable
+    `ENTRA_GRP_STAFF_ID` → live/edge), not in this stack.
+
+### KB prod R2
+
+Confirmed against `live/storage-prod` and `values/kb/prod.secrets.yaml`:
+
+| Item | Value |
+| --- | --- |
+| Bucket | `qnsc-kb-prod-sources` (ONE bucket; the module `qnsc_kb_sources`, outputs `qnsc_kb_sources_name` / `_endpoint`) |
+| Token secret names | `kb-prod-r2-access-key-id`, `kb-prod-r2-secret-access-key` |
+| Scope | The two above, `kv-qnsc-prod`, **scoped to that bucket only**, object read+write; no CORS, no custom domain (uploads are server-side) |
+| Bucket state | `cd infra/live/storage-prod && tofu state list \| grep qnsc_kb_sources` must show the module; if absent, apply that stack first |
+
+Backups do NOT use a kb-specific token: `platform/kb-prod/pg-kb-backup.yaml`
+(gitops#255) reads the shared `r2-backup-rw-*` pair for bucket
+`qnsc-backups`, destination `pg-kb/pg-kb-g1`.
+
+### KB prod Key Vault wiring (`kb-prod-*`)
+
+| Secret | Written by |
+| --- | --- |
+| `kb-prod-microsoft-client-secret` | step 4 (this README) |
+| `kb-prod-graph-cert` | step 5 (this README) |
+| `kb-prod-secret-key`, `-data-encryption-key`, `-gemini-api-key` | `secrets.sh` (step 7) |
+| `kb-prod-r2-access-key-id`, `-r2-secret-access-key` | R2 token (step 8) |
+| `kb-prod-db-app`, `-db-migrator`, `-db-readonly`, `-redis-url` | `secrets.sh` / pg-kb provisioning (step 7) |
+
 
 ## Prod mail readiness: the rova prod fast-track checklist
 
@@ -1130,7 +1263,7 @@ product-docs), so the owner reads the rest from Entra or `az` as shown.
 | `TF_VAR_opshub_dev_app_role_ids` | JSON, 7 role GUIDs | `opshub-dev-app.json` `.appRoles[].id` |
 | `TF_VAR_owner_operator_object_id` | user object id | Entra, Users, the owner, Object ID |
 | `TF_VAR_second_owner_object_id` | user object id | Entra, Users, the second owner, Object ID |
-| `TF_VAR_proxmox_redirect_uris` | JSON list, `https://<host>/` (trailing slash) | the Proxmox realm host (product-docs) |
+| `TF_VAR_proxmox_redirect_uris` | JSON list, one `https://<host>/` per door (trailing slash) | the PVE and PBS admin hosts (product-docs) |
 | `TF_VAR_proxmox_admin_object_ids` | JSON list of user object ids | Entra, Users, Object ID; keep equal to the platform admins group |
 | `TF_VAR_mail_service_object_ids` | JSON, 4 service app object ids | mail export `*-app.json` `.id` |
 | `TF_VAR_mail_service_sp_object_ids` | JSON, 4 service SP object ids | mail export `*-sp.json` `.id` |
@@ -1141,6 +1274,7 @@ product-docs), so the owner reads the rest from Entra or `az` as shown.
 | `TF_VAR_signin_delegated_grant_scopes` | JSON map `{<slot>: [<scope>...]}`, optional (default `{}`) | built by the kit from the same live grants; a live scope missing from the derived set fails the plan |
 | `TF_VAR_opshub_prod_service_graph_grant_ids` | JSON map `{<role>: <assignment id>}`, REQUIRED, no default | built by the kit from "OpsHub Prod Service" `appRoleAssignments` |
 | `TF_VAR_opshub_prod_service_certificate` | PEM PUBLIC cert (one string), optional | `$HOME/keys/opshub-prod-cert.pem` from "Prod identity: OpsHub" step 1. Unset = the prod service app is not created (and the app's precondition stops the plan) |
+| `TF_VAR_kb_prod_service_certificate` | PEM PUBLIC cert (one string), optional | `$HOME/keys/kb-prod-cert.pem` from "Prod identity: KB" step 1. Unset = the whole KB prod pair is refused (precondition) |
 
 The `existing_*` and `mail_service_*` ids are public identifiers, not secrets,
 and can be read with read-only `az ad app list|show` / `az ad sp show`.

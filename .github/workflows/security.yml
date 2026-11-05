@@ -71,7 +71,7 @@ jobs:
       # Worth stating plainly: this is the LIVE ESTATE and it is report-only, while
       # the module library that deploys nothing is enforced. That inversion is real
       # and is its own decision, not this PR's.
-      - uses: quynhonsemiconductor/ci/actions/iac-checkov@ea2c56bd9b03fb4d52e8fb9fe98dca95fd278638 # v1.24.5
+      - uses: quynhonsemiconductor/ci/actions/iac-checkov@956804ad4aa2dcf930909553d306d72b3708fd5d # v1.34.1+ci#308
         with:
           directory: live/
           soft-fail: 'true'
@@ -86,13 +86,13 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: quynhonsemiconductor/ci/actions/scan-secrets@ea2c56bd9b03fb4d52e8fb9fe98dca95fd278638 # v1.24.5
+      - uses: quynhonsemiconductor/ci/actions/scan-secrets@956804ad4aa2dcf930909553d306d72b3708fd5d # v1.34.1+ci#308
 
   actions-security:
     permissions:
       contents: read
       security-events: write
-    uses: quynhonsemiconductor/ci/.github/workflows/actions-security.yml@ea2c56bd9b03fb4d52e8fb9fe98dca95fd278638 # v1.24.5
+    uses: quynhonsemiconductor/ci/.github/workflows/actions-security.yml@956804ad4aa2dcf930909553d306d72b3708fd5d # v1.34.1+ci#308
     with:
       blocking: true
       combine: true # actionlint + zizmor as ONE job; the required check is `actions-security / Workflow security (actionlint, zizmor)`
