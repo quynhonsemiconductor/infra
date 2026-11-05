@@ -59,6 +59,7 @@ Priority: **P1** wave 1 (in `ansible/` now), **P2** wave 2 (next), **P3** later,
 | Laptop `known_hosts`, WARP client | owner steps of 2026-11-02 | Fleet | later | |
 | GitHub variables/rulesets | MANUAL-STEPS.md | OpenTofu `live/github` (merged) | done | |
 | Router / VLAN / ISP line | MANUAL-STEPS.md | keep | keep | a network device with no API in scope |
+| Agent data disks (300 GiB scsi1) at `/var/lib/rancher/k3s/storage` | blank disks, ai-01 model cache on root | Ansible `k3s_data_disk` | P1 | format and move are explicit opt-ins; runbook `agent-data-disks.md` |
 
 ## C. Cloud-init snippets
 

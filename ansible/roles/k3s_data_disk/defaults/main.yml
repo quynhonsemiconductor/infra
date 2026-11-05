@@ -1,0 +1,26 @@
+---
+# The agents' 300 GiB data disk (scsi1): local-path volumes must not live on the 40 GiB root.
+# On ai-01 the TEI model cache already lives under the root; moving it is a gated, owner-run
+# operation (docs/runbooks/agent-data-disks.md).
+#
+# OFF unless the operator opts in. A full playbook run must never touch disks by accident.
+k3s_data_disk_enabled: false
+
+# REQUIRED when enabled: the /dev/disk/by-id/ symlink, never /dev/sdb. The role resolves it and
+# refuses the root disk or a device of the wrong size.
+k3s_data_disk_device: ""
+k3s_data_disk_label: k3s-storage
+k3s_data_disk_mount: /var/lib/rancher/k3s/storage
+k3s_data_disk_min_size_gb: 250
+k3s_data_disk_max_size_gb: 400
+k3s_data_disk_temp_mount: /mnt/k3s-storage-new
+
+# Destruction of a signature is never implicit.
+k3s_data_disk_format: false
+
+# Moving data that already lives at the mount path (the ai-01 TEI cache) stops and restarts k3s-agent.
+k3s_data_disk_allow_move: false
+
+# nofail: a missing data disk must not block boot. The systemd timeout keeps a failing disk from
+# holding the boot for the default 90 s.
+k3s_data_disk_fstab_opts: "defaults,noatime,nofail,x-systemd.device-timeout=30"
