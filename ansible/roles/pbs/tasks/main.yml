@@ -81,9 +81,37 @@
       changed_when: false
       check_mode: false
 
+    - name: The datastore path is its own mounted ZFS dataset
+      ansible.builtin.command: "findmnt -n -o FSTYPE --mountpoint {{ pbs_datastore_path }}"
+      register: pbs_datastore_mount
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when: not ansible_check_mode
+
+    - name: Refuse to create a datastore on the root filesystem
+      ansible.builtin.assert:
+        that: pbs_datastore_mount.rc == 0 and pbs_datastore_mount.stdout | trim == 'zfs'
+        fail_msg: >-
+          {{ pbs_datastore_path }} is not a mounted ZFS dataset (findmnt: '{{ pbs_datastore_mount.stdout | default('') }}',
+          rc {{ pbs_datastore_mount.rc | default('?') }}). Import/mount the backup pool first; never let PBS
+          create a datastore on the root filesystem.
+        quiet: true
+      when: not ansible_check_mode
+
+    # Tier B of docs/runbooks/dr.md: after a Proxmox reinstall the datastore CONFIG is gone but its
+    # chunks are still on the imported HDD pool. PBS refuses a non-empty directory unless told to
+    # reuse it, so detect the existing chunk store and pass --reuse-datastore in that one case.
+    - name: Is there an existing datastore at the configured path (a rebuilt host)
+      ansible.builtin.stat:
+        path: "{{ pbs_datastore_path }}/.chunks"
+      register: pbs_existing_chunks
+      tags: [pbs_config]
+
     - name: Create the datastore with its GC schedule
       ansible.builtin.command: >-
         proxmox-backup-manager datastore create {{ pbs_datastore_name }} {{ pbs_datastore_path }}
+        {{ '--reuse-datastore' if pbs_existing_chunks.stat.exists else '' }}
         --gc-schedule '{{ pbs_gc_schedule }}'
       when: (pbs_datastores.stdout | from_json | selectattr('name', 'equalto', pbs_datastore_name) | list | length) == 0
       changed_when: true

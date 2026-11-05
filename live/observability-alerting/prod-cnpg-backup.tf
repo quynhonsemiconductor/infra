@@ -49,6 +49,16 @@
 # scheduled backup to land, short enough to page the same day. The age rule
 # above it keeps 15m against the real metric.
 #
+# ── THE `cluster` LABEL IS A TRAP (fixed 2026-11-04) ───────────────────────
+# The CNPG instance exporter sets `cluster` to the POSTGRES CLUSTER NAME
+# (pg-dev / pg-rova / pg-opshub), NOT the Alloy `qnsc-onprem` value used on
+# KSM and journal series. Every rule here that filtered
+# `cluster="qnsc-onprem"` matched ZERO series and evaluated NoData/OK — a
+# silent backup alert, SA-verified in Grafana. Do not add that filter back:
+# scope CNPG rules by `namespace="data-prod"` and/or `cnpg_cluster`. The other
+# `cluster="qnsc-onprem"` selectors in this repo are on KSM/Loki series, where
+# the label really is the Alloy cluster name and is correct.
+#
 # ── NOT HERE ───────────────────────────────────────────────────────────────
 # * Replication lag — onprem-k3s.tf's k3s-cnpg-replication-lag has no cluster
 #   filter, so pg-opshub/pg-kb are already covered (single instance on day 1:
@@ -69,9 +79,9 @@ locals {
       # plugin's, so zero samples are filtered out BEFORE max (a 0 is "never",
       # not "1970"). Same shape as the pg-rova rule.
       expr = join(" or ", [
-        "time() - max by (cnpg_cluster) ({__name__=~\"cnpg_collector_last_available_backup_timestamp|barman_cloud_cloudnative_pg_io_last_available_backup_timestamp\", cluster=\"qnsc-onprem\", cnpg_cluster=\"pg-opshub\"} > 0)",
+        "time() - max by (cnpg_cluster) ({__name__=~\"cnpg_collector_last_available_backup_timestamp|barman_cloud_cloudnative_pg_io_last_available_backup_timestamp\", cnpg_cluster=\"pg-opshub\"} > 0)",
         # Inline fallback is safe: immediate: true gives the cluster a backup at creation.
-        "(max by (cnpg_cluster) (cnpg_collector_up{cluster=\"qnsc-onprem\", cnpg_cluster=\"pg-opshub\"}) == 1) * 0 + 1e9",
+        "(max by (cnpg_cluster) (cnpg_collector_up{cnpg_cluster=\"pg-opshub\"}) == 1) * 0 + 1e9",
       ])
       op        = "gt"
       threshold = 26 * 3600
@@ -83,7 +93,7 @@ locals {
     }
     pg_kb_backup_age = {
       name      = "kb-pg-backup-too-old"
-      expr      = "time() - max by (cnpg_cluster) ({__name__=~\"cnpg_collector_last_available_backup_timestamp|barman_cloud_cloudnative_pg_io_last_available_backup_timestamp\", cluster=\"qnsc-onprem\", cnpg_cluster=\"pg-kb\"} > 0)"
+      expr      = "time() - max by (cnpg_cluster) ({__name__=~\"cnpg_collector_last_available_backup_timestamp|barman_cloud_cloudnative_pg_io_last_available_backup_timestamp\", cnpg_cluster=\"pg-kb\"} > 0)"
       op        = "gt"
       threshold = 26 * 3600
       for       = "15m"
@@ -98,8 +108,8 @@ locals {
       # so day 0 cannot assume `immediate: true` (see header). 6 h lets the
       # first scheduled slot (19:xx) land before paging.
       expr = join(" unless on (cnpg_cluster) ", [
-        "(max by (cnpg_cluster) (cnpg_collector_up{cluster=\"qnsc-onprem\", cnpg_cluster=\"pg-kb\"}) == 1)",
-        "({__name__=~\"cnpg_collector_last_available_backup_timestamp|barman_cloud_cloudnative_pg_io_last_available_backup_timestamp\", cluster=\"qnsc-onprem\", cnpg_cluster=\"pg-kb\"} > 0)",
+        "(max by (cnpg_cluster) (cnpg_collector_up{cnpg_cluster=\"pg-kb\"}) == 1)",
+        "({__name__=~\"cnpg_collector_last_available_backup_timestamp|barman_cloud_cloudnative_pg_io_last_available_backup_timestamp\", cnpg_cluster=\"pg-kb\"} > 0)",
       ])
       op        = "gt"
       threshold = 0
@@ -108,6 +118,31 @@ locals {
       product   = "kb"
       severity  = "critical"
       summary   = "pg-kb reports UP but no base-backup metric has ever appeared. The Backup/ObjectStore wiring is broken — restores have no source."
+    }
+    # A base backup that FAILED is a different event from one that is merely
+    # old: the age rule above waits 26 h, so a failure at 19:00 on 11-02 sat
+    # unnoticed until the next window (it was found in `kubectl get backups`,
+    # not by an alert). This fires while the newest failure is LATER than the
+    # newest success, which clears itself as soon as a later backup succeeds.
+    # Both metric families are considered (in-tree and the barman-cloud
+    # plugin, whose names the GitOps allowlist keeps); `> 0` drops the
+    # "never failed" zero samples so a 0 cannot look like 1970. If there is no
+    # available-backup sample at all the join yields nothing and the age and
+    # missing rules above own that case.
+    cnpg_backup_failed = {
+      name = "prod-cnpg-backup-failed"
+      expr = join("\n", [
+        "max by (cnpg_cluster) ({__name__=~\"cnpg_collector_last_failed_backup_timestamp|barman_cloud_cloudnative_pg_io_last_failed_backup_timestamp\", cluster=\"qnsc-onprem\"} > 0)",
+        ">",
+        "max by (cnpg_cluster) ({__name__=~\"cnpg_collector_last_available_backup_timestamp|barman_cloud_cloudnative_pg_io_last_available_backup_timestamp\", cluster=\"qnsc-onprem\"} > 0)",
+      ])
+      op        = "gt"
+      threshold = 0
+      for       = "5m"
+      no_data   = "OK"
+      product   = "platform"
+      severity  = "critical"
+      summary   = "The newest CNPG base backup on {{ $labels.cnpg_cluster }} FAILED and no later backup has succeeded (failure timestamp is newer than the newest good one). Check the ScheduledBackup and the R2 credentials in `kubectl get backups -n data-prod`; the last good backup is still restorable."
     }
     cnpg_exporter_down = {
       name = "prod-cnpg-exporter-down"
@@ -118,7 +153,7 @@ locals {
       # cluster has no series and therefore stays quiet.
       # `namespace="data-prod"`: the dev cluster (pg-dev) is not a prod
       # signal and stays email-only through the dev rules.
-      expr      = "cnpg_collector_up{cluster=\"qnsc-onprem\", namespace=\"data-prod\"} == 0"
+      expr      = "cnpg_collector_up{namespace=\"data-prod\"} == 0"
       op        = "lt"
       threshold = 1
       for       = "15m"

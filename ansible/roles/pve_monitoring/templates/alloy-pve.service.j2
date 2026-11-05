@@ -1,0 +1,23 @@
+# {{ qnsc_ansible_managed }}
+[Unit]
+Description=Grafana Alloy — Proxmox host textfile metrics to Grafana Cloud
+After=network-online.target prometheus-node-exporter.service
+Wants=network-online.target prometheus-node-exporter.service
+
+[Service]
+Type=simple
+User={{ pve_monitoring_alloy_user }}
+Group={{ pve_monitoring_alloy_user }}
+ExecStart={{ pve_monitoring_alloy_binary }} run --disable-reporting --storage.path=/var/lib/alloy --server.http.listen-addr=127.0.0.1:12345 {{ pve_monitoring_alloy_config }}
+Restart=on-failure
+RestartSec=10s
+# Alloy is a collector, not a workload: it must not be able to write outside
+# its own config/state and the kernel proc views it reads.
+NoNewPrivileges=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/alloy
+StateDirectory=alloy
+
+[Install]
+WantedBy=multi-user.target

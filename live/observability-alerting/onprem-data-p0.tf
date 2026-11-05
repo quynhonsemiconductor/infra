@@ -13,8 +13,13 @@
 #             of 1). If the series disappears the evidence disappears with it,
 #             so silence would be the wrong answer.
 #   OK        the series only exists while something is wrong (failed Jobs),
-#             the metric set is open-ended (PVCs), or the series legitimately
-#             does not exist yet (the dump CronJob before its first success).
+#             the database/cluster does not exist yet (CNPG size, before a
+#             launch), or the series legitimately does not exist yet (the dump
+#             CronJob before its first success).
+#
+# The two PVC rules were REMOVED (2026-11-04): hostPath PVs emit no
+# kubelet_volume_stats_*, so they could never fire for the prod CNPG clusters.
+# db_storage_free below watches the filesystem those PVs live on instead.
 #
 # Labels: env/severity route through the notification policy. Prod is
 # env=production (Teams + email). Dev is env=development, severity warning, no
@@ -86,29 +91,45 @@ locals {
       severity  = "critical"
       summary   = "valkey-rova exporter reports redis_up below 1 (or is not scraped) for 5 minutes. rova rate limits and security controls depend on it."
     }
-    pvc_usage_prod = {
-      name      = "k3s-pvc-over-80-percent-prod"
-      expr      = "max by (namespace, persistentvolumeclaim) (kubelet_volume_stats_used_bytes{namespace=~\"data-prod|rova-prod\"} / kubelet_volume_stats_capacity_bytes{namespace=~\"data-prod|rova-prod\"})"
+    # DB DISK, measured on the FILESYSTEM that holds the data, not on the PVC.
+    # The two kubelet_volume_stats PVC rules were blind: local-path-retain PVs
+    # are hostPath on the k3s node (local-path-retain has no
+    # defaultVolumeType=local annotation), and hostPath volumes emit no
+    # kubelet_volume_stats_* — pg-rova/pg-opshub had zero series after the
+    # 2026-11-03 move, and no_data_state=OK read that as healthy. The generic
+    # k3s-filesystem rules cover every mount at 80/90%, but this is the
+    # DB-specific floor the data plane needs: the storage zvol is 1.2 TB and
+    # 100 GiB free is ~8%, where PostgreSQL's WAL and a base backup can still
+    # consume the rest in a day. Absolute, so it does not shift with pool size.
+    db_storage_free = {
+      name      = "k3s-db-storage-free-below-100g"
+      expr      = "node_filesystem_avail_bytes{mountpoint=\"/var/lib/rancher/k3s/storage\", fstype!~\"tmpfs|overlay|squashfs\"} < 100 * 1024^3"
       op        = "gt"
-      threshold = 0.8
+      threshold = 0
       for       = "15m"
       no_data   = "OK"
       product   = "platform"
       env       = "production"
       severity  = "critical"
-      summary   = "PVC {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} is over 80% full."
+      summary   = "Less than 100 GiB free on the k3s data disk (/var/lib/rancher/k3s/storage) — every CNPG cluster, its WAL and its base backups live there. Free space or grow the disk before a backup fills it."
     }
-    pvc_usage_dev = {
-      name      = "k3s-pvc-over-80-percent-dev"
-      expr      = "max by (namespace, persistentvolumeclaim) (kubelet_volume_stats_used_bytes{namespace=~\"data-dev|rova-dev|opshub-dev|kb-dev|ai|ai-lab|platform\"} / kubelet_volume_stats_capacity_bytes{namespace=~\"data-dev|rova-dev|opshub-dev|kb-dev|ai|ai-lab|platform\"})"
+    # CNPG DATABASE SIZE — per database, the growth signal the filesystem rule
+    # cannot give (a single database can outgrow its usefulness long before the
+    # disk fills). 15 GiB is the review line, not a hard limit: pg-rova and
+    # pg-opshub are far below it today. Warning only; the disk rule is the
+    # critical path. A cluster that has no series (pg-kb before launch) is
+    # no-data/OK.
+    cnpg_database_size = {
+      name      = "k3s-cnpg-database-over-15g"
+      expr      = "max by (cnpg_cluster, datname) (cnpg_pg_database_size_bytes{namespace=\"data-prod\"})"
       op        = "gt"
-      threshold = 0.8
-      for       = "15m"
+      threshold = 15 * 1024 * 1024 * 1024
+      for       = "1h"
       no_data   = "OK"
       product   = "platform"
-      env       = "development"
+      env       = "production"
       severity  = "warning"
-      summary   = "Dev PVC {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} is over 80% full."
+      summary   = "Database {{ $labels.datname }} on {{ $labels.cnpg_cluster }} is over 15 GiB. Check what grew (table sizes, retained operational rows) before the nightly base backup and WAL copy have to carry it to R2."
     }
   }
 }
