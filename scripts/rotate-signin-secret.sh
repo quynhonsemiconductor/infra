@@ -12,9 +12,9 @@
 #
 # --append NEVER wipes existing secrets (rova prod on AWS is using one right
 # now); the NEW credential's --end-date is +6 months (≤ the 6-month policy),
-# the VAULT secret gets the same --expires, and the weekly expiry-check
-# alerts at < 30 days (§7.5). Revoke superseded credentials after the next
-# green deploy.
+# the VAULT secret gets the same --expires, and the weekly expiry watch
+# (.github/workflows/secret-expiry.yml, docs/runbooks/secret-expiry.md) alerts at < 30 days
+# (§7.5). Revoke superseded credentials after the next green deploy.
 #
 # ORDER: the credential EXISTS the moment the reset returns, so the password
 # is written to the vault BEFORE anything else can fail. `-o json` from the
