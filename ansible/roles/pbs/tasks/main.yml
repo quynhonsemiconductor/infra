@@ -1,5 +1,42 @@
 ---
-# ── install ─────────────────────────────────────────────────────────────────
+# ── repositories ────────────────────────────────────────────────────────────
+# pve01's apt-get update returned 401 until the owner disabled pbs-enterprise.sources by hand
+# (2026-11-05). The no-subscription source below replaces it; the enterprise file stays on disk
+# with Enabled: no, the same way pve_base handles pve-enterprise and ceph.
+- name: Read the PBS enterprise source
+  ansible.builtin.slurp:
+    src: "{{ pbs_enterprise_repo_file }}"
+  register: pbs_enterprise_file
+  failed_when: false
+  tags: [pbs_install]
+
+- name: Disable the PBS enterprise source (it needs a subscription)
+  ansible.builtin.lineinfile:
+    path: "{{ pbs_enterprise_repo_file }}"
+    regexp: "^Enabled:"
+    line: "Enabled: no"
+    insertafter: "^Types:"
+    mode: "0644"
+  when:
+    - pbs_disable_enterprise_repos | bool
+    - pbs_enterprise_file.content is defined
+    - "'enterprise.proxmox.com' in (pbs_enterprise_file.content | b64decode)"
+  notify: Update apt cache for PBS
+  tags: [pbs_install]
+
+# A host managed by the GUI may already carry a no-subscription source (deb822 or the older
+# .list). Adding a second one makes apt warn on every update, so write ours only when none
+# names it yet.
+- name: Look for an existing PBS no-subscription source
+  ansible.builtin.command: >-
+    grep -rlE "pbs-no-subscription" /etc/apt
+    --include=sources.list --include=*.list --include=*.sources
+  register: pbs_nosub_existing
+  changed_when: false
+  failed_when: pbs_nosub_existing.rc > 1
+  check_mode: false
+  tags: [pbs_install]
+
 - name: PBS repository (no-subscription)
   ansible.builtin.copy:
     dest: "{{ pbs_repository_file }}"
@@ -12,6 +49,7 @@
       Suites: {{ pbs_apt_suite }}
       Components: pbs-no-subscription
       Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+  when: pbs_nosub_existing.rc == 1 or (pbs_repository_file in pbs_nosub_existing.stdout_lines)
   register: pbs_repo
   notify: Update apt cache for PBS
   tags: [pbs_install]

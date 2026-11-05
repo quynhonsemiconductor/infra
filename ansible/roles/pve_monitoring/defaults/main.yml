@@ -4,10 +4,13 @@
 # WHAT AND WHY: PVE's own OpenTelemetry metric server (gitops#151) covers the
 # host's VM/storage/CPU/memory view, but it cannot see the things the single
 # consumer NVMe is risky about: ZFS pool health/fill, NVMe wear and media
-# errors, and PBS datastore fill. This role installs:
+# errors, and PBS datastore fill. It also cannot see whether the host is
+# missing security updates or waiting for a reboot. This role installs:
 #   * prometheus-node-exporter with ONLY the textfile collector enabled
 #     (Debian package), reading /var/lib/node_exporter/textfile;
-#   * a 5-minute root script that writes those gauges there;
+#   * a 5-minute root script that writes those gauges there, including
+#     pve_apt_updates_pending, pve_apt_security_updates_pending and
+#     pve_apt_reboot_required;
 #   * Grafana Alloy, which scrapes localhost:9100, keeps only `pve_.*`, and
 #     converts/pushes them over OTLP to the cluster's existing
 #     `alloy-otlp-host` receiver.
