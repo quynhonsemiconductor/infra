@@ -186,6 +186,17 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "qnsc_apps" {
           } : null
         }
       }],
+      # ArgoCD's GitHub webhook (audit M4) — BEFORE the host catch-all: first match wins, and GitHub cannot
+      # present an Access session. The request authenticates with the shared webhook secret ArgoCD verifies
+      # (`webhook.github.secret` in argocd-secret, ESO-synced in platform/argocd), so this rule carries no JWT
+      # check, exactly like the rova-dev SCM webhook. The live/edge bypass app for the same path is the other
+      # half: Access must not challenge the POST, and this file must not demand the JWT it never gets.
+      [for h in data.cloudflare_zero_trust_access_application.argocd : {
+        hostname       = var.admin_hostnames["argocd"]
+        path           = "^/api/webhook$"
+        service        = "http://argocd-server.argocd.svc:80"
+        origin_request = {}
+      }],
       [for h in data.cloudflare_zero_trust_access_application.argocd : {
         hostname = var.admin_hostnames["argocd"]
         path     = null
