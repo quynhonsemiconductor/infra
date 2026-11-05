@@ -85,7 +85,7 @@
 variable "kb_prod_live" {
   description = "Flip via a PR in the kb prod window (PLAN-P3 §2.3 P8) — the ONLY flip mechanism. Requires kb.qnsc.vn to resolve with a /readyz bypass; false = every resource below is culled."
   type        = bool
-  default     = false
+  default     = true # flipped 2026-11-05: kb.qnsc.vn live, /readyz 200 through the bypass
 }
 
 locals {
