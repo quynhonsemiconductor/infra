@@ -104,7 +104,8 @@ locals {
 # unchecked silently.
 locals {
   # opshub.qnsc.vn: its staff Access app exists since infra#343 (same name = hostname).
-  access_jwt_hosts = toset(["rova-dev.qnsc.vn", "opshub-dev.qnsc.vn", "kb-dev.qnsc.vn", "opshub.qnsc.vn"])
+  # kb.qnsc.vn: its staff Access app exists since infra#395 (edge applied 2026-11-05).
+  access_jwt_hosts = toset(["rova-dev.qnsc.vn", "opshub-dev.qnsc.vn", "kb-dev.qnsc.vn", "opshub.qnsc.vn", "kb.qnsc.vn"])
   # A rule may name a different Access app than its host's (`access_app`): /mcp is behind the MCP server
   # apps (live/edge mcp.tf, mcp_rova_prod.tf), whose JWT carries THEIR aud, not the host web app's.
   access_jwt_apps = setunion(local.access_jwt_hosts, toset(compact([for r in local.qnsc_apps_ingress : try(r.access_app, "")])))
