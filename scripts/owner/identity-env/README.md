@@ -4,11 +4,17 @@ Builds every `TF_VAR_*` of `live/identity` that has no default from read-only `a
 none in Git, none printed). Owner's own terminal only: `az login` done.
 
 ```sh
-export IDENTITY_SECOND_OWNER_UPN=<second owner UPN>
-export IDENTITY_PROXMOX_HOST=<proxmox realm hostname>
+export IDENTITY_SECOND_OWNER_UPN='<second owner UPN>'
+# redirect URI https://<host>/ is registered for each admin door
+export IDENTITY_PROXMOX_HOST='<Proxmox VE admin host>'
+export IDENTITY_PBS_HOST='<Proxmox Backup Server admin host>'
 scripts/owner/identity-env/identity-env.sh                            # names + lengths only
 scripts/owner/identity-env/identity-env.sh -- tofu plan -out=tfplan   # runs in live/identity, env only in the child
 ```
+
+All three are required: both admin doors are registered on the ONE "QNSC Proxmox" app (runbook
+server-setup §3.2.1), so a missing `IDENTITY_PBS_HOST` stops the kit before any plan. Each value is a bare
+hostname; the kit builds `TF_VAR_proxmox_redirect_uris` with the trailing slash azuread 3.10 requires.
 
 `tfplan` / `*.tfplan` are git-ignored (root `.gitignore`) but a plan file holds the values: delete it after the apply (`rm live/identity/tfplan`).
 
