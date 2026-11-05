@@ -36,8 +36,9 @@ Priority: **P1** wave 1 (in `ansible/` now), **P2** wave 2 (next), **P3** later,
 
 | Step | Where it is written | Goes to | Prio | Note |
 |---|---|---|---|---|
-| Disable the enterprise repos, add no-subscription | server-setup.md 3.1 | Ansible `pve_base` | P1 | detects an existing no-subscription source and does not add a second one |
-| Unattended security updates | (none: done by hand) | Ansible `pve_base` | P1 | Debian security origin only, never an automatic reboot |
+| Disable the enterprise repos, add no-subscription | server-setup.md 3.1 | Ansible `pve_base` (pve, ceph) + `pbs` (pbs) | P1 | enterprise sources stay on disk with `Enabled: no`; pve- and pbs-no-subscription written deb822, each detects an existing source and does not add a second one |
+| Unattended security updates | (was done by hand) | Ansible `pve_base` | P1 | Debian security origin only, never an automatic reboot; PVE/PBS/kernel upgrades stay a maintenance window |
+| Pending updates / reboot signal | (none) | Ansible `pve_monitoring` (textfile) | P2 | `pve_apt_updates_pending`, `pve_apt_security_updates_pending` (-1 = apt simulation failed), `pve_apt_reboot_required` (reboot-required file or a newer installed kernel); alert rules are G's lane |
 | chrony sources | server-setup.md 3.4 | Ansible `pve_base` | P1 | |
 | SSH: key only, no root password | server-setup.md 3.2, MANUAL-STEPS | Ansible `pve_base` | P1 | refuses to run if the connecting user has no authorized key |
 | Root TOTP, password manager seed | server-setup.md 3.2 | keep | keep | a secret seed |
