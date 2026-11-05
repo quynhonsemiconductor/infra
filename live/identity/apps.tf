@@ -20,7 +20,7 @@
 #   - client-secret VALUES never touch state (§7, main.tf): the owner rotates
 #     with scripts/rotate-signin-secret.sh (az ad app credential reset --append
 #     --end-date +6 months, piped straight into the vault, nothing printed)
-#     and the weekly expiry-check watches the vault's expires tag. Tofu owns
+#     and the weekly expiry watch (.github/workflows/secret-expiry.yml) reads the vault's expires tag. Tofu owns
 #     shape only.
 #   - app_role_assignment_required = FALSE everywhere, matching LIVE on all
 #     four SPs (the old opshub-users/employee gate never shipped: the group

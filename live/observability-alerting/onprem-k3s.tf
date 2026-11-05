@@ -20,7 +20,7 @@
 # cutover rehearsal (Stage D2 checklist).
 #
 # NOT here, deliberately: backup failed/missed (Healthchecks.io owns the
-# batch-job pings), cert expiry (weekly expiry-check Action; CNPG server
+# batch-job pings), cert expiry (weekly `.github/workflows/secret-expiry.yml`; CNPG server
 # certs auto-renew ~90 d), /readyz failing and tunnel down (Synthetic
 # Monitoring's readyz check + the node-down rule). ZFS/NVMe/PBS signals on
 # the pve01 HOST are not in this file: they come from the host textfile
