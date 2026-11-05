@@ -69,7 +69,7 @@ module "edge" {
   #            PRE_AUTH_IP_BUCKET 1000/60s per IP, DEFAULT 200/60s per user,
   #            STRICT 60/60s, AI 10/60s, UPLOAD 30/60s
   rate_limit_rules = [{
-    ref                 = "auth_default"
+    ref = "auth_default"
     # `log` is not available on this zone's plan (apply 2026-11-05: "failed to use the log action in
     # ratelimiting"). Block instead, at a threshold the whole office behind one NAT IP cannot reach by signing
     # in normally (a sign-in is 2-4 /api/auth calls; 20 people at 9am ≈ 80 per minute, not per 10 s) while a
