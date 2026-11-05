@@ -29,34 +29,43 @@ rulesets already restrict PR merges to `squash`, so these flags are latent, not 
 
 ## Actions policy (added 2026-11-04, N-H3)
 
-`actions.tf` sets the org baseline: default workflow token **read**, Actions may
-**not** approve pull-request reviews, and `sha_pinning_required` **on** (org-wide,
-plus explicit on every platform repository this stack owns).
+`actions.tf` sets `sha_pinning_required` on every platform repository this stack
+owns. The three **organisation-level** settings are owner-applied, not Terraform:
+default workflow token **read**, Actions may **not** approve pull-request
+reviews, and `sha_pinning_required` **on** org-wide.
 
-Two things to know before and after the apply:
+Why not Terraform: the `qnsc-iac-apply` App has repository administration only.
+`PUT /orgs/{org}/actions/permissions` and `PUT
+/orgs/{org}/actions/permissions/workflow` need organisation administration and
+were refused with `403 Resource not accessible by integration` on the 2026-11-05
+apply. The App is deliberately not widened; an org-admin token in CI has a
+larger blast radius than the setting it protects.
 
-- **Every `uses:` must be a full 40-character SHA — merge `code-review#4` FIRST.**
-  Every active repository is already SHA-pinned except `code-review`, whose
-  `codeql.yml` still used `checkout@v7` and `codeql-action@v4`; #4 pins them, and
-  enabling the policy before that merge turns that workflow red. The three other
+**Owner steps — Settings → Actions → General (organisation level):**
+
+1. **Workflow permissions**: select **Read repository contents and packages
+   permissions** (the default must be read, not write).
+2. Leave **Allow GitHub Actions to create and approve pull requests** unchecked.
+3. **Actions permissions**: tick **Require actions to be pinned to a full-length
+   commit SHA**. Allowed actions stay **Allow all actions and reusable
+   workflows**.
+
+Verify with `scripts/owner/check-org-actions-policy.sh` (owner `gh` token,
+read-only; exits non-zero and prints the fix on a mismatch). Two things to know:
+
+- **Every `uses:` must be a full 40-character SHA.** The tag-pinning prerequisite
+  is in: `code-review#4` pinned its `codeql.yml` on 2026-11-04. The three other
   repositories that still carry tags (`9router-pool`, `agent-forge`, `solodesk`)
   are ARCHIVED, so their workflows cannot run and their references cannot fail
   the policy.
-- **Repository-level token defaults are not in this provider.** Only the org-level
-  setting is managed, so a repository that explicitly set its own default to
-  `write` keeps it — the org flip does not reach an explicit override. Check each
-  repository BEFORE the apply (to learn which rows are inherited) and AFTER it (a
-  row still reporting `write true` is explicit):
-  ```sh
-  for r in $(gh repo list quynhonsemiconductor --limit 100 --json name -q '.[].name'); do
-    gh api "repos/quynhonsemiconductor/$r/actions/permissions/workflow" \
-      --jq '"$r \(.default_workflow_permissions) \(.can_approve_pull_request_reviews)"'
-  done
-  ```
-  Any row that is not `read false` AFTER the apply is an explicit override and needs
+- **Repository-level token defaults are not in this provider.** A repository
+  that explicitly set its own default to `write` keeps it — the org flip does not
+  reach an explicit override. `scripts/owner/check-org-actions-policy.sh --repos`
+  lists any row that is not `read false`; clear it once with
   `gh api -X PUT repos/quynhonsemiconductor/<repo>/actions/permissions/workflow -f default_workflow_permissions=read -F can_approve_pull_request_reviews=false`.
   That API clear is the only option today — the provider has no repository-level
   workflow-token resource — so record it in the apply notes if one surfaces.
+
 
 ## Not managed, on purpose
 
