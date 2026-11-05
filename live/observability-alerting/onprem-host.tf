@@ -606,10 +606,11 @@ resource "grafana_rule_group" "onprem_pve_risk" {
   # producer emits, per PBS task `worker_id` (target = "vm/100", "ct/101", …):
   #   pve_pbs_backup_last_success_timestamp_seconds{target=...}  newest usable
   #   pve_pbs_backup_last_status{target=...}                     1 usable/0 failed
-  # plus `pve_pbs_collector_ok` (1 = the task list parsed). Per-target series
-  # are deliberate: one VM failing nightly must not be masked by another VM's
-  # OK. `WARNINGS: n` from PBS counts as usable (1) — it completed and the
-  # restore point exists.
+  # plus `pve_pbs_collector_ok` (1 only after a successful JSON parse) and
+  # `pve_pbs_backup_targets` (distinct targets in the fetched task window).
+  # Per-target series are deliberate: one VM failing nightly must not be
+  # masked by another VM's OK. `WARNINGS: n` from PBS counts as usable (1) —
+  # it completed and the restore point exists.
   #
   # 26 h = one missed night plus slack, the same bound as the CNPG base-backup
   # rules. no_data_state = OK on the age rule: before a target's first usable
@@ -617,7 +618,9 @@ resource "grafana_rule_group" "onprem_pve_risk" {
   # the "no usable backup at all" state after 26 h.
   #
   # COLLECTOR FIRST: a failed `task list` must not read as "never ran", so
-  # `pve_pbs_collector_ok == 0` pages on its own.
+  # `pve_pbs_collector_ok == 0` pages on its own. A host without PBS emits no
+  # PBS backup metric at all (the script skips absent sources), so these rules
+  # stay silent there instead of crying collector-failed.
   rule {
     name           = "pve-pbs-collector-failed"
     condition      = "B"
@@ -816,6 +819,82 @@ resource "grafana_rule_group" "onprem_pve_risk" {
 
     annotations = {
       summary = "The newest finished PBS backup for {{ $labels.target }} on pve01 FAILED (status is neither OK nor WARNINGS). Fix the cause; the next successful run for that target clears this alert. Check the task log in the PBS UI or `proxmox-backup-manager task list --all --limit 1000`."
+    }
+  }
+
+  # TARGET COUNT DROP: the per-target rules above can only see a guest while
+  # one of its tasks is still inside the `--limit 1000` window. When a job
+  # stops for good, its old task eventually ages out, the target series
+  # disappears and its age alert goes quiet (no_data = OK). This rule closes
+  # that hole: `pve_pbs_backup_targets` is the number of distinct worker_ids in
+  # the window, so a count below its 7-day maximum means a target left the
+  # window. Chosen over an inventory-maintained expected-target list because it
+  # needs no second source of truth and still catches every target; the
+  # trade-off is a legitimate VM decommission pages until the 7-day maximum
+  # rolls off — confirm the removal before silencing.
+  rule {
+    name           = "pve-pbs-backup-target-dropped"
+    condition      = "B"
+    for            = "1h"
+    no_data_state  = "OK"
+    exec_err_state = "KeepLast"
+
+    data {
+      ref_id         = "A"
+      query_type     = "instant"
+      datasource_uid = data.grafana_data_source.prometheus.uid
+
+      relative_time_range {
+        from = 300
+        to   = 0
+      }
+
+      model = jsonencode({
+        refId         = "A"
+        datasource    = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
+        expr          = "pve_pbs_backup_targets{job=\"pve-host\"} < max_over_time(pve_pbs_backup_targets{job=\"pve-host\"}[7d])"
+        instant       = true
+        range         = false
+        intervalMs    = 1000
+        maxDataPoints = 43200
+      })
+    }
+
+    data {
+      ref_id         = "B"
+      datasource_uid = "__expr__"
+
+      relative_time_range {
+        from = 0
+        to   = 0
+      }
+
+      model = jsonencode({
+        refId      = "B"
+        type       = "threshold"
+        datasource = { type = "__expr__", uid = "__expr__" }
+        expression = "A"
+        conditions = [
+          {
+            evaluator = {
+              type   = "gt"
+              params = [0]
+            }
+          }
+        ]
+        intervalMs    = 1000
+        maxDataPoints = 43200
+      })
+    }
+
+    labels = {
+      product  = "platform"
+      env      = "production"
+      severity = "critical"
+    }
+
+    annotations = {
+      summary = "The number of PBS backup targets on pve01 dropped below its 7-day maximum ({{ $value }} now). A guest's backup job stopped and its old tasks have aged out of the 1000-task window, so no per-target age alert covers it. Confirm the removal or re-enable the PBS job; compare `proxmox-backup-manager task list --all --limit 1000 --output-format json | jq -r '.[].worker_id' | sort -u` with the expected guest list."
     }
   }
 
