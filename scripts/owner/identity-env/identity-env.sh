@@ -85,6 +85,7 @@ put TF_VAR_second_owner_object_id "$SECOND"
 # Extra owners for DEV sign-in apps only (app=upn,...). An app owner can add client credentials and
 # redirect URIs, so prod keys are refused here too; variables.tf rejects them again at plan time.
 # UPNs come from the shell and object ids stay in the child environment: nothing is committed.
+unset TF_VAR_dev_app_extra_owner_object_ids   # never inherit a stale export into this run
 EXTRA_OWNERS='{}'
 if [[ -n "${IDENTITY_DEV_APP_EXTRA_OWNERS:-}" ]]; then
   while IFS= read -r pair; do
@@ -97,7 +98,11 @@ if [[ -n "${IDENTITY_DEV_APP_EXTRA_OWNERS:-}" ]]; then
       *) die "IDENTITY_DEV_APP_EXTRA_OWNERS: $key is not a dev sign-in app" ;;
     esac
     [[ -n "$upn" ]] || die "IDENTITY_DEV_APP_EXTRA_OWNERS: $key has an empty UPN"
-    extra=$(az_json dev-extra-owner ad user show --id "$upn")
+    # `az ad user show` omits userType on real tenants; Graph with $select returns it. Encode the UPN
+    # (the @ must be %40) — the UPN itself is never printed.
+    enc=$(jq -rn --arg v "$upn" '$v|@uri')
+    extra=$(az_json dev-extra-owner rest --method get \
+      --url "https://graph.microsoft.com/v1.0/users/$enc?\$select=id,userType")
     [[ "$(jq -r '.userType // empty' <<<"$extra")" == "Member" ]] \
       || die "IDENTITY_DEV_APP_EXTRA_OWNERS: $key has a guest or non-Member user"
     uid=$(jq -r '.id // empty' <<<"$extra"); need_guid "dev extra owner $key" "$uid"
@@ -105,6 +110,9 @@ if [[ -n "${IDENTITY_DEV_APP_EXTRA_OWNERS:-}" ]]; then
   done < <(tr ',' '\n' <<<"$IDENTITY_DEV_APP_EXTRA_OWNERS")
 fi
 [[ "$EXTRA_OWNERS" == "{}" ]] || put TF_VAR_dev_app_extra_owner_object_ids "$EXTRA_OWNERS"
+if [[ "$MODE" == check && -z "${IDENTITY_DEV_APP_EXTRA_OWNERS:-}" ]]; then
+  echo "NOTE: IDENTITY_DEV_APP_EXTRA_OWNERS is unset — the plan will REMOVE any hand-added DEV-app owner (e.g. on the OpsHub Dev registration). Set it to keep the developer as owner." >&2
+fi
 # The platform admins ARE the group's user members (README: keep the two in step). ONE list drives
 # the Proxmox app's direct assignments and the OpsHub Dev/Prod Admin role: group-based app-role
 # assignment needs Entra ID P1/P2, which the tenant does not have.

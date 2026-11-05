@@ -136,6 +136,8 @@ case "$a" in
       *skiptoken=2*) cat "$FX/members2" 2>/dev/null || echo '{"value":[]}' ;;
       *) cat "$FX/members" ;;
     esac ;;
+  "rest --method get --url https://graph.microsoft.com/v1.0/users/"*)
+    u=${a#*v1.0/users/}; u=${u%%\?*}; u=${u//%40/@}; cat "$FX/user-$u" ;;
   "ad signed-in-user show"*) cat "$FX/me" ;;
   "ad user show --id "*) u=${a#ad user show --id }; cat "$FX/user-${u%% *}" ;;
   "ad app list --filter displayName eq '"*) n=${a#*\'}; n=${n%%\'*}; cat "$FX/app-${n// /-}.list" 2>/dev/null || echo '[]' ;;
@@ -198,12 +200,20 @@ run env IDENTITY_DEV_APP_EXTRA_OWNERS="opshub_dev=dev@tenant.example" bash "$SCR
   || fail "extra owners: run mode"
 jq -e --arg id "$(g 3 3)" 'keys==["opshub_dev"] and .opshub_dev==[$id]' "$T/extra.json" >/dev/null \
   || fail "extra owners: wrong map"
+grep -q 'v1.0/users/dev%40tenant.example' "$FX/calls.log" || fail "extra owner not read via Graph users?select"
+grep -q 'select=id,userType' "$FX/calls.log" || fail "extra owner lookup without userType selected"
+grep -q 'ad user show --id dev@' "$FX/calls.log" && fail "extra owner read via az ad user show (omits userType)" || true
 expect_stop_extra "extra owner guest" "has a guest or non-Member user" "opshub_dev=guest@tenant.example"
 expect_stop_extra "extra owner without userType" "has a guest or non-Member user" "opshub_dev=nouser@tenant.example"
 expect_stop_extra "extra owner unknown" "az lookup failed: dev-extra-owner" "opshub_dev=nobody@tenant.example"
 expect_stop_extra "extra owner prod key" "rova_prod is not a dev sign-in app" "rova_prod=dev@tenant.example"
 expect_stop_extra "extra owner malformed" "expected app=upn" "opshub_dev"
 expect_stop_extra "extra owner empty upn" "has an empty UPN" "opshub_dev="
+# a stale export in the owner's shell must never reach the plan
+build; run env TF_VAR_dev_app_extra_owner_object_ids='{"opshub_dev":["stale"]}' bash "$SCRIPT" -- \
+  sh -c 'printf "%s" "${TF_VAR_dev_app_extra_owner_object_ids-UNSET}"' >"$T/stale.txt" 2>/dev/null \
+  || fail "stale export: run mode"
+[ "$(cat "$T/stale.txt")" = UNSET ] || fail "a stale TF_VAR_dev_app_extra_owner_object_ids reached the child"
 
 # 2. run mode: the child sees the values (checked by shape, nothing printed), cwd is the stack dir
 CH="$T/child.out"
