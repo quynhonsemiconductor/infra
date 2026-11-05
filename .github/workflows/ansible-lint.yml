@@ -50,3 +50,8 @@ jobs:
             ansible-playbook -i inventory/example/hosts.yml --syntax-check "$pb"
             echo "::endgroup::"
           done
+
+      # Offline unit check of the PVE Entra offboarding selectors (match vs
+      # search: a realm user must actually be selected). No host, no cloud.
+      - name: PVE Entra membership selector unit check
+        run: ansible-playbook -i localhost, -c local tests/pve_base_entra_membership.yml
