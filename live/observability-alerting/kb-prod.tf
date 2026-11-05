@@ -40,6 +40,44 @@
 # probe comes from the data source (uptime-dev.tf:44-47) — the same expression
 # there, so `.probes["Singapore"]` is indexed only when the data source exists.
 #
+# ── FLIP PROCEDURE (kb prod window, AFTER kb.qnsc.vn serves /readyz) ───────
+#  0. Preconditions — all true before the flip PR is opened. They are the
+#     go-live gates from sa-notes/reviews/kb-prod-readiness-2026-11-05.md §4.5:
+#       a. SA's edge + tunnel apply is live: `dig +short kb.qnsc.vn` answers
+#          the two Cloudflare edge IPs (it answers NOTHING before cutover) and
+#          `curl -s https://kb.qnsc.vn/readyz` returns 200 with the compact
+#          body {"status":"ready",...} through the Access bypass (`^/readyz$`).
+#          A 302 to the Access login or an HTML body is NOT ready.
+#       b. kb prod workloads serve in-cluster (api/worker/web Ready) and the
+#          app is past warm-up — /readyz answers 503 while it warms.
+#       c. `GRAFANA_SM_TOKEN` exists where the workflow reads it
+#          (infra-plan.yml:425 for this stack's PR plan, infra-apply.yml:695
+#          for apply-observability-alerting), and `uptime_checks_enabled`
+#          stays true. With either missing, the check cannot arm; step 1's
+#          guard now turns that into a FAILED plan instead of a silent no-op.
+#  1. ONE PR: `kb_prod_live` default false -> true. Nothing else changes.
+#     The precondition below is the half-apply guard — see its comment.
+#  2. After the apply, verify in the window:
+#       - SM check `kb-prod-readyz` (Singapore) is green; Mimir has
+#         `probe_success{job="kb-prod-readyz"} > 0`.
+#       - Rule group "kb (prod readyz)" exists and evaluates Normal.
+#       - `kb-prod-http-5xx-rate` (prod-http-5xx.tf) stays silent
+#         (no_data_state = OK) until the prod API serves >= 50 requests/10m;
+#         it needs NO flip — it is already armed for every product/env.
+#         Re-run the series proof at flip time if in doubt:
+#         sum by (job,status_class,deployment_environment_name)
+#           (increase(http_server_duration_milliseconds_count[1d]))
+#         and expect a kb-api/prod row (the 2026-11-04 audit proved the same
+#         query returns kb-api/dev; Adaptive Metrics 422s a bare
+#         `{__name__=~"http_server_.*"}` query, so do not query that shape).
+#  3. Rollback: revert the one word. The check and its rule are deleted; the
+#     5xx rule and every shared Kubernetes rule are untouched.
+#
+# ORDERING, both ways. Flipping before the host resolves pages from the first
+# probe (probe_success = 0, `for: 5m`). Flipping while the SM token is empty
+# used to cull every resource and read as a green "no changes" plan — the
+# guard below makes that mistake fail loudly instead.
+#
 # ── ROUTING ────────────────────────────────────────────────────────────────
 # env=production → grafana_notification_policy.root (Teams + devops@ email).
 # =============================================================================
@@ -80,26 +118,46 @@ resource "grafana_synthetic_monitoring_check" "kb_prod_readyz" {
     http {
       method = "GET"
       # kb serves /readyz as the alias of /health/ready (qnsc-kb-backend
-      # src/api/main.py:1165) and answers 200 {"status":"ready",...}. Assert
-      # the body: a 200 alone can come from the SPA when routing is wrong.
+      # src/api/main.py:1204-1207) and answers 200 with compact JSON. Assert
+      # the body: a 200 alone can come from the SPA when routing is wrong, and
+      # a 302 to the Access login also counts as an SM success without it.
+      # Verified against the live dev twin on 2026-11-05:
+      #   https://kb-dev.qnsc.vn/readyz ->
+      #   {"status":"ready","database":"ok","redis":"ok","job_mode":"celery",
+      #    "embedding":{"state":"ready","seconds":0.0},"degraded":false}
+      # The matcher deliberately requires the exact compact form FastAPI
+      # serializes; "ready" elsewhere in the body (e.g. "not_ready") does not
+      # satisfy it.
       fail_if_body_not_matches_regexp = ["\"status\":\"ready\""]
     }
   }
 }
 
 resource "grafana_rule_group" "kb_prod_readyz_down" {
-  count            = local.kb_uptime_live ? 1 : 0
+  # Gated on the FLAG, not on kb_uptime_live, so the precondition below is
+  # evaluated whenever the flip happens. If it were gated on kb_uptime_live
+  # too, a flip with the SM token empty would plan zero resources and exit
+  # green — the one failure mode a flip PR must not have.
+  count            = local.kb_prod_live ? 1 : 0
   name             = "kb (prod readyz)"
   folder_uid       = grafana_folder.alerts.uid
   interval_seconds = 60
+
+  lifecycle {
+    precondition {
+      condition     = local.kb_uptime_live
+      error_message = "kb_prod_live=true but the readyz check cannot arm: needs uptime_checks_enabled=true and a non-empty GRAFANA_SM_TOKEN (secret mapped to this stack in infra-plan.yml:425 and infra-apply.yml:695). Refusing to half-apply the flip."
+    }
+  }
 
   rule {
     name      = "kb-prod-readyz-down"
     condition = "B"
     for       = "5m"
-    # The count gate above is the absent-target gate; once armed, a VANISHED
-    # probe series (SM not publishing, check disabled outside tofu) must page,
-    # not read as healthy.
+    # The flag count gate above is the absent-target gate; once armed, a
+    # VANISHED probe series (SM not publishing, check disabled outside tofu)
+    # must page, not read as healthy. The precondition guarantees the check
+    # exists whenever this rule exists.
     no_data_state  = "Alerting"
     exec_err_state = "Error"
 
