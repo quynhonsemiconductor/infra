@@ -2,7 +2,8 @@
 # Write the Proxmox host gauges node-exporter's textfile collector reads:
 #   pve_zpool_*           pool health / size / allocated / free
 #   pve_nvme_*            NVMe SMART wear, media errors, critical warning
-#   pve_pbs_*             PBS datastore size / used / avail
+#   pve_pbs_*             PBS datastore size / used / avail, last backup
+#                         success timestamp and last backup status
 #   pve_apt_*             pending updates / security updates / reboot required
 # Run by pve-metrics.timer every 5 minutes. Any source that is absent on this
 # host (no PBS, no NVMe) is skipped; it must never abort the whole file.
@@ -70,6 +71,25 @@ if command -v proxmox-backup-manager >/dev/null 2>&1; then
         emit "pve_pbs_datastore_used_bytes{datastore=\"$name\"} ${used:-0}"
         emit "pve_pbs_datastore_avail_bytes{datastore=\"$name\"} ${avail:-0}"
     done || true
+fi
+
+# ── PBS backup jobs ────────────────────────────────────────────────────────
+# The nightly VM backup is the restore source for everything on pve01; before
+# this, a failed or skipped run was visible only in the PBS web UI. PBS records
+# every task with worker_type/status/endtime, so export the two facts an alert
+# needs: the newest SUCCESSFUL backup (age) and the status of the newest
+# finished backup (failure). `--all` is deliberate — the default view is the
+# current day, which would hide a night that was skipped entirely. The timeout
+# keeps a large task history from stalling the oneshot; no metric is emitted
+# when the list is empty, so the alert's no-data policy owns "never ran".
+if command -v proxmox-backup-manager >/dev/null 2>&1; then
+    tasks="$(timeout 30 proxmox-backup-manager task list --all --output-format json 2>/dev/null || true)"
+    if [ -n "$tasks" ]; then
+        last_ok="$(printf '%s' "$tasks" | jq -r '[.[] | select(.worker_type == "backup" and .status == "OK" and ((.endtime // 0) > 0))] | max_by(.endtime) | .endtime // empty' 2>/dev/null || true)"
+        last_status="$(printf '%s' "$tasks" | jq -r '[.[] | select(.worker_type == "backup" and ((.endtime // 0) > 0))] | if length == 0 then empty else (max_by(.endtime) | if .status == "OK" then 1 else 0 end) end' 2>/dev/null || true)"
+        [ -n "$last_ok" ] && emit "pve_pbs_backup_last_success_timestamp_seconds $last_ok"
+        [ -n "$last_status" ] && emit "pve_pbs_backup_last_status $last_status"
+    fi
 fi
 
 # ── pending package updates and reboot ─────────────────────────────────────
