@@ -898,8 +898,9 @@ resource "grafana_rule_group" "onprem_pve_risk" {
     }
   }
 
-  # "No usable backup at all": the collector is alive (heartbeat present) but
-  # NO target has a usable backup timestamp. 26 h, not 6 h — this must not page
+  # "No usable backup at all": the collector is alive (heartbeat present) AND
+  # the PBS collector series exists (a host without PBS emits no PBS metric,
+  # so it must not page here) but NO target has a usable backup timestamp. 26 h, not 6 h — this must not page
   # on a fresh install before the first nightly has had a chance to run. A
   # per-guest "never ran" cannot be derived from PBS task history alone (a
   # guest with no task has no series); the failed rule covers guests that ran
@@ -924,7 +925,7 @@ resource "grafana_rule_group" "onprem_pve_risk" {
       model = jsonencode({
         refId         = "A"
         datasource    = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
-        expr          = "(max(pve_metrics_last_success_timestamp_seconds{job=\"pve-host\"}) > 0) unless on() (count(pve_pbs_backup_last_success_timestamp_seconds{job=\"pve-host\"}) > 0)"
+        expr          = "((max(pve_metrics_last_success_timestamp_seconds{job=\"pve-host\"}) > 0) and on() (count(pve_pbs_collector_ok{job=\"pve-host\"}) > 0)) unless on() (count(pve_pbs_backup_last_success_timestamp_seconds{job=\"pve-host\"}) > 0)"
         instant       = true
         range         = false
         intervalMs    = 1000
