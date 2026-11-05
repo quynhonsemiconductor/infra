@@ -12,7 +12,9 @@
 #
 # Inputs that cannot be read from Entra (set in your shell, never in Git: Tier 1 identifiers):
 #   IDENTITY_SECOND_OWNER_UPN   UPN of the second company owner (the signed-in user is the owner operator)
-#   IDENTITY_PROXMOX_HOST       hostname of the Proxmox realm (admin door); the redirect URI is https://<host>/
+#   IDENTITY_PROXMOX_HOST       hostname of the Proxmox VE admin door; the redirect URI is https://<host>/
+#   IDENTITY_PBS_HOST           hostname of the Proxmox Backup Server admin door; the redirect URI is https://<host>/
+#                               (both are REQUIRED: the app backs both realms, runbook server-setup §3.2.1)
 # Optional:
 #   IDENTITY_STACK_DIR (live/identity, relative to the repo root)
 set -euo pipefail
@@ -77,7 +79,8 @@ ADMINS=$(az_json platform-admins-members ad group member list --group grp-qnsc-p
 while read -r g; do need_guid proxmox_admin_object_ids "$g"; done < <(jq -r '.[]' <<<"$ADMINS")
 put TF_VAR_proxmox_admin_object_ids "$ADMINS"
 [[ "${IDENTITY_PROXMOX_HOST:-}" =~ ^[A-Za-z0-9.-]+$ ]] || die "set IDENTITY_PROXMOX_HOST (a bare hostname)"
-put TF_VAR_proxmox_redirect_uris "$(jq -cn --arg h "$IDENTITY_PROXMOX_HOST" '["https://\($h)/"]')"
+[[ "${IDENTITY_PBS_HOST:-}" =~ ^[A-Za-z0-9.-]+$ ]] || die "set IDENTITY_PBS_HOST (a bare hostname)"
+put TF_VAR_proxmox_redirect_uris "$(jq -cn --arg pve "$IDENTITY_PROXMOX_HOST" --arg pbs "$IDENTITY_PBS_HOST" '["https://\($pve)/", "https://\($pbs)/"]')"
 
 # --- app registrations ---------------------------------------------------------------------------
 # bash 3.2 (macOS /bin/bash) has no associative arrays: slot -> display name by function.

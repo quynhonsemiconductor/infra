@@ -145,10 +145,11 @@ chmod +x "$BIN/az" "$BIN/op"
 echo 'variable "other" {}' >"$T/stack/v.tf"
 
 run() { PATH="$BIN:$PATH" FX="$FX" IDENTITY_STACK_DIR="$T/stack" \
-  IDENTITY_SECOND_OWNER_UPN="second@tenant.example" IDENTITY_PROXMOX_HOST="pve.example.test" "$@"; }
+  IDENTITY_SECOND_OWNER_UPN="second@tenant.example" IDENTITY_PROXMOX_HOST="pve.example.test" \
+  IDENTITY_PBS_HOST="pbs.example.test" "$@"; }
 fail() { echo "FAIL: $*"; exit 1; }
 leak_scan() { # no fixture identifier or PEM may appear in the captured output
-  grep -qE '[0-9a-f]{8}-0000-4000-8000|BEGIN|PRIVATE|pve\.example|tenant\.example|second@' "$1" && fail "$2: a value reached the output" || true
+  grep -qE '[0-9a-f]{8}-0000-4000-8000|BEGIN|PRIVATE|pve\.example|pbs\.example|tenant\.example|second@' "$1" && fail "$2: a value reached the output" || true
 }
 expect_stop() { # expect_stop <label> <expected fragment>
   local out="$T/out.$RANDOM"
@@ -174,7 +175,7 @@ leak_scan "$OUT" happy
 
 # 2. run mode: the child sees the values (checked by shape, nothing printed), cwd is the stack dir
 CH="$T/child.out"
-run bash "$SCRIPT" -- bash -c 'jq -e "(.dev|length)>0" >/dev/null 2>&1 <<<"{}" ; [[ "$TF_VAR_budget_period_start" == 2026-10-01T00:00:00Z && "$TF_VAR_budget_period_end" == 2028-09-30T00:00:00Z ]] && [[ "$TF_VAR_proxmox_redirect_uris" == "[\"https://pve.example.test/\"]" ]] && jq -e "length==2" <<<"$TF_VAR_proxmox_admin_object_ids" >/dev/null && jq -e "length==4" <<<"$TF_VAR_mail_service_certificates" >/dev/null && jq -e "length==1 and (.[\"'$(g 22 99)'\"] != null)" <<<"$TF_VAR_mail_service_rotated_certificates" >/dev/null && jq -e "length==4" <<<"$TF_VAR_mail_service_graph_grant_ids" >/dev/null && jq -e "length==6 and .opshub_prod != null and .kb_prod != null" <<<"$TF_VAR_signin_delegated_grant_ids" >/dev/null && jq -e "length==6 and (.kb_dev|index(\"email\") != null) and (.kb_prod|length == 8) and (.rova_prod|length == 5)" <<<"$TF_VAR_signin_delegated_grant_scopes" >/dev/null && jq -e ".[\"rova_prod/User.Invite.All\"] != null and .[\"opshub_dev/User.Read.All\"] != null" <<<"$TF_VAR_mail_service_graph_grant_ids" >/dev/null && [[ "$TF_VAR_break_glass_upn_domain" == tenant.example ]] && jq -e ".admin and .auditor" <<<"$TF_VAR_opshub_dev_app_role_ids" >/dev/null && pwd' >"$CH" 2>&1 || { cat "$CH"; fail "child did not get the right env"; }
+run bash "$SCRIPT" -- bash -c 'jq -e "(.dev|length)>0" >/dev/null 2>&1 <<<"{}" ; [[ "$TF_VAR_budget_period_start" == 2026-10-01T00:00:00Z && "$TF_VAR_budget_period_end" == 2028-09-30T00:00:00Z ]] && [[ "$TF_VAR_proxmox_redirect_uris" == "[\"https://pve.example.test/\",\"https://pbs.example.test/\"]" ]] && jq -e "length==2" <<<"$TF_VAR_proxmox_admin_object_ids" >/dev/null && jq -e "length==4" <<<"$TF_VAR_mail_service_certificates" >/dev/null && jq -e "length==1 and (.[\"'$(g 22 99)'\"] != null)" <<<"$TF_VAR_mail_service_rotated_certificates" >/dev/null && jq -e "length==4" <<<"$TF_VAR_mail_service_graph_grant_ids" >/dev/null && jq -e "length==6 and .opshub_prod != null and .kb_prod != null" <<<"$TF_VAR_signin_delegated_grant_ids" >/dev/null && jq -e "length==6 and (.kb_dev|index(\"email\") != null) and (.kb_prod|length == 8) and (.rova_prod|length == 5)" <<<"$TF_VAR_signin_delegated_grant_scopes" >/dev/null && jq -e ".[\"rova_prod/User.Invite.All\"] != null and .[\"opshub_dev/User.Read.All\"] != null" <<<"$TF_VAR_mail_service_graph_grant_ids" >/dev/null && [[ "$TF_VAR_break_glass_upn_domain" == tenant.example ]] && jq -e ".admin and .auditor" <<<"$TF_VAR_opshub_dev_app_role_ids" >/dev/null && pwd' >"$CH" 2>&1 || { cat "$CH"; fail "child did not get the right env"; }
 [ "$(cat "$CH")" = "$T/stack" ] || fail "child cwd is not the stack dir"
 # the rotated certificate reaches the child byte for byte under its pinned keyId
 run bash "$SCRIPT" -- sh -c 'printf "%s" "$TF_VAR_mail_service_rotated_certificates"' >"$T/rot.json" 2>/dev/null || fail "rotated child"
@@ -234,10 +235,14 @@ build; grep -v 'rova_dev' "$T/stack/mail.tf" >"$T/m" && mv "$T/m" "$T/stack/mail
 expect_stop "missing pinned slot" "must pin exactly these slots"
 build; echo '{"value":[{"verifiedDomains":[{"name":"a","isDefault":true,"isInitial":false}]}]}' >"$FX/org"; expect_stop "no initial domain" "lookup for TF_VAR_break_glass_upn_domain is empty"
 build; echo '[{"@odata.type":"#microsoft.graph.group","id":"x"}]' >"$FX/members"; expect_stop "no admin users" "grp-qnsc-platform-admins has no user members"
-build; out="$T/out.noupn"; if PATH="$BIN:$PATH" FX="$FX" IDENTITY_STACK_DIR="$T/stack" IDENTITY_PROXMOX_HOST=h.test bash "$SCRIPT" >"$out" 2>&1; then fail "missing UPN did not stop"; fi
+build; out="$T/out.noupn"; if PATH="$BIN:$PATH" FX="$FX" IDENTITY_STACK_DIR="$T/stack" IDENTITY_PROXMOX_HOST=h.test IDENTITY_PBS_HOST=h2.test bash "$SCRIPT" >"$out" 2>&1; then fail "missing UPN did not stop"; fi
 grep -q 'STOP: set IDENTITY_SECOND_OWNER_UPN' "$out" || fail "missing UPN reason"
 build; out="$T/out.nohost"; if PATH="$BIN:$PATH" FX="$FX" IDENTITY_STACK_DIR="$T/stack" IDENTITY_SECOND_OWNER_UPN=second@tenant.example bash "$SCRIPT" >"$out" 2>&1; then fail "missing host did not stop"; fi
 grep -q 'STOP: set IDENTITY_PROXMOX_HOST' "$out" || fail "missing host reason"
+build; out="$T/out.nopbshost"; if PATH="$BIN:$PATH" FX="$FX" IDENTITY_STACK_DIR="$T/stack" IDENTITY_SECOND_OWNER_UPN=second@tenant.example IDENTITY_PROXMOX_HOST=pve.example.test bash "$SCRIPT" >"$out" 2>&1; then fail "missing PBS host did not stop"; fi
+grep -q 'STOP: set IDENTITY_PBS_HOST' "$out" || fail "missing PBS host reason"
+build; out="$T/out.badpbshost"; if run env IDENTITY_PBS_HOST="pbs.example.test/" bash "$SCRIPT" >"$out" 2>&1; then fail "malformed PBS host did not stop"; fi
+grep -q 'STOP: set IDENTITY_PBS_HOST' "$out" || fail "malformed PBS host reason"
 build; if run bash "$SCRIPT" -- 2>/dev/null; then fail "empty command after -- accepted"; fi
 
 # 4. eso_certificates: read from the ESO apps (Graph) while the stack declares the variable, absent once it does not
