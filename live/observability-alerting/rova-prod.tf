@@ -136,7 +136,7 @@ resource "grafana_synthetic_monitoring_check" "rova_prod_readyz" {
 # route it through grafana_notification_policy.root — Teams for prod, devops@
 # always — the same policy every other rule in this stack uses. Same datasource
 # (the stack's managed Prometheus, where SM publishes probe_success) as
-# series_near_cap in main.tf.
+# the billable-series cap rules in billable-alert.tf.
 resource "grafana_rule_group" "rova_prod_readyz_down" {
   count            = local.uptime_live ? 1 : 0
   name             = "rova (prod readyz)"

@@ -291,6 +291,78 @@ resource "azuread_service_principal" "signin" {
   owners                       = [var.owner_operator_object_id, var.second_owner_object_id]
 }
 
+# ── Tenant-wide delegated consent for every sign-in app ─────────────────────
+#
+# Without an AllPrincipals grant every user sees a consent prompt the first time
+# (and a tenant without user consent cannot complete the sign-in at all). The
+# scopes are the delegated set every sign-in app needs; a grant only takes
+# effect for scopes the app requests. The OpsHub Prod grant was made by hand on
+# 2026-11-05; the grant id is imported, not recreated.
+#
+# The id map is built read-only by scripts/owner/identity-env/identity-env.sh
+# from live oauth2PermissionGrants (consentType AllPrincipals, resource =
+# Microsoft Graph). A key missing from the map plans a CREATE; against a live
+# grant that is a duplicate and Entra answers 409 — so the kit must see it.
+variable "signin_delegated_grant_ids" {
+  type        = map(string)
+  default     = {}
+  description = "AllPrincipals oauth2PermissionGrant ids already live, keyed as local.signin_delegated_grant_targets (rova_prod, rova_dev, opshub_dev, kb_dev, opshub_prod). Built by scripts/owner/identity-env/identity-env.sh; never committed."
+
+  validation {
+    condition     = alltrue([for id in values(var.signin_delegated_grant_ids) : can(regex("^[A-Za-z0-9_=-]+$", id))])
+    error_message = "signin_delegated_grant_ids values must be Graph grant ids (opaque, no slashes)."
+  }
+}
+
+locals {
+  signin_delegated_grant_targets = merge(
+    { for k, sp in azuread_service_principal.signin : k => sp.object_id },
+    { opshub_prod = azuread_service_principal.opshub_prod.object_id },
+  )
+
+  # The kit-built import map. Kept as a local so the variable is a declared
+  # dependency of the configuration (the import block consumes the local).
+  signin_delegated_grant_imports = var.signin_delegated_grant_ids
+
+  # A grant can only carry scopes the app REQUESTS; setting a fixed five-scope
+  # list would strip KB's Files.*/Sites.* delegated scopes on an apply. Derive
+  # the delegated scope names from local.signin_apps (User.Invite.All is an
+  # application Role, not a delegated scope) and give the prod app the same set
+  # as its dev sibling.
+  signin_delegated_scopes = merge(
+    {
+      for k, app in local.signin_apps : k => [
+        for scope in app.scopes : local.graph_scopes[scope].name
+        if local.graph_scopes[scope].type == "Scope"
+      ]
+    },
+    { opshub_prod = ["openid", "profile", "email", "offline_access", "User.Read"] },
+  )
+}
+
+import {
+  for_each = local.signin_delegated_grant_imports
+  to       = azuread_service_principal_delegated_permission_grant.signin[each.key]
+  id       = "/oauth2PermissionGrants/${each.value}"
+}
+
+resource "azuread_service_principal_delegated_permission_grant" "signin" {
+  for_each = local.signin_delegated_grant_targets
+
+  service_principal_object_id          = each.value
+  resource_service_principal_object_id = data.azuread_service_principal.msgraph.object_id
+  claim_values                         = local.signin_delegated_scopes[each.key]
+}
+
+# Admin -> the existing admin group. The other OpsHub roles stay per-user:
+# no role-specific Entra group exists yet (owner decision 2026-11-05: admin
+# only now). Adding a group assignment never removes the live user grants.
+resource "azuread_app_role_assignment" "opshub_dev_admin" {
+  app_role_id         = var.opshub_dev_app_role_ids["admin"]
+  principal_object_id = var.platform_admins_object_id
+  resource_object_id  = azuread_service_principal.signin["opshub_dev"].object_id
+}
+
 output "signin_app_client_ids" {
   description = "Client (application) IDs for the products' MICROSOFT_CLIENT_ID values. Never carries a secret."
   value       = { for k, app in azuread_application.signin : k => app.client_id }
