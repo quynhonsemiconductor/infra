@@ -144,15 +144,19 @@
     - k3s_data_disk_wipefs.stdout | length == 0
     - k3s_data_disk_format | bool
 
+# Runs in --check too (read-only, check_mode: false): a SKIPPED task still overwrites its
+# register with a result that has no stdout, which broke every later
+# `k3s_data_disk_fstype.stdout` test in --check on a blank disk. In --check the disk is still
+# blank, so this reads '' and the later guards treat it as "would be formatted".
 - name: Re-read the filesystem type after formatting
   ansible.builtin.command: "blkid -p -o value -s TYPE {{ k3s_data_disk_real.stdout }}"
   register: k3s_data_disk_fstype
   changed_when: false
+  failed_when: false
   check_mode: false
   when:
     - k3s_data_disk_fstype.stdout | length == 0
     - k3s_data_disk_format | bool
-    - not ansible_check_mode
 
 - name: Read the filesystem label
   ansible.builtin.command: "blkid -p -o value -s LABEL {{ k3s_data_disk_real.stdout }}"
