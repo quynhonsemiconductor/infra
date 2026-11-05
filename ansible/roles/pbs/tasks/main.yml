@@ -115,8 +115,8 @@
           - pbs_entra_admin_emails | length > 0
           - pbs_entra_admin_emails | select('match', '^[^@\s]+@[^@\s]+$') | list | length == pbs_entra_admin_emails | length
         fail_msg: >-
-          Set proxmox_oidc_issuer_url and proxmox_oidc_client_id plus pbs_entra_admin_emails in the LOCAL
-          inventory (ansible/README.md, "Entra OpenID login"), or set pbs_entra_enabled=false.
+          Set proxmox_oidc_issuer_url and proxmox_oidc_client_id plus proxmox_entra_admin_emails in the
+          LOCAL inventory (ansible/README.md, "Entra OpenID login"), or set pbs_entra_enabled=false.
         quiet: true
 
     # Every realm carries its client key in this output: hide it.

@@ -37,9 +37,11 @@ pbs_onepassword_item_title: "PBS - pve backup - API token"
 
 # ── Entra OpenID login ──────────────────────────────────────────────────────
 # The same "QNSC Proxmox" app as the PVE realm (one client id, one secret). PBS's OpenID realm has NO
-# group-claim option: authorization is one ACL per pre-created <email>@<realm> user. The list is a site
-# value (LOCAL inventory, git-ignored) and must mirror the app's direct assignments and the platform-admins
-# group. The client secret comes from the environment of the run:
+# group-claim option: authorization is one ACL per pre-created <email>@<realm> user. The list is the
+# SHARED site value `proxmox_entra_admin_emails` (LOCAL inventory, git-ignored) and must mirror the app's
+# direct assignments and the platform-admins group. `pbs_entra_admin_emails` is kept as a compat alias:
+# an inventory that still sets it wins over this default. The client secret comes from the environment of
+# the run:
 #   PROXMOX_OIDC_CLIENT_SECRET   (kv-qnsc-admin/admin-proxmox-oidc-secret; ansible/README.md)
 # root@pam remains the break-glass account (LAN only, password + TOTP).
 pbs_entra_enabled: true
@@ -50,6 +52,6 @@ pbs_entra_client_id: "{{ proxmox_oidc_client_id | default('') }}"
 pbs_entra_client_secret: "{{ lookup('ansible.builtin.env', 'PROXMOX_OIDC_CLIENT_SECRET') }}"
 pbs_entra_username_claim: email
 pbs_entra_scopes: "openid email profile"
-pbs_entra_admin_emails: []
+pbs_entra_admin_emails: "{{ proxmox_entra_admin_emails | default([]) }}"
 # The username claim is fixed at realm creation: a different value stops the role.
 pbs_entra_rotate_client_key: false

@@ -156,10 +156,14 @@
       check_mode: false
 
 # ── Entra OpenID login ──────────────────────────────────────────────────────
-# The realm is the "QNSC Proxmox" app in live/identity. Proxmox VE reads the token's groups claim
-# (SecurityGroup object ids, no Entra ID P1 here), so the group "<grp object id>-entra" carries the
-# Administrator role on /. root@pam is NOT touched: it is the break-glass account, LAN only.
-- name: Entra OpenID realm and admin group
+# The realm is the "QNSC Proxmox" app in live/identity. PVE queries the provider's userinfo endpoint for
+# its claim values (OpenId.pm passes query-userinfo, default 1), and Entra's userinfo carries NO groups
+# claim (the app's SecurityGroup groups claim is in the ID token only). So authorization does NOT rely on
+# the token: the role pre-creates <email>@<realm> for every shared admin email, makes each one a member of
+# "<grp object id>-entra", and removes members no longer listed. groups-overwrite stays OFF, so a login
+# never wipes that membership. autocreate stays OFF: only listed admins may exist.
+# root@pam is NOT touched: it is the break-glass account, LAN only.
+- name: Entra OpenID realm, admin users and group
   when: pve_base_entra_enabled | bool
   tags: [pve_base_entra]
   block:
@@ -170,9 +174,13 @@
           - pve_base_entra_client_id is match('^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
           - pve_base_entra_admin_group_oid is match('^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
           - pve_base_entra_realm is match('^[a-z][a-z0-9]*$')
+          - pve_base_entra_admin_emails | length > 0
+          - pve_base_entra_admin_emails | select('match', '^[^@\s]+@[^@\s]+$') | list | length == pve_base_entra_admin_emails | length
+          - pve_base_entra_admin_emails | unique | length == pve_base_entra_admin_emails | length
         fail_msg: >-
-          Set proxmox_oidc_issuer_url, proxmox_oidc_client_id and proxmox_oidc_admin_group_oid in the
-          LOCAL inventory (ansible/README.md, "Entra OpenID login"), or set pve_base_entra_enabled=false.
+          Set proxmox_oidc_issuer_url, proxmox_oidc_client_id, proxmox_oidc_admin_group_oid and
+          proxmox_entra_admin_emails in the LOCAL inventory (ansible/README.md, "Entra OpenID login"),
+          or set pve_base_entra_enabled=false. The admin list holds exact Entra email strings, no duplicates.
         quiet: true
 
     # The list carries every realm's client key: hide it. Only non-secret fields are compared below.
@@ -226,10 +234,8 @@
         pve_base_entra_drift: >-
           {{ pve_base_entra_config['issuer-url'] | default('') != pve_base_entra_issuer_url
              or pve_base_entra_config['client-id'] | default('') != pve_base_entra_client_id
-             or not (pve_base_entra_config['autocreate'] | default(false) | bool)
-             or pve_base_entra_config['groups-claim'] | default('') != 'groups'
-             or (pve_base_entra_config['groups-autocreate'] | default(false) | bool)
-             or not (pve_base_entra_config['groups-overwrite'] | default(false) | bool)
+             or (pve_base_entra_config['autocreate'] | default(false) | bool)
+             or (pve_base_entra_config['groups-overwrite'] | default(false) | bool)
              or not (pve_base_entra_config['default'] | default(false) | bool)
              or ((pve_base_entra_have_scopes_raw | join(' ') if pve_base_entra_have_scopes_raw is not string
                   else pve_base_entra_have_scopes_raw) | split | sort | join(' '))
@@ -256,8 +262,9 @@
         - pve_base_entra_existing | length == 0
 
     # The client key is momentarily in pveum's argv (/proc/<pid>/cmdline). pve01 is a single-admin
-    # host; the runbook and ansible/README.md state the caveat.
-    - name: Create the realm (auto-create users, sync the Entra group, default at login)
+    # host; the runbook and ansible/README.md state the caveat. No groups-claim: authorization is the
+    # role-managed group membership below, never the token (Entra userinfo has no groups).
+    - name: Create the realm (no user autocreate, never overwrite groups, default at login)
       ansible.builtin.command:
         argv:
           - pveum
@@ -275,13 +282,9 @@
           - --username-claim
           - "{{ pve_base_entra_username_claim }}"
           - --autocreate
-          - "1"
-          - --groups-claim
-          - groups
-          - --groups-autocreate
           - "0"
           - --groups-overwrite
-          - "1"
+          - "0"
           - --scopes
           - "{{ pve_base_entra_scopes }}"
           - --default
@@ -302,8 +305,8 @@
         - pve_base_entra_drift | bool
 
     # Never includes --client-key or --username-claim: the key is only written on create/rotate, the claim
-    # is immutable.
-    - name: Align the realm settings
+    # is immutable. No groups-claim either: membership is role-managed, and a login must not overwrite it.
+    - name: Align the realm settings (no autocreate, never overwrite groups)
       ansible.builtin.command:
         argv:
           - pveum
@@ -315,13 +318,9 @@
           - --client-id
           - "{{ pve_base_entra_client_id }}"
           - --autocreate
-          - "1"
-          - --groups-claim
-          - groups
-          - --groups-autocreate
           - "0"
           - --groups-overwrite
-          - "1"
+          - "0"
           - --scopes
           - "{{ pve_base_entra_scopes }}"
           - --default
@@ -386,6 +385,108 @@
         - not ansible_check_mode
         - (pve_base_entra_groups.stdout | from_json
            | selectattr('groupid', 'equalto', pve_base_entra_group_id) | list | length) == 0
+
+    - name: Read the PVE users
+      ansible.builtin.command: pvesh get /access/users --output-format json
+      register: pve_base_entra_users
+      changed_when: false
+      check_mode: false
+
+    # Base users are pre-created exactly like PBS's: with autocreate=0 an Entra user who is not on the
+    # shared list cannot sign in even if Entra hands out a token.
+    - name: Report the Entra user creation (check mode)
+      ansible.builtin.debug:
+        msg: "would create PVE user {{ item }}@{{ pve_base_entra_realm }}"
+      changed_when: true
+      loop: "{{ pve_base_entra_admin_emails }}"
+      when:
+        - ansible_check_mode
+        - (pve_base_entra_users.stdout | from_json
+           | selectattr('userid', 'equalto', item ~ '@' ~ pve_base_entra_realm) | list | length) == 0
+
+    - name: Create the Entra admin users (OpenID only, no password)
+      ansible.builtin.command:
+        argv:
+          - pveum
+          - user
+          - add
+          - "{{ item }}@{{ pve_base_entra_realm }}"
+          - --comment
+          - "Entra admin (realm {{ pve_base_entra_realm }})"
+      changed_when: true
+      loop: "{{ pve_base_entra_admin_emails }}"
+      when:
+        - not ansible_check_mode
+        - (pve_base_entra_users.stdout | from_json
+           | selectattr('userid', 'equalto', item ~ '@' ~ pve_base_entra_realm) | list | length) == 0
+
+    # The group claim is NOT used: Entra's userinfo response (PVE's claim source by default) has no
+    # groups. Membership is role-managed; groups-overwrite=0 keeps a login from wiping it.
+    - name: Report the admin group additions (check mode)
+      ansible.builtin.debug:
+        msg: "would add {{ item }}@{{ pve_base_entra_realm }} to group {{ pve_base_entra_group_id }}"
+      changed_when: true
+      loop: "{{ pve_base_entra_admin_emails }}"
+      when:
+        - ansible_check_mode
+        - pve_base_entra_group_id not in ((pve_base_entra_users.stdout | from_json
+             | selectattr('userid', 'equalto', item ~ '@' ~ pve_base_entra_realm)
+             | list | default([{}], true) | first).groups | default('')
+             | split(',') | map('trim') | list)
+
+    - name: Add each listed admin to the Entra admins group
+      ansible.builtin.command:
+        argv:
+          - pveum
+          - user
+          - modify
+          - "{{ item }}@{{ pve_base_entra_realm }}"
+          - --groups
+          - >-
+            {{ (((pve_base_entra_users.stdout | from_json
+                 | selectattr('userid', 'equalto', item ~ '@' ~ pve_base_entra_realm)
+                 | list | default([{}], true) | first).groups | default('')
+                 | split(',') | map('trim') | reject('equalto', '') | list)
+                + [pve_base_entra_group_id]) | unique | join(',') }}
+      changed_when: true
+      loop: "{{ pve_base_entra_admin_emails }}"
+      when:
+        - not ansible_check_mode
+        - pve_base_entra_group_id not in ((pve_base_entra_users.stdout | from_json
+             | selectattr('userid', 'equalto', item ~ '@' ~ pve_base_entra_realm)
+             | list | default([{}], true) | first).groups | default('')
+             | split(',') | map('trim') | list)
+
+    # Offboarding: a user dropped from the shared list leaves the admin group on the next run. The user
+    # itself stays (without the Administrator ACL it grants nothing); autocreate=0 keeps new ones out.
+    - name: Report the admin group removals (check mode)
+      ansible.builtin.debug:
+        msg: "would remove {{ item.userid }} from group {{ pve_base_entra_group_id }}"
+      changed_when: true
+      loop: "{{ pve_base_entra_users.stdout | from_json
+                | selectattr('userid', 'match', '@' ~ pve_base_entra_realm ~ '$') | list }}"
+      when:
+        - ansible_check_mode
+        - pve_base_entra_group_id in (item.groups | default('') | split(',') | map('trim') | list)
+        - (item.userid | regex_replace('@' ~ pve_base_entra_realm ~ '$', '')) not in pve_base_entra_admin_emails
+
+    - name: Remove unlisted users from the Entra admins group
+      ansible.builtin.command:
+        argv:
+          - pveum
+          - user
+          - modify
+          - "{{ item.userid }}"
+          - --groups
+          - "{{ item.groups | default('') | split(',') | map('trim')
+                | reject('equalto', '') | reject('equalto', pve_base_entra_group_id) | join(',') }}"
+      changed_when: true
+      loop: "{{ pve_base_entra_users.stdout | from_json
+                | selectattr('userid', 'match', '@' ~ pve_base_entra_realm ~ '$') | list }}"
+      when:
+        - not ansible_check_mode
+        - pve_base_entra_group_id in (item.groups | default('') | split(',') | map('trim') | list)
+        - (item.userid | regex_replace('@' ~ pve_base_entra_realm ~ '$', '')) not in pve_base_entra_admin_emails
 
     - name: Read the PVE ACLs
       ansible.builtin.command: pvesh get /access/acl --output-format json
