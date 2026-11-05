@@ -155,8 +155,7 @@ cat /sys/module/zfs/parameters/zfs_arc_max                # 8589934592
 ## SSH for people (`ssh_infra`): Cloudflare Access for Infrastructure
 
 No shared passwords and no long-lived personal keys. A platform admin enables
-WARP (`live/edge/warp.tf`; the office network range is already routed through
-the tunnel), runs `ssh <user>@<node address>`, and Cloudflare's Gateway SSH
+WARP (`live/edge/warp.tf`), runs `ssh <user>@<node address>`, and Cloudflare's Gateway SSH
 proxy checks Entra + MFA and issues a **short-lived SSH certificate**. The node
 trusts the account's Access SSH CA; the CA public key is the only trust anchor.
 
@@ -173,7 +172,7 @@ secret / owner env file; no address or person name is committed):
 
 ```json
 {
-  "ai-01": { "hostname": "ai-01", "ipv4": "<ai-01 address>", "usernames": ["<admin login>"] }
+  "<gpu-node>": { "hostname": "<gpu-node>", "ipv4": "<gpu-node address>", "usernames": ["<admin login>"] }
 }
 ```
 
@@ -202,10 +201,10 @@ Local inventory (git-ignored; names and addresses stay here):
 node_ssh_ca_public_key: "ssh-ed25519 AAAA... "
 node_admin_users:
   # hosts = VM names in this inventory; sudo = passwordless sudo (identity + MFA happen at Cloudflare)
-  - { name: <admin login>, sudo: true, hosts: [ai-01] }
+  - { name: <admin login>, sudo: true, hosts: ["<gpu-node>"] }
 ```
 
-The role (tags `ssh_infra`) is included by `k3s-agent-gpu.yml` only — ai-01
+The role (tags `ssh_infra`) is included by the GPU node playbook (`k3s-agent-gpu.yml`) only
 today. **A node with no entry in `node_admin_users` is never touched**; add the
 role to another playbook and a target in `TF_VAR_ssh_infra_targets` when that
 node gets users. It writes `/etc/ssh/ca.pub` and a `sshd_config.d` drop-in with
@@ -236,7 +235,7 @@ the entry to cancel, or run without `--check` to complete the offboarding.
 
 ### 3. Verify
 
-1. Owner: WARP connected, `warp-cli status`; then `ssh <login>@<ai-01 address>`
+1. Owner: WARP connected, `warp-cli status`; then `ssh <login>@<gpu-node address>`
    (no password prompt, no local key prompt).
 2. **Certificate principal:** `ssh -v` shows the offered certificate; run
    `ssh-keygen -L -f <cert file>` on it and confirm `Principals:` equals the
@@ -245,7 +244,7 @@ the entry to cancel, or run without `--check` to complete the offboarding.
    Cloudflare signature.
 3. Cloudflare dashboard → Access → Logs shows the SSH session for the user.
 4. On the node: `getent passwd <login>`, `sudo -n true` works for a sudo
-   account, and `nvidia-smi` works on ai-01. Check the GPU is idle before
+   account, and `nvidia-smi` works on the GPU node. Check the GPU is idle before
    testing and never start a model just to test access.
 
 `NOPASSWD` sudo is accepted for a certificate-only account: it has no password

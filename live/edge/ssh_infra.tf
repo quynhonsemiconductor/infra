@@ -49,9 +49,19 @@ variable "ssh_infra_targets" {
 }
 
 # The target is the address Cloudflare reaches THROUGH the admin tunnel's
-# private route (live/onprem/tunnels.tf). Omit virtual_network_id: the provider
-# defaults to the account's default virtual network, which the tunnel route
-# uses.
+# private route (live/onprem/tunnels.tf). Take the account's DEFAULT virtual
+# network id explicitly instead of relying on an unverified provider default;
+# the read is skipped when there are no targets (CI plan stays offline).
+data "cloudflare_zero_trust_tunnel_cloudflared_virtual_networks" "default" {
+  count              = length(var.ssh_infra_targets) > 0 ? 1 : 0
+  account_id         = var.cloudflare_account_id
+  is_default_network = true
+}
+
+locals {
+  ssh_infra_vnet_id = length(var.ssh_infra_targets) > 0 ? one(data.cloudflare_zero_trust_tunnel_cloudflared_virtual_networks.default[0].result[*].id) : null
+}
+
 resource "cloudflare_zero_trust_access_infrastructure_target" "node" {
   for_each = var.ssh_infra_targets
 
@@ -59,7 +69,15 @@ resource "cloudflare_zero_trust_access_infrastructure_target" "node" {
   hostname   = each.value.hostname
   ip = {
     ipv4 = {
-      ip_addr = each.value.ipv4
+      ip_addr            = each.value.ipv4
+      virtual_network_id = local.ssh_infra_vnet_id
+    }
+  }
+
+  lifecycle {
+    precondition {
+      condition     = local.ssh_infra_vnet_id != null
+      error_message = "No default virtual network was found for the account; create/confirm it before adding SSH targets."
     }
   }
 }

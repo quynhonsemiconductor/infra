@@ -65,6 +65,12 @@ case "$http" in
     key=$(jq -r 'if (.result | type) == "array" then (.result[0].public_key // empty) else (.result.public_key // empty) end' "$body")
     ;;
   404)
+    # A 404 only means "no CA" when the API still says success:true; a
+    # mistyped account or a proxy error also returns 404 with success:false.
+    if [[ "$(jq -r '.success // false' "$body")" != "true" ]]; then
+      echo "STOP: GET gateway_ca returned 404 without success:true — refusing to create" >&2
+      exit 1
+    fi
     key=""
     ;;
   *)
