@@ -45,6 +45,11 @@
     mode: "0644"
   notify: Restart node-exporter
 
+# Apply the flags NOW: if a later task fails, a pending handler is dropped and the package's default
+# (all collectors on *:9100) keeps running — seen on the first owner run 2026-11-05.
+- name: Restart node-exporter with the managed flags before continuing
+  ansible.builtin.meta: flush_handlers
+
 - name: Create the textfile directory
   ansible.builtin.file:
     path: "{{ pve_monitoring_textfile_dir }}"
