@@ -3,8 +3,9 @@
 
 The estate used to cite a weekly expiry check in three places and have none. This is the check:
 one read-only pass over the four Key Vaults (metadata only, never a value) and over every Entra
-app registration's credentials, then a report that fails when a prod/platform secret has no expiry
-or when any credential is expired or expires within 30 days.
+app registration's credentials, then a report that fails when a prod/platform secret has no expiry,
+when any credential has expired, or when any credential expires within 7 days, and warns when one
+expires within 30 days.
 
 WHY KEY VAULT READER IS ENOUGH. The CI read identity has Key Vault Reader, which can read secret
 metadata (name, attributes.exp) but not a value. Entra app credentials are metadata too: keyId,
@@ -34,7 +35,11 @@ DEFAULT_VAULTS = ("kv-qnsc-prod", "kv-qnsc-platform", "kv-qnsc-dev")
 # The two vaults whose secrets must carry an expiry. Dev's missing expiries are a WARN: dev values
 # are re-issuable, and the backlog is being backfilled.
 STRICT_VAULTS = {"kv-qnsc-prod", "kv-qnsc-platform"}
+# Two thresholds, two alerts. Within 30 days is a WARN (green run, Teams card); within 7 days is a
+# FAIL (red run, Teams card) because a weekly cadence leaves one run before it expires — the
+# rotation needs to happen now, not "soon".
 WARN_DAYS = 30
+URGENT_DAYS = 7
 
 # Identifiers that rotate never, so an expiry would only create noise. A credential is not on this
 # list: graph-cert follows the certificate, R2 key ids follow their token.
@@ -143,6 +148,17 @@ def classify(
             days=days,
             fix="replace the credential now; ESO/apps fail when it is gone",
         )
+    if days <= URGENT_DAYS:
+        return Finding(
+            source,
+            name,
+            kind,
+            expires,
+            FAIL,
+            f"expires in {days} days (7-day threshold)",
+            days=days,
+            fix="rotate now: the next weekly run is after this expires",
+        )
     if days <= WARN_DAYS:
         return Finding(
             source,
@@ -227,6 +243,16 @@ def counts(findings: list[Finding]) -> dict[str, int]:
     return result
 
 
+def urgent_count(findings: list[Finding]) -> int:
+    """Credentials inside the 7-day window, including already expired ones.
+
+    A FAIL with no days (no expiry, or an unreadable end date) is NOT urgent:
+    it has no deadline to race. Expired credentials have negative days and are
+    the most urgent of all.
+    """
+    return sum(1 for finding in findings if finding.days is not None and finding.days <= URGENT_DAYS)
+
+
 def _cell(value: str) -> str:
     return value.replace("|", r"\|")
 
@@ -241,8 +267,10 @@ def render_markdown(
         f"Checked {len(vaults)} Key Vault(s) and {app_count} Entra app credential(s) at "
         f"{now.strftime('%Y-%m-%d %H:%M UTC')}.",
         "",
-        f"**{summary[FAIL]} FAIL, {summary[WARN]} WARN, {summary[OK]} OK.** "
-        "FAIL means a prod/platform secret has no expiry, or a credential is expired/expiring.",
+        f"**{summary[FAIL]} FAIL, {summary[WARN]} WARN, {summary[OK]} OK** "
+        f"({urgent_count(findings)} urgent: expires within 7 days or already expired). "
+        "FAIL means a prod/platform secret has no expiry, or a credential is expired or expires "
+        "within 7 days; WARN means it expires within 30 days.",
         "",
     ]
     notable = [f for f in findings if f.status != OK]
@@ -307,6 +335,7 @@ def write_json(path: str, findings: list[Finding], now: dt.datetime, vaults: lis
         "checked_at": now.isoformat().replace("+00:00", "Z"),
         "vaults": vaults,
         "counts": counts(findings),
+        "urgent": urgent_count(findings),
         "findings": [
             {
                 **dataclasses.asdict(finding),
