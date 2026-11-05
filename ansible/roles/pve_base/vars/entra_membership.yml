@@ -4,7 +4,7 @@
 # drift from the role.
 #
 # `search`, not `match`: Jinja's match test anchors at the START, so '@entra$' never matched
-# 'alice@qnsc.vn@entra' and offboarding silently removed nobody.
+# 'alice@example.com@entra' and offboarding silently removed nobody.
 pve_base_entra_realm_users: >-
   {{ (pve_base_entra_users.stdout | from_json)
      | selectattr('userid', 'search', '@' ~ pve_base_entra_realm ~ '$') | list }}

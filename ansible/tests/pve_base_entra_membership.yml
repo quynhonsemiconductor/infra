@@ -13,14 +13,14 @@
   vars:
     pve_base_entra_realm: entra
     pve_base_entra_group_id: g-entra
-    pve_base_entra_admin_emails: ["bob@qnsc.vn"]
+    pve_base_entra_admin_emails: ["bob@example.com"]
     # alice is no longer listed; bob is; carol is a suffix decoy; root is PAM.
     sim_users:
-      - userid: "alice@qnsc.vn@entra"
+      - userid: "alice@example.com@entra"
         groups: "g-entra"
-      - userid: "bob@qnsc.vn@entra"
+      - userid: "bob@example.com@entra"
         groups: "g-entra,other"
-      - userid: "carol@qnsc.vn@entra-other"
+      - userid: "carol@example.com@entra-other"
         groups: ""
       - userid: "root@pam"
         groups: ""
@@ -34,8 +34,8 @@
     - name: The role's selector matches by suffix and drops the removed admin
       ansible.builtin.assert:
         that:
-          - pve_base_entra_realm_users | map(attribute='userid') | list == ['alice@qnsc.vn@entra', 'bob@qnsc.vn@entra']
-          - pve_base_entra_removed_users | map(attribute='userid') | list == ['alice@qnsc.vn@entra']
+          - pve_base_entra_realm_users | map(attribute='userid') | list == ['alice@example.com@entra', 'bob@example.com@entra']
+          - pve_base_entra_removed_users | map(attribute='userid') | list == ['alice@example.com@entra']
           # the OLD filter (match) selects nothing: this is the regression guard
           - (sim_users | selectattr('userid', 'match', '@' ~ pve_base_entra_realm ~ '$') | list | length) == 0
         quiet: true
@@ -43,11 +43,11 @@
     - name: The removed account loses the admin group but keeps other groups
       ansible.builtin.set_fact:
         sim_alice_groups: >-
-          {{ (pve_base_entra_removed_users | selectattr('userid', 'equalto', 'alice@qnsc.vn@entra') | first).groups
+          {{ (pve_base_entra_removed_users | selectattr('userid', 'equalto', 'alice@example.com@entra') | first).groups
              | split(',') | map('trim') | reject('equalto', '')
              | reject('equalto', pve_base_entra_group_id) | join(',') }}
         sim_bob_groups: >-
-          {{ (sim_users | selectattr('userid', 'equalto', 'bob@qnsc.vn@entra') | first).groups
+          {{ (sim_users | selectattr('userid', 'equalto', 'bob@example.com@entra') | first).groups
              | split(',') | map('trim') | reject('equalto', '')
              | reject('equalto', pve_base_entra_group_id) | join(',') }}
 
@@ -73,5 +73,5 @@
     - name: Both realm users are now removed from the admin group
       ansible.builtin.assert:
         that:
-          - pve_base_entra_removed_users | map(attribute='userid') | list == ['alice@qnsc.vn@entra', 'bob@qnsc.vn@entra']
+          - pve_base_entra_removed_users | map(attribute='userid') | list == ['alice@example.com@entra', 'bob@example.com@entra']
         quiet: true
