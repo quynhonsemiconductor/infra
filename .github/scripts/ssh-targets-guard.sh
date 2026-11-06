@@ -24,10 +24,13 @@ if [ -n "${json//[[:space:]]/}" ]; then
     exit 1
   fi
   configured=$(printf '%s' "$json" | jq 'length')
-  # Layer 2: every string in the object is masked wherever it appears later.
+  # Layer 2: every string in the object AND every top-level key (the node names).
+  # The keys matter on their own: each target becomes Access app `ssh-<key>`, and a
+  # failed apply prints that resource address in its error box.
   while IFS= read -r value; do
     if [ -n "$value" ]; then echo "::add-mask::$value"; fi
-  done < <(printf '%s' "$json" | jq -r '.. | strings')
+  done < <(printf '%s\n' "$(printf '%s' "$json" | jq -r '.. | strings')" \
+             "$(printf '%s' "$json" | jq -r 'keys[]')")
 fi
 
 if [ "$configured" -gt 0 ]; then

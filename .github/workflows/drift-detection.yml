@@ -296,6 +296,7 @@ jobs:
           EXIT_CODE: ${{ steps.plan.outputs.exitcode }}
           HIDE_ADDRESSES: 'true'
           PLAN_TITLE: 'Unapplied config: live/edge — counts, fingerprint and changed resource types only (the plan carries private SSH targets)'
+          FP_HMAC_KEY: ${{ secrets.SSH_INFRA_TARGETS }}
           FP_JSON: ${{ runner.temp }}/fp-edge.json
           ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID_READ }}
           ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}

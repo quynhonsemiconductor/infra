@@ -29,7 +29,20 @@ lines() {
     | sort | .[]'
 }
 
-fingerprint() { printf '%s\n' "$1" | sed '/^$/d' | sha256sum | cut -d' ' -f1; }
+# fingerprint <lines> — sha256 of the sorted "<address> <action>" lines, or HMAC-SHA256 when
+# FP_HMAC_KEY is set. Keying it stops an outsider from testing guesses against the published value:
+# without the key the digest is an oracle over a small space of node names (the address lines carry
+# them). The key is the stack's own private input (live/edge: SSH_INFRA_TARGETS) and both stages use
+# the same value, so plan-vs-apply parity is unchanged.
+fingerprint() {
+  if [ -n "${FP_HMAC_KEY:-}" ]; then
+    printf '%s\n' "$1" | sed '/^$/d' | python3 -c '
+import hashlib, hmac, os, sys
+print(hmac.new(os.environ["FP_HMAC_KEY"].encode(), sys.stdin.buffer.read(), hashlib.sha256).hexdigest())'
+  else
+    printf '%s\n' "$1" | sed '/^$/d' | sha256sum | cut -d' ' -f1
+  fi
+}
 
 # emit <file> — append a finished block to the step summary, plus SUMMARY_FILE when one is named (the PR
 # comment reads that file). Takes a FILE, not a string: macOS's bash 3.2 cannot parse `case` inside `$( )`.

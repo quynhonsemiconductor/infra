@@ -300,12 +300,19 @@ jobs:
           # edge: addresses carry the private SSH target keys — print TYPES only. The fingerprint still
           # hashes the full addresses, so the apply stage compares like for like.
           HIDE_ADDRESSES: ${{ matrix.stack == 'edge' }}
+          # edge: an HMAC keyed by the secret, so the published fingerprint cannot be used as an
+          # oracle over the node names in the address lines. Both stages use the same key.
+          FP_HMAC_KEY: ${{ matrix.stack == 'edge' && secrets.SSH_INFRA_TARGETS || '' }}
           FP_JSON: ${{ runner.temp }}/fp-${{ matrix.stack }}.json
           ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID_READ }}
           ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
           ARM_USE_OIDC:        'true'
 
       # Only {stack, has_changes, fingerprint}: three short fields, no plan, no values.
+      # The glob is ONE file in the runner's temp dir — NOT the workspace — so live/edge's
+      # plan.txt, apply.txt, tfplan and refresh.txt are never uploaded. A future upload of
+      # `live/**` or `.` would leak every edge plan and must not be added without the same
+      # edge treatment (no text, counts + keyed fingerprint only).
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: fp-${{ matrix.stack }}
@@ -560,6 +567,7 @@ jobs:
         env:
           EXPECTED_FP: ${{ fromJson(needs.gate.outputs.fingerprints)['edge'] }}
           HIDE_ADDRESSES: 'true'
+          FP_HMAC_KEY: ${{ secrets.SSH_INFRA_TARGETS }}
           PLAN_TITLE: 'Applying: live/edge — counts, fingerprint and changed resource types only (the plan carries private SSH targets)'
           ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID }}
           ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}

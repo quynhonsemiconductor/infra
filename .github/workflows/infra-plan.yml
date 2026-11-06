@@ -484,6 +484,7 @@ jobs:
           HIDE_ADDRESSES: 'true'
           PLAN_TITLE: 'Plan: live/edge — counts, fingerprint and changed resource types only (the plan carries private SSH targets)'
           SUMMARY_FILE: ${{ runner.temp }}/plan-summary-edge.md
+          FP_HMAC_KEY: ${{ secrets.SSH_INFRA_TARGETS }}
           FP_JSON: ${{ runner.temp }}/fp-edge.json
           ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID_READ }}
           ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
