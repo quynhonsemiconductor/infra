@@ -1,6 +1,6 @@
 # =============================================================================
 # Repository settings that decide how code gets merged. The six PLATFORM repos
-# were imported on 2026-11-02; the 13 product and lane repos below were imported
+# were imported on 2026-11-02; the 12 product and lane repos below were imported
 # on 2026-11-06 from the IaC drift audit (sa-notes/reviews/iac-drift-audit-2026-11-06.md
 # §GitHub). The values are the LIVE values at import: adding a repo here changes
 # no setting. Where they differ from the target ("squash only, delete the branch
@@ -10,9 +10,12 @@
 # `allow_rebase_merge` cannot be used for a PR into main today; they only matter
 # for repos where a ruleset is later removed.
 #
-# VLSIT_RTL_Generator_AI_Model is deliberately ABSENT: the owner archives it by
-# hand on 2026-11-06. A github_repository resource here defaults `archived =
-# false`, so it would UN-archive the repo on the next apply.
+# Two repos are deliberately ABSENT:
+#   VLSIT_RTL_Generator_AI_Model — the owner archives it by hand on 2026-11-06.
+#   mcp-tools — retired by owner decision on 2026-11-06; the owner archives it
+#     by hand after the retirement PRs apply. A github_repository resource here
+#     defaults `archived = false`, so it would UN-archive either repo on the
+#     next apply.
 # =============================================================================
 locals {
   repos = {
@@ -47,9 +50,6 @@ locals {
     }
     "infra" = {
       auto_merge = false, merge_commit = true, rebase_merge = true, delete_branch = true
-    }
-    "mcp-tools" = {
-      auto_merge = false, merge_commit = false, rebase_merge = true, delete_branch = true
     }
     "opc" = {
       auto_merge = false, merge_commit = true, rebase_merge = true, delete_branch = false # merge_commit/rebase_merge/delete_branch: target false/false/true

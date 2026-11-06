@@ -2,15 +2,15 @@
 
 Repository **rulesets** (46: the 42 that existed on 2026-11-02 across 17 repositories, plus the
 `main-protection`/`tag-protection` pair for `code-review` and `opc` created 2026-11-06), the **merge
-settings** of the 19 active repos this stack manages, and the **environment** (`production`) of
+settings** of the 18 active repos this stack manages, and the **environment** (`production`) of
 `infra`. The 42 existing rulesets, the repositories and the environment were imported exactly as
-they were on 2026-11-02 (the 13 product/lane repos added on 2026-11-06 were imported as-is too).
+they were on 2026-11-02 (the 12 product/lane repos added on 2026-11-06 were imported as-is too).
 State: Azure `stqnsctfstate`, key `infra/github/terraform.tfstate`.
 Provider `integrations/github` `~> 6.13` (6.13.0, latest stable at the time).
 
-Adding the 13 repos and the four rulesets changes no live repo setting. A scratch-state plan on
-2026-11-06 read `63 to import, 23 to add, 0 to change, 0 to destroy`; against the real state that is
-13 imports and 17 adds (13 `github_actions_repository_permissions` objects, already at the same
+Adding the 12 repos and the four rulesets changes no live repo setting. A scratch-state plan on
+2026-11-06 read `62 to import, 22 to add, 0 to change, 0 to destroy`; against the real state that is
+12 imports and 16 adds (12 `github_actions_repository_permissions` objects, already at the same
 values, plus the four rulesets) with no updates. The 2026-11-02 import was likewise `50 imported
 resources, No changes`, and a one-value mutation shows up as a change.
 
@@ -19,7 +19,7 @@ resources, No changes`, and a one-value mutation shows up as a change.
 | file | resources | notes |
 |---|---|---|
 | `rulesets.tf` | `github_repository_ruleset.this` (46 entries: 42 imported, 4 created for `code-review` and `opc`, for_each over a data map) | every ruleset, bypass actors included (team `merge-bypass`, app `qnsc-automation`, team `vlsi-leads`). `prevent_destroy`. |
-| `repos.tf` | `github_repository.this` (19: the six platform repos, plus `attendance-lock-firmware`, `chipgraph`, `code-review`, `mcp-tools`, `opc`, `opshub`, `pidc-landing`, `product-docs`, `qnsc-kb-backend`, `qnsc-kb-frontend`, `qnsc-landing`, `rova`, `vlsi_deep_training`) | merge methods, auto-merge, delete-branch-on-merge, commit titles, wiki/issues/projects visibility. Live values, `prevent_destroy`. |
+| `repos.tf` | `github_repository.this` (18: the six platform repos, plus `attendance-lock-firmware`, `chipgraph`, `code-review`, `opc`, `opshub`, `pidc-landing`, `product-docs`, `qnsc-kb-backend`, `qnsc-kb-frontend`, `qnsc-landing`, `rova`, `vlsi_deep_training`) | merge methods, auto-merge, delete-branch-on-merge, commit titles, wiki/issues/projects visibility. Live values, `prevent_destroy`. |
 | `repos.tf` | `github_repository_environment` + deployment policy (infra: `production`) | required reviewer + branch policy `main`. (`shared` and `develop` were deleted on 2026-11-02, empty and unreferenced.) |
 
 Adding a repo to `repos.tf` or a ruleset to `rulesets.tf` is one map entry. The
@@ -27,11 +27,12 @@ Adding a repo to `repos.tf` or a ruleset to `rulesets.tf` is one map entry. The
 resource is already in state). A ruleset entry **with** an `id` is imported; one
 **without** an `id` is created, and the ruleset import block filters those out.
 
-`VLSIT_RTL_Generator_AI_Model` is deliberately absent from `repos.tf`: the owner
-archives it by hand (2026-11-06), and a `github_repository` resource defaults
-`archived = false`, so it would un-archive the repo on the next apply. `product-docs` has
-merge settings here but no ruleset: it is the only private repo, and the Free plan has no
-rulesets on private repositories.
+`VLSIT_RTL_Generator_AI_Model` and `mcp-tools` are deliberately absent from
+`repos.tf`: the owner archives both by hand (2026-11-06; `mcp-tools` after its
+retirement PRs apply), and a `github_repository` resource defaults `archived = false`,
+so it would un-archive either repo on the next apply. `product-docs` has merge settings
+here but no ruleset: it is the only private repo, and the Free plan has no rulesets on
+private repositories.
 
 **Settings that differ from "squash only, delete branch on merge, auto-merge off"**
 (imported as they are; each is one value in the `repos` map): merge commits allowed on
