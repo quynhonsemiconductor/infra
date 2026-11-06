@@ -281,9 +281,11 @@ resource "grafana_rule_group" "onprem_pve_risk" {
       }
 
       model = jsonencode({
-        refId         = "A"
-        datasource    = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
-        expr          = "pve_nvme_percentage_used{job=\"pve-host\"} > 80"
+        refId      = "A"
+        datasource = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
+        # Raw gauge; the `> 80` comparison is the threshold in B. Keeping the
+        # comparison out of A lets the 7-day data guard see the healthy case.
+        expr          = "pve_nvme_percentage_used{job=\"pve-host\"}"
         instant       = true
         range         = false
         intervalMs    = 1000
@@ -309,7 +311,7 @@ resource "grafana_rule_group" "onprem_pve_risk" {
           {
             evaluator = {
               type   = "gt"
-              params = [0]
+              params = [80]
             }
           }
         ]
@@ -347,9 +349,10 @@ resource "grafana_rule_group" "onprem_pve_risk" {
       }
 
       model = jsonencode({
-        refId         = "A"
-        datasource    = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
-        expr          = "pve_nvme_media_errors{job=\"pve-host\"} > 0"
+        refId      = "A"
+        datasource = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
+        # Raw counter; the `> 0` comparison is the threshold in B.
+        expr          = "pve_nvme_media_errors{job=\"pve-host\"}"
         instant       = true
         range         = false
         intervalMs    = 1000
@@ -413,9 +416,10 @@ resource "grafana_rule_group" "onprem_pve_risk" {
       }
 
       model = jsonencode({
-        refId         = "A"
-        datasource    = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
-        expr          = "pve_nvme_critical_warning{job=\"pve-host\"} > 0"
+        refId      = "A"
+        datasource = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
+        # Raw counter; the `> 0` comparison is the threshold in B.
+        expr          = "pve_nvme_critical_warning{job=\"pve-host\"}"
         instant       = true
         range         = false
         intervalMs    = 1000
@@ -483,9 +487,10 @@ resource "grafana_rule_group" "onprem_pve_risk" {
       }
 
       model = jsonencode({
-        refId         = "A"
-        datasource    = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
-        expr          = "proxmox_node_memory_memavailable_bytes{job=\"proxmox-ve\"} < 2 * 1024 * 1024 * 1024"
+        refId      = "A"
+        datasource = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
+        # Raw available bytes; the 2 GiB floor is the threshold in B.
+        expr          = "proxmox_node_memory_memavailable_bytes{job=\"proxmox-ve\"}"
         instant       = true
         range         = false
         intervalMs    = 1000
@@ -510,8 +515,8 @@ resource "grafana_rule_group" "onprem_pve_risk" {
         conditions = [
           {
             evaluator = {
-              type   = "gt"
-              params = [0]
+              type   = "lt"
+              params = [2 * 1024 * 1024 * 1024]
             }
           }
         ]
@@ -850,9 +855,11 @@ resource "grafana_rule_group" "onprem_pve_risk" {
       }
 
       model = jsonencode({
-        refId         = "A"
-        datasource    = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
-        expr          = "pve_pbs_backup_targets{job=\"pve-host\"} < max_over_time(pve_pbs_backup_targets{job=\"pve-host\"}[7d])"
+        refId      = "A"
+        datasource = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
+        # Current targets minus their 7-day high-water mark: negative means a
+        # target dropped. The sign test is the threshold in B (lt 0).
+        expr          = "pve_pbs_backup_targets{job=\"pve-host\"} - max_over_time(pve_pbs_backup_targets{job=\"pve-host\"}[7d])"
         instant       = true
         range         = false
         intervalMs    = 1000
@@ -877,7 +884,7 @@ resource "grafana_rule_group" "onprem_pve_risk" {
         conditions = [
           {
             evaluator = {
-              type   = "gt"
+              type   = "lt"
               params = [0]
             }
           }
@@ -1071,9 +1078,10 @@ resource "grafana_rule_group" "onprem_pve_textfile_absent" {
       }
 
       model = jsonencode({
-        refId         = "A"
-        datasource    = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
-        expr          = "time() - pve_metrics_last_success_timestamp_seconds{job=\"pve-host\"} > 900"
+        refId      = "A"
+        datasource = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
+        # Age in seconds; the 15-minute limit is the threshold in B.
+        expr          = "time() - pve_metrics_last_success_timestamp_seconds{job=\"pve-host\"}"
         instant       = true
         range         = false
         intervalMs    = 1000
@@ -1099,7 +1107,7 @@ resource "grafana_rule_group" "onprem_pve_textfile_absent" {
           {
             evaluator = {
               type   = "gt"
-              params = [0]
+              params = [900]
             }
           }
         ]

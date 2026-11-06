@@ -221,9 +221,13 @@ resource "grafana_rule_group" "onprem_pg_rova_ready" {
       }
 
       model = jsonencode({
-        refId         = "A"
-        datasource    = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
-        expr          = "min by (namespace, pod) (kube_pod_status_ready{condition=\"true\", namespace=\"data-prod\", pod=~\"pg-[a-z0-9]+-[0-9]+\"}) < 1"
+        refId      = "A"
+        datasource = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
+        # The comparison lives in B (threshold < 1), not here: the every-rule-
+        # has-7-days-of-data guard (alerting_health.py) reads A, and a `< 1`
+        # baked into A empties the series whenever every pod is Ready — which
+        # is exactly the healthy case, so the guard would warn forever.
+        expr          = "min by (namespace, pod) (kube_pod_status_ready{condition=\"true\", namespace=\"data-prod\", pod=~\"pg-[a-z0-9]+-[0-9]+\"})"
         instant       = true
         range         = false
         intervalMs    = 1000
@@ -295,9 +299,11 @@ resource "grafana_rule_group" "onprem_pg_dev_ready" {
       }
 
       model = jsonencode({
-        refId         = "A"
-        datasource    = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
-        expr          = "min by (namespace, pod) (kube_pod_status_ready{condition=\"true\", namespace=\"data-dev\", pod=~\"pg-[a-z0-9]+-[0-9]+\"}) < 1"
+        refId      = "A"
+        datasource = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
+        # Same split as pg-rova: A is the raw readiness gauge so the 7-day
+        # data guard sees the healthy case; B owns the `< 1` threshold.
+        expr          = "min by (namespace, pod) (kube_pod_status_ready{condition=\"true\", namespace=\"data-dev\", pod=~\"pg-[a-z0-9]+-[0-9]+\"})"
         instant       = true
         range         = false
         intervalMs    = 1000
