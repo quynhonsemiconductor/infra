@@ -939,6 +939,9 @@ jobs:
           owner: quynhonsemiconductor
           permission-administration: write
           permission-environments: write
+          # The team grants for qnsc-eda: the endpoint needs repo admin (above)
+          # and the ability to see the team. Nothing else is requested.
+          permission-members: read
 
       - name: tofu init
         working-directory: live/github

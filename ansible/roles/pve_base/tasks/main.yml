@@ -476,15 +476,12 @@
         # groups. Membership is role-managed; groups-overwrite=0 keeps a login from wiping it.
         - name: Report the admin group additions (check mode)
           ansible.builtin.debug:
-            msg: "would add {{ item }}@{{ pve_base_entra_realm }} to group {{ pve_base_entra_group_id }}"
+            msg: "would add {{ item.userid }} to group {{ pve_base_entra_group_id }}"
           changed_when: true
-          loop: "{{ pve_base_entra_admin_emails }}"
-          when:
-            - ansible_check_mode
-            - pve_base_entra_group_id not in ((pve_base_entra_users.stdout | from_json
-                 | selectattr('userid', 'search', '(?i)^' ~ (item | regex_escape) ~ '@' ~ pve_base_entra_realm ~ '$')
-                 | list | default([{}], true) | first).groups | default('')
-                 | split(',') | map('trim') | list)
+          loop: "{{ pve_base_entra_group_adds }}"
+          loop_control:
+            label: "{{ item.userid }}"
+          when: ansible_check_mode
 
         - name: Add each listed admin to the Entra admins group
           ansible.builtin.command:
@@ -492,24 +489,15 @@
               - pveum
               - user
               - modify
-              - "{{ ((pve_base_entra_users.stdout | from_json
-                     | selectattr('userid', 'search', '(?i)^' ~ (item | regex_escape) ~ '@' ~ pve_base_entra_realm ~ '$')
-                     | list | default([{}], true) | first).userid | default(item ~ '@' ~ pve_base_entra_realm)) }}"
+              - "{{ item.userid }}"
               - --groups
-              - >-
-                {{ (((pve_base_entra_users.stdout | from_json
-                     | selectattr('userid', 'search', '(?i)^' ~ (item | regex_escape) ~ '@' ~ pve_base_entra_realm ~ '$')
-                     | list | default([{}], true) | first).groups | default('')
-                     | split(',') | map('trim') | reject('equalto', '') | list)
-                    + [pve_base_entra_group_id]) | unique | join(',') }}
+              - "{{ (item.groups | reject('search', '(?i)^' ~ (pve_base_entra_group_id | regex_escape) ~ '$') | list
+                    + [pve_base_entra_group_id]) | unique | join(',') }}"
           changed_when: true
-          loop: "{{ pve_base_entra_admin_emails }}"
-          when:
-            - not ansible_check_mode
-            - pve_base_entra_group_id not in ((pve_base_entra_users.stdout | from_json
-                 | selectattr('userid', 'search', '(?i)^' ~ (item | regex_escape) ~ '@' ~ pve_base_entra_realm ~ '$')
-                 | list | default([{}], true) | first).groups | default('')
-                 | split(',') | map('trim') | list)
+          loop: "{{ pve_base_entra_group_adds }}"
+          loop_control:
+            label: "{{ item.userid }}"
+          when: not ansible_check_mode
 
         # Offboarding: a user dropped from the shared list leaves the admin group on the next run. The user
         # itself stays (without the Administrator ACL it grants nothing); autocreate=0 keeps new ones out.
@@ -517,10 +505,10 @@
           ansible.builtin.debug:
             msg: "would remove {{ item.userid }} from group {{ pve_base_entra_group_id }}"
           changed_when: true
-          loop: "{{ pve_base_entra_removed_users }}"
-          when:
-            - ansible_check_mode
-            - pve_base_entra_group_id in (item.groups | default('') | split(',') | map('trim') | list)
+          loop: "{{ pve_base_entra_group_removals }}"
+          loop_control:
+            label: "{{ item.userid }}"
+          when: ansible_check_mode
 
         # Removing the LAST group: PVE::API2::User's update path calls delete_user_group whenever
         # `groups` is defined (an empty string counts), then split_list("") adds none. pveum user modify
@@ -533,13 +521,12 @@
               - modify
               - "{{ item.userid }}"
               - --groups
-              - "{{ item.groups | default('') | split(',') | map('trim')
-                    | reject('equalto', '') | reject('equalto', pve_base_entra_group_id) | join(',') }}"
+              - "{{ item.groups | reject('search', '(?i)^' ~ (pve_base_entra_group_id | regex_escape) ~ '$') | join(',') }}"
           changed_when: true
-          loop: "{{ pve_base_entra_removed_users }}"
-          when:
-            - not ansible_check_mode
-            - pve_base_entra_group_id in (item.groups | default('') | split(',') | map('trim') | list)
+          loop: "{{ pve_base_entra_group_removals }}"
+          loop_control:
+            label: "{{ item.userid }}"
+          when: not ansible_check_mode
 
     - name: Read the PVE ACLs
       ansible.builtin.command: pvesh get /access/acl --output-format json
