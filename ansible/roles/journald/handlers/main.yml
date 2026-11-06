@@ -1,0 +1,6 @@
+---
+# A journald restart does not drop the journal (it is a file on disk) and does not touch workloads.
+- name: Restart systemd-journald
+  ansible.builtin.systemd_service:
+    name: systemd-journald
+    state: restarted
