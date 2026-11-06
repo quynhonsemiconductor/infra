@@ -29,15 +29,20 @@ resource "cloudflare_zero_trust_access_application" "warp" {
   }]
 }
 
+# Enrollment: platform admins, and — when ENTRA_GRP_VLSI_ID is set — the VLSI group
+# (the Coder door, coder.tf). Widening enrollment is only safe together with the Gateway
+# network policies that confine the VLSI group to the Coder hostnames; both are gated on the
+# same variable, so a group can never enroll without its guard.
 resource "cloudflare_zero_trust_access_policy" "warp_enroll" {
   account_id       = var.cloudflare_account_id
   name             = "platform-admins-mfa-warp"
   decision         = "allow"
   session_duration = "8h"
 
-  include = [{
+  # Include = OR: admins, plus grp-qnsc-vlsi when it is configured.
+  include = [for g in compact([var.grp_platform_admins_id, var.grp_vlsi_id]) : {
     azure_ad = {
-      id                   = var.grp_platform_admins_id
+      id                   = g
       identity_provider_id = cloudflare_zero_trust_access_identity_provider.entra.id
     }
   }]

@@ -41,17 +41,27 @@
 #          "cert-manager DNS-01 (qnsc.vn)": Permissions `Zone → DNS → Edit` and
 #          `Zone → Zone → Read`; Zone Resources `Include → Specific zone → qnsc.vn`;
 #          no account resources; TTL 1 year (calendar reminder to rotate).
-#       2. Copy the token ONCE and pipe it into the platform vault, which is the
-#          vault the `platform` ESO store syncs from:
+#          NOTE: `DNS:Edit` is ZONE-WIDE by construction — Cloudflare has no
+#          per-record or per-prefix permission, so the token CAN write any record
+#          in qnsc.vn, not just `_acme-challenge`. Scope it by ZONE (only qnsc.vn),
+#          store it where only cert-manager can read it, and rotate it yearly.
+#       2. Copy the token ONCE and pipe it into the vault the `platform` ESO store
+#          syncs from:
 #
 #            az keyvault secret set --vault-name kv-qnsc-platform \
 #              --name coder-certmanager-cloudflare-dns-token \
 #              --file /dev/stdin --content-type text/plain \
 #              --expires <token expiry, RFC3339> --tags owner=platform rotated=<date>
 #
-#          (read the token with a prompt or a password manager; never in argv).
-#       3. The gitops ClusterIssuer (Coder lane) references that Secret through an
-#          ExternalSecret; nothing is committed and nothing enters TF state.
+#          (read it with a prompt or a password manager; never in argv).
+#       3. Delivery is NARROW: the ExternalSecret and the resulting Secret live in the
+#          cert-manager/coder namespace the Coder lane deploys (the issuer reads it
+#          from there), never a cluster-wide copy. Nothing is committed and nothing
+#          enters TF state.
+#       4. Rotation (1 year, at least): create the replacement token, write it over
+#          the same vault secret name, wait for ESO to sync, then revoke the old
+#          token in the dashboard. The cert-manager solver reads the Secret on each
+#          issuance, so no restart is needed.
 #
 # Route shape notes (Cloudflare docs, 2026-11):
 #   - a single `*` is allowed and MUST be a whole label: the wildcard route covers
@@ -82,15 +92,81 @@ resource "cloudflare_zero_trust_network_hostname_route" "coder" {
 
   lifecycle {
     prevent_destroy = true
+
+    # A public record for coder.qnsc.vn would put the platform back on the internet,
+    # behind nothing (there is no Access app by design). local.cutover is the only place
+    # a host gets published, so refuse the name there — a hard plan failure, not a warning.
+    precondition {
+      condition     = !contains(local.cutover, "coder.qnsc.vn") && !contains(local.cutover, "*.coder.qnsc.vn")
+      error_message = "coder.qnsc.vn is WARP-only: a public DNS record exposes the Coder control plane with no Access app in front. Keep it out of live/edge onprem.tf local.cutover."
+    }
   }
 }
 
-# A public record for coder.qnsc.vn would put the platform back on the internet,
-# behind nothing (there is no Access app by design). The cutover list is the only
-# place a host gets published, so refuse the name there.
-check "coder_stays_private" {
-  assert {
-    condition     = !contains(local.cutover, "coder.qnsc.vn") && !contains(local.cutover, "*.coder.qnsc.vn")
-    error_message = "coder.qnsc.vn is WARP-only: a public DNS record exposes the Coder control plane with no Access app in front. Keep it out of live/edge onprem.tf local.cutover."
-  }
+
+# ── Gateway network policies: least privilege for the VLSI group ────────────
+#
+# Enrolling grp-qnsc-vlsi in WARP (warp.tf) without these would hand the group the
+# whole private network the tunnels and the device profile expose: the office LAN,
+# the k8s API, every other route. L4 (network) policies are the firewall for that
+# traffic, evaluated before anything reaches a tunnel. They are IDENTITY policies:
+# `identity.groups.id` is the Entra group object id carried in the WARP identity.
+#
+#   90  allow  platform admins            — today's access, stated explicitly so a
+#                                           later blanket rule cannot take it away
+#   100 allow  grp-qnsc-vlsi → Coder hosts — the only private destination it needs
+#   110 block  grp-qnsc-vlsi, everything   — the catch-all: LAN, k8s, any route added
+#                                           later. A block here is a local deny, it
+#                                           does not page anyone.
+#
+# SNI, not IP: the hostname route resolves to a synthetic address from the tunnel's
+# virtual network, so the destination IP does not identify the service. `net.sni.domains`
+# matches the domain and its subdomains (coder.qnsc.vn covers *.coder.qnsc.vn).
+#
+# Everything is gated on var.grp_vlsi_id: empty = no enrollment (warp.tf) and no policy,
+# so the group can never be half-guarded. Plan availability: Gateway L4 network policies
+# with identity selectors are part of the Zero Trust plans (Free included — see the PR
+# body for the citations); the owner confirms the account's plan before the first apply.
+locals {
+  coder_access_enabled = var.tunnels_exist && var.grp_vlsi_id != ""
+}
+
+resource "cloudflare_zero_trust_gateway_policy" "admin_allow_private" {
+  account_id  = var.cloudflare_account_id
+  name        = "platform-admins-allow-l4"
+  description = "Platform admins keep today's access ahead of any group-specific rule (live/edge coder.tf)"
+  precedence  = 90
+  enabled     = true
+  action      = "allow"
+  filters     = ["l4"]
+  traffic     = "identity.groups.id == \"${var.grp_platform_admins_id}\""
+}
+
+resource "cloudflare_zero_trust_gateway_policy" "vlsi_allow_coder" {
+  count = local.coder_access_enabled ? 1 : 0
+
+  account_id  = var.cloudflare_account_id
+  name        = "vlsi-allow-coder"
+  description = "grp-qnsc-vlsi reaches only the Coder hostnames (live/edge coder.tf)"
+  precedence  = 100
+  enabled     = true
+  action      = "allow"
+  filters     = ["l4"]
+  traffic     = "identity.groups.id == \"${var.grp_vlsi_id}\" and any(net.sni.domains[*] == \"coder.qnsc.vn\")"
+}
+
+resource "cloudflare_zero_trust_gateway_policy" "vlsi_block_private" {
+  count = local.coder_access_enabled ? 1 : 0
+
+  account_id  = var.cloudflare_account_id
+  name        = "vlsi-block-other-private"
+  description = "grp-qnsc-vlsi: no other private destination (LAN, k8s, other routes) (live/edge coder.tf)"
+  precedence  = 110
+  enabled     = true
+  action      = "block"
+  filters     = ["l4"]
+  # Identity only, on purpose: the allow above already covers the one destination the
+  # group needs, so anything left is exactly what must not be reachable. Public internet
+  # is not routed through Gateway by the device profile (Exclude split tunnel).
+  traffic = "identity.groups.id == \"${var.grp_vlsi_id}\""
 }
