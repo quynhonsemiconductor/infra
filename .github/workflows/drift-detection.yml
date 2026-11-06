@@ -53,6 +53,12 @@ on:
     # unmanaged-resources (01:15) and pin-drift (01:00) to spread runner usage.
     - cron: '30 0 * * *'
   workflow_dispatch:
+  # The workflow's own inputs guard (scripts/test_drift_identity_inputs.py) runs
+  # on PRs that touch it. The drift matrix itself is skipped on pull_request.
+  pull_request:
+    paths:
+      - '.github/workflows/drift-detection.yml'
+      - 'scripts/test_drift_identity_inputs.py'
 
 permissions:
   contents: read
@@ -61,8 +67,25 @@ env:
   TOFU_VERSION: "1.13.2"
 
 jobs:
+  inputs-guard:
+    name: Identity kit inputs guard
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Unit tests (stdlib only)
+        run: python3 -m unittest scripts/test_drift_identity_inputs.py -v
+
   drift:
     name: Drift ${{ matrix.stack }}
+    # Never on a pull_request: the guard job above is the PR check, and a plan
+    # with the read identity does not belong on an unmerged branch.
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -137,6 +160,36 @@ jobs:
           fi
           az login --service-principal --username "$AZURE_CLIENT_ID" --tenant "$AZURE_TENANT_ID" \
             --federated-token "$token" --allow-no-subscriptions --output none
+
+      # The owner kit stops on the FIRST missing input, with a one-line message
+      # that reads like a kit bug in a nightly run (2026-11-06: every input was
+      # empty and the failure surfaced as "identity — refresh exit 1, plan
+      # exit 1"). Name every missing input at once, before the kit starts.
+      - name: Identity drift inputs present
+        if: matrix.stack == 'identity'
+        env:
+          IN_OWNER_UPN: ${{ secrets.IDENTITY_OWNER_OPERATOR_UPN }}
+          IN_SECOND_UPN: ${{ secrets.IDENTITY_SECOND_OWNER_UPN }}
+          IN_PVE_HOST: ${{ secrets.IDENTITY_PROXMOX_HOST }}
+          IN_PBS_HOST: ${{ secrets.IDENTITY_PBS_HOST }}
+          IN_EXTRA_OWNERS: ${{ secrets.IDENTITY_DEV_APP_EXTRA_OWNERS }}
+          IN_EXTRA_ADMINS: ${{ secrets.IDENTITY_DEV_APP_EXTRA_ADMINS }}
+          IN_KV_AUDIT_EMAIL: ${{ secrets.IDENTITY_KV_AUDIT_EMAIL }}
+        run: |
+          set -euo pipefail
+          missing=""
+          check() { [ -n "$2" ] || missing="$missing $1"; }
+          check IDENTITY_OWNER_OPERATOR_UPN "$IN_OWNER_UPN"
+          check IDENTITY_SECOND_OWNER_UPN "$IN_SECOND_UPN"
+          check IDENTITY_PROXMOX_HOST "$IN_PVE_HOST"
+          check IDENTITY_PBS_HOST "$IN_PBS_HOST"
+          check IDENTITY_DEV_APP_EXTRA_OWNERS "$IN_EXTRA_OWNERS"
+          check IDENTITY_DEV_APP_EXTRA_ADMINS "$IN_EXTRA_ADMINS"
+          check IDENTITY_KV_AUDIT_EMAIL "$IN_KV_AUDIT_EMAIL"
+          if [ -n "$missing" ]; then
+            echo "::error title=Identity drift needs owner inputs::Repository secrets missing or empty:${missing}. Set each with: gh secret set <NAME> -R ${GITHUB_REPOSITORY} (type the value at the prompt, or pipe it from the password manager; never --body). The two EXTRA_* inputs are required because live/identity now owns the hand-added DEV app owners and OpsHub Dev admin-role holders: with them unset the plan proposes removing those live grants, so the job would be red every night even with the four host/UPN inputs set. IDENTITY_KV_AUDIT_EMAIL is required by the Key Vault audit alerts (kv_audit_email has no default). See docs/runbooks/drift-detection.md."
+            exit 1
+          fi
 
       - name: tofu init
         working-directory: live/${{ matrix.stack }}
@@ -321,6 +374,10 @@ jobs:
           IDENTITY_SECOND_OWNER_UPN:   ${{ secrets.IDENTITY_SECOND_OWNER_UPN }}
           IDENTITY_PROXMOX_HOST:       ${{ secrets.IDENTITY_PROXMOX_HOST }}
           IDENTITY_PBS_HOST:           ${{ secrets.IDENTITY_PBS_HOST }}
+          # The DEV app owners and OpsHub Dev admin-role holders live in state:
+          # without these the plan proposes removing them (exit 2 every night).
+          IDENTITY_DEV_APP_EXTRA_OWNERS: ${{ secrets.IDENTITY_DEV_APP_EXTRA_OWNERS }}
+          IDENTITY_DEV_APP_EXTRA_ADMINS: ${{ secrets.IDENTITY_DEV_APP_EXTRA_ADMINS }}
           IDENTITY_KV_AUDIT_EMAIL:     ${{ secrets.IDENTITY_KV_AUDIT_EMAIL }}
         run: |
           set +e
@@ -344,6 +401,10 @@ jobs:
           IDENTITY_SECOND_OWNER_UPN:   ${{ secrets.IDENTITY_SECOND_OWNER_UPN }}
           IDENTITY_PROXMOX_HOST:       ${{ secrets.IDENTITY_PROXMOX_HOST }}
           IDENTITY_PBS_HOST:           ${{ secrets.IDENTITY_PBS_HOST }}
+          # The DEV app owners and OpsHub Dev admin-role holders live in state:
+          # without these the plan proposes removing them (exit 2 every night).
+          IDENTITY_DEV_APP_EXTRA_OWNERS: ${{ secrets.IDENTITY_DEV_APP_EXTRA_OWNERS }}
+          IDENTITY_DEV_APP_EXTRA_ADMINS: ${{ secrets.IDENTITY_DEV_APP_EXTRA_ADMINS }}
           IDENTITY_KV_AUDIT_EMAIL:     ${{ secrets.IDENTITY_KV_AUDIT_EMAIL }}
         run: |
           set +e
