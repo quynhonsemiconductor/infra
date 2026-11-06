@@ -212,9 +212,15 @@ resource "cloudflare_pages_project" "landing" {
 
   lifecycle {
     prevent_destroy = true # destroying the Pages project deletes its deployments and detaches its custom domains: the landing site goes down
-    # build_image_auto_upgrade is provider-computed (it records Cloudflare's v1→v3 build-image move): it cannot be
-    # named here and needs no entry — with the update above applied once, no other change is planned and it stays
-    # known. Re-check this when the provider gains UseStateForUnknown on these attributes.
+    # PERPETUAL DIFF, fixed 2026-11-06: every plan, including the one right after an apply, showed
+    #   ~ resource "cloudflare_pages_project" "landing" { + build_image_auto_upgrade = (known after apply) }
+    # because the attribute is optional+computed and the provider has no state-preserving plan modifier for it
+    # (cloudflare/terraform-provider-cloudflare#7288, #7262; the same class as build_config above). It is NOT in
+    # config, so the provider proposes to "compute" it on every plan. Setting a value here would CHANGE the live
+    # Pages build-image setting (an auto-upgrade flag we did not choose), so it is ignored instead: the API value
+    # is kept and the nightly edge drift stops reporting a red stack. Revisit when the provider gains
+    # UseStateForUnknown on this attribute — then drop this line.
+    ignore_changes = [build_image_auto_upgrade]
   }
 }
 
