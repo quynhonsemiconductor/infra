@@ -57,4 +57,7 @@ kubelet_allow_restart: false
 
 # The pair must stay valid for every node: both in 0-100 and low < high (KubeletConfiguration, which
 # refuses the whole drop-in otherwise — and k3s would fail to start with it).
-kubelet_image_gc_valid: "{{ kubelet_image_gc_high_percent > kubelet_image_gc_low_percent and kubelet_image_gc_low_percent >= 0 and kubelet_image_gc_high_percent <= 100 }}"
+kubelet_image_gc_valid: >-
+  {{ kubelet_image_gc_high_percent > kubelet_image_gc_low_percent
+     and kubelet_image_gc_low_percent >= 0
+     and kubelet_image_gc_high_percent <= 100 }}
