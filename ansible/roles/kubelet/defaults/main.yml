@@ -55,6 +55,14 @@ kubelet_config_file: "{{ kubelet_config_dir }}/90-qnsc.conf"
 # report only. Apply in a maintenance window with -e kubelet_allow_restart=true.
 kubelet_allow_restart: false
 
+# Container log rotation, per node (pod logs under /var/log/pods). Without a cap the kubelet keeps a
+# single 10 MiB file and an unbounded number of files per container, so one chatty pod can fill the root
+# disk between two collections — and k3s-01's root is the disk this size round is about. 10 MiB x 3 files
+# per container (the kubelet defaults for size is 10Mi and for count 5); 3 keeps the last ~30 MiB of a
+# crash-looping container, which is what the incident review usually needs.
+kubelet_container_log_max_size: "10Mi"
+kubelet_container_log_max_files: 3
+
 # The pair must stay valid for every node: both in 0-100 and low < high (KubeletConfiguration, which
 # refuses the whole drop-in otherwise — and k3s would fail to start with it).
 kubelet_image_gc_valid: >-

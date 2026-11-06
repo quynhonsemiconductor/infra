@@ -26,3 +26,8 @@ imageMaximumGCAge: "{{ kubelet_image_maximum_gc_age }}"
 # to ~91 GiB of a 120 GiB root before it ran at all.
 imageGCHighThresholdPercent: {{ kubelet_image_gc_high_percent }}
 imageGCLowThresholdPercent: {{ kubelet_image_gc_low_percent }}
+
+# Per-container log rotation (defaults/main.yml): 10 MiB per file, 3 files. The kubelet rotates at
+# maxSize and deletes the oldest beyond maxFiles, so a container's logs are bounded at ~30 MiB.
+containerLogMaxSize: "{{ kubelet_container_log_max_size }}"
+containerLogMaxFiles: {{ kubelet_container_log_max_files }}
