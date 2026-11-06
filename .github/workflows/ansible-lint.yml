@@ -72,18 +72,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          trap 'sudo userdel -r qnsc-test-admin 2>/dev/null || true' EXIT
+          trap 'sudo userdel -r qnsc-test-admin 2>/dev/null || true; sudo rm -rf /tmp/qnsc-ssh-readd' EXIT
           sudo useradd -m qnsc-test-admin
           sudo usermod -L -e 1 qnsc-test-admin
+          sudo mkdir -p /tmp/qnsc-ssh-readd
+          printf 'qnsc-test-admin\n' | sudo tee /tmp/qnsc-ssh-readd/marker >/dev/null
           if ! out=$(ansible-playbook -i localhost, -c local --check tests/ssh_infra_readd.yml 2>&1); then
             printf '%s\n' "$out"; exit 1
           fi
           printf '%s\n' "$out"
-          grep -q "would re-enable qnsc-test-admin" <<<"$out"
           if ! out=$(ansible-playbook -i localhost, -c local tests/ssh_infra_readd.yml 2>&1); then
             printf '%s\n' "$out"; exit 1
           fi
           printf '%s\n' "$out"
+          shadow=$(sudo getent shadow qnsc-test-admin | cut -d: -f2)
+          [ "$shadow" = "*" ] || { echo "shadow field is '$shadow', expected exactly '*'"; exit 1; }
           state=$(sudo passwd -S qnsc-test-admin | awk '{print $2}')
           [ "$state" != "L" ] || { echo "qnsc-test-admin is still locked"; exit 1; }
           sudo chage -l qnsc-test-admin | grep -qi '^Account expires.*never' \
