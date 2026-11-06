@@ -188,13 +188,9 @@ resource "cloudflare_zero_trust_gateway_policy" "admin_allow_private" {
   traffic     = "identity.groups.id == \"${var.grp_platform_admins_id}\""
 
   lifecycle {
-    # Two rules about the account this file does not own, both proven before anything is created:
-    #  1. our precedences must be free — a number already in use would reorder the chain silently;
-    #  2. the hand-made "Default deny for private traffic" (Block, DISABLED since 2026-07-09, never
-    #     in IaC) must be DELETED by the owner, not worked around: its expression was never reviewed
-    #     here, it duplicates the per-group block below, and a disabled block rule sitting in the same
-    #     list is a trap for the next person who enables it. Dashboard → Gateway → Firewall policies →
-    #     the rule → Delete (it is disabled, so deleting it changes no traffic).
+    # A rule about the account this file does not own, proven before anything is created: our
+    # precedences must be free — a number already in use would reorder the chain silently. (The stale
+    # hand-made policy is a `check` below: a warning on every plan, not a plan blocker.)
     precondition {
       condition = alltrue([
         for p in data.cloudflare_zero_trust_gateway_policies.existing.result : (
@@ -206,13 +202,20 @@ resource "cloudflare_zero_trust_gateway_policy" "admin_allow_private" {
       error_message = "A Gateway L4 policy already uses precedence 900, 910 or 920 (or one of this file's names is taken). Renumber this file's policies and re-plan; do not let two rules share a number."
     }
 
-    precondition {
-      condition = alltrue([
-        for p in data.cloudflare_zero_trust_gateway_policies.existing.result :
-        p.name != "Default deny for private traffic"
-      ])
-      error_message = "The hand-made Gateway policy \"Default deny for private traffic\" (disabled since 2026-07-09, not in IaC) must be deleted before this applies: Gateway → Firewall policies → that rule → Delete. It duplicates the per-group block this file creates, and its expression was never reviewed. Deleting a disabled rule changes no traffic."
-    }
+  }
+}
+
+# The stale hand-made rule is a WARNING, not a gate: it is disabled, it does not collide with any
+# precedence this file uses, and a plan that cannot run until an owner clicks Delete would block every
+# unrelated edge change. It must still be deleted, and the plan says so every time (check output is in
+# the plan log and the step summary).
+check "stale_gateway_policy_removed" {
+  assert {
+    condition = alltrue([
+      for p in data.cloudflare_zero_trust_gateway_policies.existing.result :
+      p.name != "Default deny for private traffic"
+    ])
+    error_message = "The hand-made Gateway policy \"Default deny for private traffic\" (Block, DISABLED since 2026-07-09, never in IaC) should be deleted: Gateway → Firewall policies → that rule → Delete. It duplicates the per-group block this file creates, its expression was never reviewed here, and a disabled block rule in the same list is a trap for whoever enables it next. Deleting a disabled rule changes no traffic."
   }
 }
 
