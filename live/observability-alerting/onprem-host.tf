@@ -467,8 +467,11 @@ resource "grafana_rule_group" "onprem_pve_risk" {
   # can still work; the 2026-11-04 measurement was 13.0 GiB available.
   # Self-tests (smartd, Ansible pve_base): `S/../.././01` SHORT daily at 01:00, `L/../01/./03` LONG on
   # the 1st at 03:00. A failed test is the earliest signal a drive gives — before the critical-warning
-  # flag the rules above watch. The stale rule catches the other failure: smartd that stopped running
-  # produces no test at all, and silence is not health — which is why ITS no_data_state is Alerting.
+  # flag the rules above watch. Codes matter: pve_monitoring counts ONLY the newest COMPLETED test, so an
+  # NVMe "Aborted: Self-test command" (result 1-4, 8, 9) or a test still running — exactly what pve01 showed
+  # on 2026-11-06 — emits nothing and cannot page, and a later pass clears an earlier failure. The stale rule
+  # catches the other failure: smartd that stopped running produces no test at all, and silence is not health
+  # — which is why ITS no_data_state is Alerting.
   # Two rules, not one `or`, for the same reason as the NVMe group above: both branches carry the
   # SAME `device` label set, and PromQL `or` returns only the left-hand series when label sets match.
   rule {
