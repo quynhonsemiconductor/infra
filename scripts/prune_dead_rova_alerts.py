@@ -10,11 +10,20 @@ WHAT IS DEAD
     are ``rova-prod-http-5xx-rate`` (prod-http-5xx.tf) plus the prod signals.
   * SLO ``HTTP availability (production)`` — same ``production`` selector, so
     the SLO and its burn alerts were dead too.
+  * The two orphan dashboards ``rova-overview-production`` and
+    ``rova-runtime-production`` — same selector on every panel (13 and 9
+    queries), so they render empty. Not owned by any state file; the UIDs and
+    titles are pinned below.
 
 WHY A SCRIPT AND NOT TERRAFORM: neither object is in any state this repo can
 reach (the rova prod stack is the closed AWS-era account). Importing them only
 to delete them needs two applies and leaves a fragile import in the graph; the
 Grafana provisioning API deletes exactly these objects in one reviewed run.
+
+ORDER AND SAFETY: every pinned object is READ and validated first; nothing is
+deleted until the whole set checks out. On --apply each dashboard's JSON is
+written to `dashboard-<uid>-<timestamp>.json` BEFORE its DELETE, so a deleted
+board can be re-created if the call turns out to have been wrong.
 
 SAFETY, deliberately paranoid:
   * The six rule TITLES and the folder UID are pinned. If the matched set is
@@ -36,6 +45,7 @@ fallback. ``GRAFANA_URL`` defaults to https://qnsc.grafana.net.
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import os
 import sys
@@ -45,6 +55,15 @@ import urllib.request
 RULE_GROUP = "rova (production)"
 SLO_NAME = "HTTP availability (production)"
 CONFIRM_PHRASE = "DELETE rova (production)"
+
+# The two orphan dashboards, pinned by UID AND title. Both are AWS-era
+# rova exports: every query filters deployment_environment_name="production",
+# which on-prem never emits, so both render empty. They carry no folder
+# ownership in IaC — `provisioned` tag only.
+EXPECTED_DASHBOARDS = {
+    "rova-overview-production": "Overview (production)",
+    "rova-runtime-production": "Runtime & Dependencies (production)",
+}
 
 # QNSC/Alerts (imported as "0:efwpy0l5x8nwgb" in live/observability-alerting).
 # Override only if the group really lives in another folder.
@@ -146,23 +165,10 @@ def main() -> int:
         print(f"REFUSING: matched rule(s) without uid: {missing_uid}", file=sys.stderr)
         return 2
 
-    failures = 0
-    for rule in matched:
-        print(
-            f"  {'DELETE' if args.apply else 'would delete'} "
-            f"{rule['title']} (uid={rule['uid']})"
-        )
-        if args.apply:
-            try:
-                _request(
-                    "DELETE",
-                    f"{base}/api/v1/provisioning/alert-rules/{rule['uid']}",
-                    token,
-                )
-            except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as error:
-                failures += 1
-                print(f"    FAILED: {error}", file=sys.stderr)
-
+    # ── Phase 1: READ AND VALIDATE EVERYTHING. No writes yet. ─────────────
+    # A delete half-way through a broken set is the failure this ordering
+    # exists to prevent: one bad title used to abort AFTER the rule group was
+    # already gone.
     try:
         payload = _request("GET", f"{base}/api/v1/slo", token)
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as error:
@@ -179,25 +185,92 @@ def main() -> int:
         print("REFUSING: more than one SLO matches the pinned name.", file=sys.stderr)
         return 2
     for slo in slos:
-        uuid = slo.get("uuid") or slo.get("id")
-        if not uuid:
+        if not (slo.get("uuid") or slo.get("id")):
             print("REFUSING: matched SLO has no uuid/id.", file=sys.stderr)
             return 2
-        print(
-            f"  {'DELETE' if args.apply else 'would delete'} "
-            f"{slo.get('name') or slo.get('title')} (uuid={uuid})"
-        )
-        if args.apply:
-            try:
-                _request("DELETE", f"{base}/api/v1/slo/{uuid}", token)
-            except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as error:
-                failures += 1
-                print(f"    FAILED: {error}", file=sys.stderr)
+
+    # Dashboards: pinned by UID AND title. A missing dashboard is fine
+    # (idempotent re-run); a present one with a DIFFERENT title means the UID
+    # was reused and the script refuses rather than delete a live board.
+    dashboards: list[tuple[str, str, object]] = []
+    for uid, expected_title in EXPECTED_DASHBOARDS.items():
+        try:
+            dashboard = _request("GET", f"{base}/api/dashboards/uid/{uid}", token)
+        except urllib.error.HTTPError as error:
+            if error.code == 404:
+                print(f"dashboard {uid!r}: absent (nothing to delete)")
+                continue
+            print(f"REFUSING: cannot read dashboard {uid!r}: {error}", file=sys.stderr)
+            return 1
+        except (urllib.error.URLError, TimeoutError) as error:
+            print(f"REFUSING: cannot read dashboard {uid!r}: {error}", file=sys.stderr)
+            return 1
+        model = (dashboard or {}).get("dashboard") or {}
+        title = model.get("title")
+        if title != expected_title:
+            print(
+                f"REFUSING: dashboard {uid!r} has title {title!r}, "
+                f"expected {expected_title!r}",
+                file=sys.stderr,
+            )
+            return 2
+        dashboards.append((uid, title, dashboard))
+
+    # Everything validated; print the full plan before any write.
+    print("\nplan:")
+    for rule in matched:
+        print(f"  delete rule      {rule['title']} (uid={rule['uid']})")
+    for slo in slos:
+        uuid = slo.get("uuid") or slo.get("id")
+        print(f"  delete SLO       {slo.get('name') or slo.get('title')} (uuid={uuid})")
+    for uid, title, _ in dashboards:
+        print(f"  delete dashboard {title} (uid={uid})")
 
     if not args.apply:
         print("\ndry run: nothing changed. Re-run with --apply and --confirm.")
-    return 1 if failures else 0
+        return 0
 
+    # ── Phase 2: writes. Each dashboard's JSON is saved BEFORE its DELETE. ─
+    failures = 0
+    for rule in matched:
+        try:
+            _request(
+                "DELETE", f"{base}/api/v1/provisioning/alert-rules/{rule['uid']}", token
+            )
+            print(f"  deleted rule      {rule['title']}")
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as error:
+            failures += 1
+            print(f"    FAILED rule {rule['title']}: {error}", file=sys.stderr)
+
+    for slo in slos:
+        uuid = slo.get("uuid") or slo.get("id")
+        try:
+            _request("DELETE", f"{base}/api/v1/slo/{uuid}", token)
+            print(f"  deleted SLO       {slo.get('name') or slo.get('title')}")
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as error:
+            failures += 1
+            print(f"    FAILED SLO {uuid}: {error}", file=sys.stderr)
+
+    stamp = datetime.datetime.now().strftime("%Y%m%dT%H%M%S")
+    for uid, title, dashboard in dashboards:
+        backup = f"dashboard-{uid}-{stamp}.json"
+        try:
+            with open(backup, "w", encoding="utf-8") as handle:
+                json.dump(dashboard, handle, indent=2, sort_keys=True)
+                handle.write("\n")
+            print(f"  saved {backup}")
+        except OSError as error:
+            failures += 1
+            print(f"    REFUSING to delete {uid}: cannot save backup: {error}", file=sys.stderr)
+            continue
+        try:
+            _request("DELETE", f"{base}/api/dashboards/uid/{uid}", token)
+            print(f"  deleted dashboard {title}")
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as error:
+            failures += 1
+            print(f"    FAILED dashboard {uid}: {error}", file=sys.stderr)
+
+    return 1 if failures else 0
 
 if __name__ == "__main__":
     sys.exit(main())
