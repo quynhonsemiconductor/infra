@@ -21,9 +21,11 @@ to delete them needs two applies and leaves a fragile import in the graph; the
 Grafana provisioning API deletes exactly these objects in one reviewed run.
 
 ORDER AND SAFETY: every pinned object is READ and validated first; nothing is
-deleted until the whole set checks out. On --apply each dashboard's JSON is
-written to `dashboard-<uid>-<timestamp>.json` BEFORE its DELETE, so a deleted
-board can be re-created if the call turns out to have been wrong.
+deleted until the whole set checks out. On --apply the rule group, the SLO and
+every dashboard are written to timestamped JSON files BEFORE the first DELETE,
+and a failed backup aborts the run while everything still exists. A rerun after
+a partial failure is supported: "all six rules present" and "none present" are
+both accepted (same for the SLO); only a half-deleted ruleset refuses.
 
 SAFETY, deliberately paranoid:
   * The six rule TITLES and the folder UID are pinned. If the matched set is
@@ -85,13 +87,24 @@ EXPECTED_RULES = {
 }
 
 
+class BadResponse(Exception):
+    """A 2xx response whose body is not JSON (proxy page, HTML error, ...)."""
+
+
 def _request(method: str, url: str, token: str) -> object:
     request = urllib.request.Request(
         url, method=method, headers={"Authorization": f"Bearer {token}"}
     )
     with urllib.request.urlopen(request, timeout=30) as response:
         body = response.read()
-    return json.loads(body.decode("utf-8")) if body else None
+    if not body:
+        return None
+    try:
+        return json.loads(body.decode("utf-8"))
+    except ValueError as error:
+        # A 2xx non-JSON body used to escape as a bare ValueError and crash
+        # Phase 2 mid-delete. Turn it into the same failure path as HTTP errors.
+        raise BadResponse(f"non-JSON response from {method} {url}: {error}") from error
 
 
 def _slos(payload: object) -> list[dict]:
@@ -143,7 +156,7 @@ def main() -> int:
 
     try:
         rules = _request("GET", f"{base}/api/v1/provisioning/alert-rules", token)
-    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as error:
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, BadResponse) as error:
         print(f"cannot list alert rules: {error}", file=sys.stderr)
         return 2
 
@@ -159,11 +172,16 @@ def main() -> int:
         f"group {RULE_GROUP!r} in folder {args.folder_uid}: "
         f"{len(matched)} rule(s), titles {sorted(found)}"
     )
-    if found != EXPECTED_RULES:
-        print("REFUSING: the matched rule set is not the pinned six.", file=sys.stderr)
+    # RESUME-SAFE: a partial earlier run may have deleted the group already.
+    # "All six present" or "none present" are both valid states; anything in
+    # between is a broken set and refuses.
+    if found and found != EXPECTED_RULES:
+        print("REFUSING: the matched rule set is neither the pinned six nor empty.", file=sys.stderr)
         print(f"  missing: {sorted(EXPECTED_RULES - found)}", file=sys.stderr)
         print(f"  unexpected: {sorted(found - EXPECTED_RULES)}", file=sys.stderr)
         return 2
+    if not found:
+        print("  rule group already absent — resume path, skipping rule deletes")
     missing_uid = [rule.get("title") for rule in matched if not rule.get("uid")]
     if missing_uid:
         print(f"REFUSING: matched rule(s) without uid: {missing_uid}", file=sys.stderr)
@@ -175,7 +193,7 @@ def main() -> int:
     # already gone.
     try:
         payload = _request("GET", f"{base}/{SLO_PATH}", token)
-    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as error:
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, BadResponse) as error:
         print(f"cannot list SLOs: {error}", file=sys.stderr)
         return 1
 
@@ -234,7 +252,29 @@ def main() -> int:
         print("\ndry run: nothing changed. Re-run with --apply and --confirm.")
         return 0
 
-    # ── Phase 2: writes. Each dashboard's JSON is saved BEFORE its DELETE. ─
+    # ── Phase 1b: SAVE EVERYTHING before the first DELETE. ───────────────
+    # Rules and the SLO are as irreversible as the dashboards. One failed
+    # write aborts the whole run while every object still exists.
+    stamp = datetime.datetime.now().strftime("%Y%m%dT%H%M%S")
+    backups: list[tuple[str, object]] = []
+    if matched:
+        backups.append((f"rules-rova-production-{stamp}.json", matched))
+    for slo in slos:
+        uuid = slo.get("uuid") or slo.get("id")
+        backups.append((f"slo-{uuid}-{stamp}.json", slo))
+    for uid, _title, dashboard in dashboards:
+        backups.append((f"dashboard-{uid}-{stamp}.json", dashboard))
+    for name, payload in backups:
+        try:
+            with open(name, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, indent=2, sort_keys=True)
+                handle.write("\n")
+            print(f"  saved {name}")
+        except OSError as error:
+            print(f"REFUSING: cannot save {name}: {error} (nothing deleted)", file=sys.stderr)
+            return 1
+
+    # ── Phase 2: deletes only. ───────────────────────────────────────────
     failures = 0
     for rule in matched:
         try:
@@ -242,7 +282,7 @@ def main() -> int:
                 "DELETE", f"{base}/api/v1/provisioning/alert-rules/{rule['uid']}", token
             )
             print(f"  deleted rule      {rule['title']}")
-        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as error:
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, BadResponse) as error:
             failures += 1
             print(f"    FAILED rule {rule['title']}: {error}", file=sys.stderr)
 
@@ -251,26 +291,15 @@ def main() -> int:
         try:
             _request("DELETE", f"{base}/{SLO_PATH}/{uuid}", token)
             print(f"  deleted SLO       {slo.get('name') or slo.get('title')}")
-        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as error:
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, BadResponse) as error:
             failures += 1
             print(f"    FAILED SLO {uuid}: {error}", file=sys.stderr)
 
-    stamp = datetime.datetime.now().strftime("%Y%m%dT%H%M%S")
     for uid, title, dashboard in dashboards:
-        backup = f"dashboard-{uid}-{stamp}.json"
-        try:
-            with open(backup, "w", encoding="utf-8") as handle:
-                json.dump(dashboard, handle, indent=2, sort_keys=True)
-                handle.write("\n")
-            print(f"  saved {backup}")
-        except OSError as error:
-            failures += 1
-            print(f"    REFUSING to delete {uid}: cannot save backup: {error}", file=sys.stderr)
-            continue
         try:
             _request("DELETE", f"{base}/api/dashboards/uid/{uid}", token)
             print(f"  deleted dashboard {title}")
-        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as error:
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, BadResponse) as error:
             failures += 1
             print(f"    FAILED dashboard {uid}: {error}", file=sys.stderr)
 

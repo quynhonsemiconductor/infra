@@ -50,6 +50,9 @@ DASHBOARDS = {
 class Stub(BaseHTTPRequestHandler):
     calls: list[tuple[str, str]] = []
     dashboard_titles = dict(DASHBOARDS)
+    rules = list(RULES)
+    backup_dir: str | None = None
+    backups_at_first_delete: int | None = None
 
     def log_message(self, *args):  # quiet
         pass
@@ -65,7 +68,7 @@ class Stub(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         type(self).calls.append(("GET", self.path))
         if self.path == "/api/v1/provisioning/alert-rules":
-            return self._send(200, RULES)
+            return self._send(200, type(self).rules)
         if self.path == "/api/plugins/grafana-slo-app/resources/v1/slo":
             return self._send(
                 200, {"slos": [{"name": "HTTP availability (production)", "uuid": "slo-1"}]}
@@ -77,6 +80,10 @@ class Stub(BaseHTTPRequestHandler):
 
     def do_DELETE(self) -> None:  # noqa: N802
         type(self).calls.append(("DELETE", self.path))
+        if type(self).backups_at_first_delete is None and type(self).backup_dir:
+            type(self).backups_at_first_delete = len(
+                list(Path(type(self).backup_dir).glob("*.json"))
+            )
         return self._send(200, {})
 
 
@@ -98,10 +105,13 @@ class PruneTests(unittest.TestCase):
     def setUp(self) -> None:
         Stub.calls = []
         Stub.dashboard_titles = dict(DASHBOARDS)
+        Stub.rules = list(RULES)
+        Stub.backups_at_first_delete = None
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Stub)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.tmp = tempfile.TemporaryDirectory()
+        Stub.backup_dir = self.tmp.name
         self.addCleanup(self.server.server_close)
         self.addCleanup(self.server.shutdown)
         self.addCleanup(self.tmp.cleanup)
@@ -130,10 +140,13 @@ class PruneTests(unittest.TestCase):
         self.assertIn("/api/plugins/grafana-slo-app/resources/v1/slo/slo-1", deletes)
         self.assertIn("/api/dashboards/uid/rova-overview-production", deletes)
         self.assertIn("/api/dashboards/uid/rova-runtime-production", deletes)
-        backups = sorted(Path(self.tmp.name).glob("dashboard-*.json"))
-        self.assertEqual(len(backups), 2)
-        saved = json.loads(backups[0].read_text())
-        self.assertIn("dashboard", saved)
+        # FOUR backups (rules group, SLO, 2 dashboards) and they exist BEFORE
+        # the first DELETE — the irreversible rule/SLO deletes included.
+        backups = sorted(Path(self.tmp.name).glob("*.json"))
+        self.assertEqual(len(backups), 4, backups)
+        self.assertGreaterEqual(Stub.backups_at_first_delete or 0, 4)
+        self.assertTrue(any(b.name.startswith("rules-rova-production-") for b in backups))
+        self.assertTrue(any(b.name.startswith("slo-slo-1-") for b in backups))
 
     def test_title_mismatch_refuses_before_any_delete(self) -> None:
         Stub.dashboard_titles["rova-runtime-production"] = "Somebody Else's Board"
@@ -146,6 +159,39 @@ class PruneTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 2, result.stderr)
         self.assertIn("REFUSING", result.stderr)
+        self.assertFalse([c for c in Stub.calls if c[0] == "DELETE"])
+
+
+    def test_partial_resume_with_rules_already_gone(self) -> None:
+        """A rerun after the rules were deleted must finish the rest."""
+        Stub.rules = []
+        result = run(
+            self.server,
+            self.tmp.name,
+            "--apply",
+            "--confirm",
+            "DELETE rova (production)",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("resume path", result.stdout)
+        deletes = [path for method, path in Stub.calls if method == "DELETE"]
+        self.assertFalse(any("provisioning/alert-rules" in p for p in deletes))
+        self.assertIn("/api/plugins/grafana-slo-app/resources/v1/slo/slo-1", deletes)
+        self.assertEqual(
+            len([p for p in deletes if p.startswith("/api/dashboards/uid/")]), 2
+        )
+
+    def test_mixed_ruleset_refuses(self) -> None:
+        Stub.rules = list(RULES)[:5]
+        result = run(
+            self.server,
+            self.tmp.name,
+            "--apply",
+            "--confirm",
+            "DELETE rova (production)",
+        )
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("neither the pinned six nor empty", result.stderr)
         self.assertFalse([c for c in Stub.calls if c[0] == "DELETE"])
 
 
