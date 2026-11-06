@@ -1,0 +1,35 @@
+# Reviewed Cloudflare-token expiry list — one line per Key Vault secret that holds
+# an R2 token, so the weekly secret-expiry watcher covers the TOKEN's deadline too.
+#
+# Format: <vault> <secret> <expires YYYY-MM-DD> <token name>   (the last field is
+# a comment for the reviewer; the script ignores it).
+#
+# Source of truth: the owner's cf-tokens-audit.sh run of 2026-11-06
+# (sa-local/cf-tokens-audit.txt, names and dates only). Both halves of a pair are
+# listed: the id and the secret rotate together.
+#
+# Date is written as YYYY-MM-DD; the watcher treats it as 00:00 UTC, which is
+# EARLIER than the token's real expiry (they expire at ~17:00 UTC), so the warning
+# arrives a few hours early — the safe direction.
+#
+# Tokens with NO expiry are NOT listed here: they must be rolled with one first
+# (see sa-notes/reviews/cf-tokens-2026-11-06.md §4):
+#   kb-prod-sources-rw (kv-qnsc-prod/kb-prod-r2-*), qnsc-backups-dev-rw
+#   (kv-qnsc-dev/r2-backup-dev-rw-*), kb-dev-sources-rw (kv-qnsc-dev/kb-dev-r2-*,
+#   recreated 2026-11-06 — record its date here once it has one), pbs-offsite-sync
+#   (1Password, not Key Vault), qnsc-infra-apply (GitHub secret).
+
+kv-qnsc-prod  rova-prod-storage-access-key-id    2027-11-01  rova-prod-onprem-app
+kv-qnsc-prod  rova-prod-storage-secret-access-key 2027-11-01 rova-prod-onprem-app
+kv-qnsc-prod  opshub-prod-storage-access-key-id    2027-11-04 opshub-prod-app
+kv-qnsc-prod  opshub-prod-storage-secret-access-key 2027-11-04 opshub-prod-app
+kv-qnsc-prod  r2-backup-rw-access-key-id          2027-11-01  pg-backups-onprem
+kv-qnsc-prod  r2-backup-rw-secret-access-key      2027-11-01  pg-backups-onprem
+kv-qnsc-prod  r2-backup-ro-access-key-id          2027-11-01  pg-backups-onprem-ro
+kv-qnsc-prod  r2-backup-ro-secret-access-key      2027-11-01  pg-backups-onprem-ro
+kv-qnsc-prod  r2-dump-rw-access-key-id            2027-11-02  pg-dump-onprem
+kv-qnsc-prod  r2-dump-rw-secret-access-key        2027-11-02  pg-dump-onprem
+kv-qnsc-dev   rova-dev-storage-access-key-id      2027-10-30  rova-dev-onprem-app
+kv-qnsc-dev   rova-dev-storage-secret-access-key  2027-10-30  rova-dev-onprem-app
+kv-qnsc-dev   opshub-dev-storage-access-key-id    2027-10-31  opshub-dev-onprem-app
+kv-qnsc-dev   opshub-dev-storage-secret-access-key 2027-10-31 opshub-dev-onprem-app

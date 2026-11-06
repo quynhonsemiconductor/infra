@@ -255,6 +255,15 @@ jobs:
       - name: prune-kv-secrets (offline test)
         run: bash scripts/owner/prune-kv-secrets_test.sh
 
+      # cf-tokens-audit.sh (owner, Cloudflare token audit): the policy summariser
+      # crashed on a resource of "*" (owner run 2026-11-06). Fixtures lock the
+      # object, string, mixed and empty shapes; --policy-fixture is offline.
+      - name: cf-tokens-audit (offline test)
+        run: bash scripts/owner/test_cf_tokens_audit.sh
+
+      - name: shellcheck the Cloudflare token scripts
+        run: shellcheck scripts/owner/cf-tokens-audit.sh scripts/owner/set-cf-token-expiry-tags.sh scripts/owner/test_cf_tokens_audit.sh
+
   # ───────────────────────────────────────────────────────────────────────
   # tflint — NOT a required check yet, deliberately.
   #
