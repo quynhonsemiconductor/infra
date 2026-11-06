@@ -60,7 +60,9 @@ resource "azuread_application" "k3s" {
   required_resource_access {
     resource_app_id = data.azuread_service_principal.msgraph.client_id
     dynamic "resource_access" {
-      for_each = ["openid", "profile", "email"]
+      # offline_access: kubelogin renews the token silently (a refresh token) instead of opening a
+      # browser on every hourly expiry. Without it every `kubectl` after an hour needs the browser.
+      for_each = ["openid", "profile", "email", "offline_access"]
       content {
         id   = data.azuread_service_principal.msgraph.oauth2_permission_scope_ids[local.graph_scopes[resource_access.value].name]
         type = "Scope"
@@ -83,7 +85,7 @@ resource "azuread_service_principal" "k3s" {
 resource "azuread_service_principal_delegated_permission_grant" "k3s" {
   service_principal_object_id          = azuread_service_principal.k3s.object_id
   resource_service_principal_object_id = data.azuread_service_principal.msgraph.object_id
-  claim_values                         = ["openid", "profile", "email"]
+  claim_values                         = ["openid", "profile", "email", "offline_access"]
 }
 
 output "k3s_oidc_client_id" {
