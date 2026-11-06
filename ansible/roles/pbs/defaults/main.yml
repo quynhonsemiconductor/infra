@@ -99,7 +99,9 @@ pbs_offsite_cache_quota: 128G
 # The S3 endpoint (Cloudflare R2). The endpoint HOST is a site value (the account id is in it), so it comes
 # from the local inventory; the two credentials come from the environment of the run, never from argv:
 #   PBS_S3_ACCESS_KEY / PBS_S3_SECRET_KEY   (R2 API token, "Object Read & Write" on the one bucket)
-pbs_offsite_endpoint_id: r2
+# PBS rejects an endpoint id shorter than 3 characters ("id must be at least 3 characters"), and the
+# store config points at it by name: changing it later means recreating the datastore.
+pbs_offsite_endpoint_id: r2-offsite
 pbs_offsite_endpoint_host: ""
 pbs_offsite_bucket: qnsc-pbs-offsite
 pbs_offsite_region: auto

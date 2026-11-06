@@ -1,0 +1,19 @@
+---
+# The one expression that turns `proxmox-backup-manager versions --output-format json` into a version,
+# shared by the role and the offline test (tests/pbs_version.yml), so the test cannot drift from the
+# role.
+#
+# Shape on a real pve01 (PBS 4.2.9-1, running 4.2.8): the entry is keyed `Package`, not `name`, and the
+# running version is only in ExtraInfo:
+#   {"Package":"proxmox-backup-server","ExtraInfo":"running version: 4.2.8","Version":"4.2.9-1"}
+#
+# `regex_replace`, not `regex_search(..., '\1')`: in folded YAML the group index becomes an argument and a
+# no-match raises "'NoneType' object has no attribute 'group'". regex_replace returns the input unchanged
+# on no match and the `.*` anchors make the pattern total, so a wrong shape degrades to '0' (the assert
+# then names the real command to inspect) instead of crashing the run.
+pbs_version_parsed: >-
+  {{ (pbs_versions_raw.stdout | from_json
+      | selectattr('Package', 'equalto', 'proxmox-backup-server')
+      | map(attribute='ExtraInfo') | list | first | default('', true))
+     | regex_replace('^.*running version:\s*([0-9.]+).*$', '\1')
+     | default('0', true) }}
