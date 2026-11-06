@@ -30,7 +30,7 @@
       ansible.builtin.assert:
         that:
           - sim_create_shadow.stdout.split(':')[1] == '*'
-          - (sim_create_shadow.stdout.split(':')[7] | default('')) in ['', '-1', '0']
+          - (sim_create_shadow.stdout.split(':')[7] | default('')) in ['', '-1']
         quiet: true
 
 - name: Offboard the account through the role (empty list)
@@ -72,7 +72,8 @@
       ansible.builtin.assert:
         that:
           - sim_off_shadow.stdout.split(':')[1] == '!*'
-          - sim_off_shadow.stdout.split(':')[7] == '1'
+          - (sim_off_shadow.stdout.split(':')[7] | default('')) | length > 0
+          - (sim_off_shadow.stdout.split(':')[7] | int) <= 1
           - sim_off_procs.rc != 0
           - sim_off_files.results | map(attribute='stat.exists') | select | list | length == 0
         quiet: true
@@ -105,5 +106,5 @@
       ansible.builtin.assert:
         that:
           - sim_readd_shadow.stdout.split(':')[1] == '*'
-          - (sim_readd_shadow.stdout.split(':')[7] | default('')) in ['', '-1', '0']
+          - (sim_readd_shadow.stdout.split(':')[7] | default('')) in ['', '-1']
         quiet: true

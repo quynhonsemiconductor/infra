@@ -341,7 +341,7 @@
         - item.rc == 0
         - >-
           item.stdout.split(':')[1] != '*'
-          or (item.stdout.split(':')[7] | default('')) not in ['', '-1', '0']
+          or (item.stdout.split(':')[7] | default('')) not in ['', '-1']
 
     - name: Re-enable/repair a listed account (password *, no expiry)
       ansible.builtin.command: "usermod -p '*' -e -1 {{ item.item.name }}"
@@ -351,7 +351,7 @@
         - item.rc == 0
         - >-
           item.stdout.split(':')[1] != '*'
-          or (item.stdout.split(':')[7] | default('')) not in ['', '-1', '0']
+          or (item.stdout.split(':')[7] | default('')) not in ['', '-1']
       changed_when: true
 
     # People SSH ONLY with a short-lived certificate. A personal key left on
