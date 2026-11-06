@@ -14,6 +14,11 @@
 #                             MCP hub, ArgoCD); live/edge reads its id from
 #                             the repo variable ENTRA_GRP_DEVELOPERS_ID.
 #
+# Go/no-go for the import: exactly **2 to import**, 0 to add, **0 `~` (in-place
+# change) on either group**, 0 to destroy, 0 to replace. The live attributes
+# were checked on 2026-11-06 (securityEnabled true, mailEnabled false, no
+# description); the two that matter are named explicitly below.
+#
 # grp-qnsc-dev-users is the narrow one: the dev web hosts only (rova-dev, opshub-dev, kb-dev) for people who
 # test or specify the product (PQA, BA) and need none of the engineering tools. What they may do inside an app
 # stays the app's own RBAC. Membership is managed in Entra (admin center), not here.
@@ -38,8 +43,12 @@ variable "grp_developers_object_id" {
 }
 
 resource "azuread_group" "platform_admins" {
-  display_name     = "grp-qnsc-platform-admins"
+  display_name = "grp-qnsc-platform-admins"
+  # The LIVE attributes (checked 2026-11-06): securityEnabled true, mailEnabled
+  # false, no description. Named explicitly so the import compares against this
+  # shape, not an implicit provider default.
   security_enabled = true
+  mail_enabled     = false
 
   lifecycle {
     # Members AND description are managed in Entra. `description` is not
@@ -52,6 +61,7 @@ resource "azuread_group" "platform_admins" {
 resource "azuread_group" "developers" {
   display_name     = "grp-qnsc-developers"
   security_enabled = true
+  mail_enabled     = false
 
   lifecycle {
     ignore_changes = [members, description]
