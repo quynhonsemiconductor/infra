@@ -227,6 +227,12 @@ jobs:
       # auth, no private key material, every Key Vault data-plane role scoped to
       # a vault, no ESO principal for the admin vault. Plan-free — no cloud
       # credentials, exits non-zero on a violation.
+      # The failure printer: the edge apply of 2026-11-06 printed "apply text withheld" and hid the
+      # error itself. This proves, offline, that boxed and plain diagnostics are printed and that
+      # plan/apply text still never is.
+      - name: tofu error printer (offline test)
+        run: bash .github/scripts/tofu-error_test.sh
+
       - name: live/identity static guard
         run: sh live/identity/tests/static.sh
 
@@ -403,8 +409,9 @@ jobs:
             tofu plan -input=false -lock=false -no-color -detailed-exitcode $REFRESH_ARG -out=tfplan > plan.txt 2>&1
             ec=$?
             if [ "$ec" = "1" ]; then
-              # Diagnostics only: the `╷ … ╵` error boxes, never the plan body.
-              sed -n '/^╷/,/^╵/p' plan.txt \
+              # Diagnostics only (the `╷ … ╵` boxes, or the plain `Error:` block when OpenTofu wrote no
+              # boxes), then UUIDs redacted. Never the plan body.
+              bash "$GITHUB_WORKSPACE/.github/scripts/tofu-error.sh" plan.txt \
                 | sed -E 's/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/<redacted>/g' >&2
             fi
           else
