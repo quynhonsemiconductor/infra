@@ -300,10 +300,10 @@ resource "grafana_contact_point" "email" {
 }
 
 resource "grafana_notification_policy" "root" {
-  # Develop (and any alert without env=production) goes to email only. Prod adds Teams,
+  # Develop (and any alert without env=prod) goes to email only. Prod adds Teams,
   # via the first child below, and email via the second; a matched child stops
   # the root, so prod lists both explicitly. The env label is "production" in the
-  # prod stacks (live/prod env = "production"), "development" in dev (alert label).
+  # prod stacks (live/prod env = "prod"), "development" in dev (alert label).
   contact_point = grafana_contact_point.email.name
   # "env" is REQUIRED here, not "product" alone — caught in a pre-prod
   # audit, before it could bite: with only develop's alert rules active
@@ -319,21 +319,13 @@ resource "grafana_notification_policy" "root" {
   # alert is exactly the kind of noise that trains people to ignore it.
   repeat_interval = "12h"
 
-  # DEV → TEAMS, opt-in per rule (owner 2026-11-01 fast track). Dev stays email
-  # by default (the root contact point); a dev rule that must page carries
-  # `paging = "teams"`, and THIS child adds Teams on top of email. Two matchers
-  # are ANDed, so it cannot catch a prod rule and cannot catch any dev rule that
-  # did not opt in. Ordered before the prod children: a matched child stops the
-  # list only when `continue = false`, and this one continues so email still
-  # fires from the root.
+  # OPT-IN TEAMS (was dev-only, owner 2026-11-01; widened 2026-11-06): a rule
+  # that must page carries `paging = "teams"` on any env. Dev stays email by
+  # default (root); prod criticals are matched by the child below anyway. This
+  # child sits first and continues, so email still fires from the root.
   dynamic "policy" {
     for_each = local.alerting_enabled ? [1] : []
     content {
-      matcher {
-        label = "env"
-        match = "="
-        value = "development"
-      }
       matcher {
         label = "paging"
         match = "="
@@ -350,7 +342,7 @@ resource "grafana_notification_policy" "root" {
       matcher {
         label = "env"
         match = "="
-        value = "production"
+        value = "prod"
       }
       contact_point = grafana_contact_point.teams[0].name
       continue      = true
@@ -361,7 +353,7 @@ resource "grafana_notification_policy" "root" {
     matcher {
       label = "env"
       match = "="
-      value = "production"
+      value = "prod"
     }
     contact_point = grafana_contact_point.email.name
   }
@@ -419,8 +411,8 @@ resource "grafana_rule_group" "security_fail_open" {
       # NoData and reported OK forever. `alert_env` is the alert label, which
       # must match the notification policy and every other dev rule
       # ("development"), not the stream value.
-      develop    = { namespaces = ".+-dev", alert_env = "development", severity = "warning" }
-      production = { namespaces = ".+-prod", alert_env = "production", severity = "critical" }
+      develop    = { namespaces = ".+-dev", alert_env = "dev", severity = "warning" }
+      production = { namespaces = ".+-prod", alert_env = "prod", severity = "critical" }
     }
     iterator = env_rule
     content {

@@ -21,6 +21,14 @@
 #   labels: tier, route. Emitted only after identity verified the caller, so
 #   every increment is attributable to a real person — no filter needed.
 #
+# OPEN (audit 2026-11-06): neither counter has ANY series in a 7-day window.
+# A lazy counter that has never incremented is indistinguishable from a
+# counter that was never wired, so the rule is kept (a signed-in 429 must
+# page) and the wiring is verified the first time a counter appears:
+#   count by (__name__) ({__name__=~"rate_limit_.*"})
+# If that stays empty after a known refusal, the product side is broken — drop
+# the rule then, not now.
+#
 # Both guards keep the USER ID out of the labels on purpose (an id would mint a
 # series per person); it is in the guard's warning log, which is where the
 # "who" is found:
@@ -41,7 +49,7 @@
 # 15 minutes after the client is fixed.
 #
 # `severity = "warning"`, not critical: nothing is down, but a person is being
-# blocked from work. `env = "production"` is enough to reach Teams —
+# blocked from work. `env = "prod"` is enough to reach Teams —
 # grafana_notification_policy.root's prod child (main.tf) sends every
 # production alert to Teams AND devops@ email, so no per-rule contact point.
 #
@@ -165,7 +173,7 @@ resource "grafana_rule_group" "prod_rate_limit_429" {
 
     labels = {
       product  = each.value.product
-      env      = "production" # matches the notification policy matcher, NOT "prod"
+      env      = "prod"
       severity = "warning"
     }
 

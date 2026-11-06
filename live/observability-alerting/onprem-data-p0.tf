@@ -22,7 +22,7 @@
 # db_storage_free below watches the filesystem those PVs live on instead.
 #
 # Labels: env/severity route through the notification policy. Prod is
-# env=production (Teams + email). Dev is env=development, severity warning, no
+# env=prod (Teams + email). Dev is env=dev, severity warning, no
 # `paging` label, so it is email only. product=rova only where the rule is
 # about rova's own data; generic rules are product=platform.
 # =============================================================================
@@ -42,7 +42,7 @@ locals {
       for       = "15m"
       no_data   = "Alerting"
       product   = "rova"
-      env       = "production"
+      env       = "prod"
       severity  = "critical"
       summary   = "No successful pg-rova base backup for over 26 hours (or the backup metric is missing). WAL archiving alone cannot restore; check the ScheduledBackup and the R2 token."
     }
@@ -58,7 +58,7 @@ locals {
       # signal: the pg-rova readiness rule and the node rules read it too.)
       no_data  = "OK"
       product  = "rova"
-      env      = "production"
+      env      = "prod"
       severity = "critical"
       summary  = "The pg-rova-dump CronJob has not succeeded for over 26 hours. The locked nightly dump is the immutable restore source."
     }
@@ -75,7 +75,7 @@ locals {
       for       = "5m"
       no_data   = "OK"
       product   = "platform"
-      env       = "production"
+      env       = "prod"
       severity  = "critical"
       summary   = "Job {{ $labels.namespace }}/{{ $labels.job_name }} failed and has not been superseded by a successful run."
     }
@@ -86,10 +86,12 @@ locals {
       threshold = 1
       for       = "5m"
       no_data   = "Alerting"
-      product   = "rova"
-      env       = "production"
-      severity  = "critical"
-      summary   = "valkey-rova exporter reports redis_up below 1 (or is not scraped) for 5 minutes. rova rate limits and security controls depend on it."
+      # platform, not rova: the expression covers all three prod valkeys
+      # (rova, opshub, kb). The summary names the pod via the label.
+      product  = "platform"
+      env      = "prod"
+      severity = "critical"
+      summary  = "Valkey {{ $labels.namespace }}/{{ $labels.pod }} reports redis_up below 1 (or is not scraped) for 5 minutes. Every product's rate limits and security controls depend on it."
     }
     # DB DISK, measured on the FILESYSTEM that holds the data, not on the PVC.
     # The two kubelet_volume_stats PVC rules were blind: local-path-retain PVs
@@ -113,7 +115,7 @@ locals {
       for       = "15m"
       no_data   = "OK"
       product   = "platform"
-      env       = "production"
+      env       = "prod"
       severity  = "critical"
       summary   = "Less than 100 GiB free on the k3s data disk (/var/lib/rancher/k3s/storage) — every CNPG cluster, its WAL and its base backups live there. Free space or grow the disk before a backup fills it."
     }
@@ -131,7 +133,7 @@ locals {
       for       = "1h"
       no_data   = "OK"
       product   = "platform"
-      env       = "production"
+      env       = "prod"
       severity  = "warning"
       summary   = "Database {{ $labels.datname }} on {{ $labels.cnpg_cluster }} is over 15 GiB. Check what grew (table sizes, retained operational rows) before the nightly base backup and WAL copy have to carry it to R2."
     }

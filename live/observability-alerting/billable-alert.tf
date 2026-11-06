@@ -7,7 +7,7 @@
 #
 #   WARNING (> 8,000, email only): no `env` label on purpose — the same
 #   pattern as every other platform rule — so the notification policy's root
-#   (devops@) handles it and the Teams child (env=production) never matches.
+#   (devops@) handles it and the Teams child (env=prod) never matches.
 #
 #   CRITICAL (> 10,000, Teams + devops@, `for` 1 h): ALWAYS ARMED since
 #   2026-11-04. The former `billable_critical_enabled` gate was dropped with
@@ -108,7 +108,7 @@ resource "grafana_rule_group" "billable_series" {
 # CRITICAL tier — ALWAYS ARMED (2026-11-04). It used to sit behind
 # `billable_critical_enabled` until a re-measure; the S-H3 series cuts give it
 # headroom, and a breach is exactly the state where series are being dropped
-# at ingestion. env=production routes it to Teams as well; `for` 1 h keeps a
+# at ingestion. env=prod routes it to Teams as well; `for` 1 h keeps a
 # single ingest spike from paging.
 resource "grafana_rule_group" "billable_series_critical" {
   name             = "platform (usage — breach)"
@@ -174,7 +174,7 @@ resource "grafana_rule_group" "billable_series_critical" {
 
     labels = {
       product  = "platform"
-      env      = "production"
+      env      = "prod"
       severity = "critical"
     }
 

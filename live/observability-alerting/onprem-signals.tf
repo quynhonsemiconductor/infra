@@ -86,7 +86,7 @@ resource "grafana_rule_group" "onprem_memory" {
 
     labels = {
       product  = "platform"
-      env      = "production"
+      env      = "prod"
       severity = "warning"
     }
 
@@ -160,7 +160,7 @@ resource "grafana_rule_group" "onprem_eso_sync" {
 
     labels = {
       product  = "platform"
-      env      = "production"
+      env      = "prod"
       severity = "critical"
     }
 
@@ -234,7 +234,7 @@ resource "grafana_rule_group" "onprem_argocd_apps" {
 
     labels = {
       product  = "platform"
-      env      = "production"
+      env      = "prod"
       severity = "warning"
     }
 
@@ -314,7 +314,7 @@ resource "grafana_rule_group" "onprem_cert_expiry" {
 
     labels = {
       product  = "platform"
-      env      = "production"
+      env      = "prod"
       severity = "warning"
     }
 
@@ -392,7 +392,7 @@ resource "grafana_rule_group" "onprem_tunnel" {
 
     labels = {
       product  = "platform"
-      env      = "production"
+      env      = "prod"
       severity = "critical"
     }
 
