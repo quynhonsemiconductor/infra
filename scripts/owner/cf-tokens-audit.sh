@@ -12,6 +12,9 @@
 #   export CF_AUDIT_TOKEN=<temporary token: Account API Tokens: Read, 1-day TTL>
 #   scripts/owner/cf-tokens-audit.sh
 #
+# Offline (the regression test): scripts/owner/cf-tokens-audit.sh --policy-fixture FILE
+# prints the policy section for the token objects in FILE (JSONL). No network.
+#
 # Output, and nothing else:
 #   1. every account token: id, name, status, created, last used, expiry, and a
 #      one-line policy summary (effect + resource scope);
@@ -26,6 +29,53 @@
 # or a token deleted while its consumer still reads it); 2 a lookup could not run.
 set -euo pipefail
 umask 077
+
+
+usage() {
+  sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
+  exit "${1:-0}"
+}
+
+# One policy summariser, used for the live list and for --policy-fixture (its
+# regression test). A policy resource is EITHER an object like
+# {"com.cloudflare.api.account.zone": "abc"} OR the string "*" — the string
+# case crashed `keys[0]` (owner run 2026-11-06, once per token).
+POLICY_JQ='
+  [ .policies[]?
+    | "\(.effect): " + ([.permission_groups[]?.name] | join(",")) + " @ "
+      + ([ (.resources | if type == "array" then .[] else . end)
+           | if type == "object" then (keys[0] + "=" + (.[keys[0]] | tostring))
+             else tostring
+             end ] | join("; "))
+  ] | join(" | ")'
+
+# print_policies <jsonl file of token objects>
+print_policies() {
+  local file=$1 t id name pol
+  while IFS= read -r t; do
+    id=$(jq -r '.id' <<<"$t")
+    name=$(jq -r '.name' <<<"$t")
+    pol=$(jq -r "$POLICY_JQ" <<<"$t")
+    printf '%s\t%s\t%s\n' "$id" "$name" "${pol:-none}"
+  done < "$file" | column -t -s $'\t'
+}
+
+FIXTURE=""
+while [ $# -gt 0 ]; do
+  case $1 in
+    --policy-fixture) FIXTURE=${2:?--policy-fixture needs a JSONL file}; shift 2 ;;
+    -h | --help) usage 0 ;;
+    *) echo "unknown argument: $1 (try --help)" >&2; exit 2 ;;
+  esac
+done
+
+if [ -n "$FIXTURE" ]; then
+  # Offline regression mode: token objects in, policy lines out. No network, no az.
+  [ -r "$FIXTURE" ] || { echo "STOP: cannot read $FIXTURE" >&2; exit 2; }
+  echo "# Policy scope (fixture: $FIXTURE)"
+  print_policies "$FIXTURE"
+  exit 0
+fi
 
 : "${CLOUDFLARE_ACCOUNT_ID:?set CLOUDFLARE_ACCOUNT_ID (32 hex chars)}"
 : "${CF_AUDIT_TOKEN:?set CF_AUDIT_TOKEN to a TEMPORARY token with 'Account API Tokens: Read'}"
@@ -71,12 +121,7 @@ done < "$TMP/tokens.jsonl"
 
 echo
 echo "# Policy scope, one line per token (effect / permission groups / resources)"
-while IFS= read -r t; do
-  id=$(jq -r '.id' <<<"$t")
-  name=$(jq -r '.name' <<<"$t")
-  pol=$(jq -r '[.policies[]? | "\(.effect): " + ([.permission_groups[]?.name] | join(",")) + " @ " + ([.resources[] | keys[0] + "=" + (.[keys[0]] | tostring)] | join("; "))] | join(" | ")' <<<"$t")
-  printf '%s\t%s\t%s\n' "$id" "$name" "${pol:-none}"
-done < "$TMP/tokens.jsonl" | column -t -s $'\t' || true
+print_policies "$TMP/tokens.jsonl"
 
 # ── 2. R2 secrets → token ───────────────────────────────────────────────────
 echo
