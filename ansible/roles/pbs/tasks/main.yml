@@ -691,7 +691,6 @@
       register: pbs_offsite_endpoints
       changed_when: false
       check_mode: false
-      check_mode: false
 
     # The endpoint carries the secrets; PBS stores them in its own config, which is root-only. no_log keeps
     # them out of the job output (the command line would otherwise print them).
@@ -757,7 +756,6 @@
       register: pbs_datastores_after
       changed_when: false
       check_mode: false
-      check_mode: false
 
     - name: Create the off-site datastore (S3-backed, cache {{ pbs_offsite_cache_mount }})
       ansible.builtin.command: >-
@@ -785,7 +783,6 @@
       ansible.builtin.command: proxmox-backup-manager sync-job list --output-format json
       register: pbs_sync_jobs
       changed_when: false
-      check_mode: false
       check_mode: false
 
     # A LOCAL sync job: source = the `qnsc` datastore on this PBS (no --remote), target = the S3 datastore.
@@ -819,7 +816,6 @@
       ansible.builtin.command: proxmox-backup-manager verify-job list --output-format json
       register: pbs_verify_jobs_after
       changed_when: false
-      check_mode: false
       check_mode: false
 
     - name: Create the weekly off-site verify job
