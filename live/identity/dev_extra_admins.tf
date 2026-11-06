@@ -28,7 +28,7 @@ variable "dev_app_extra_admin_object_ids" {
       length(ids) > 0 &&
       alltrue([
         for id in ids :
-        can(regex("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", id))
+        can(regex("^[A-Za-z0-9_-]{20,}$", id))
       ])
     ])
     error_message = "dev_app_extra_admin_object_ids accepts OpsHub Dev only, each a non-empty list of user object ids (GUIDs). A prod key is rejected."
@@ -38,15 +38,15 @@ variable "dev_app_extra_admin_object_ids" {
 variable "dev_app_extra_admin_assignment_ids" {
   type        = map(string)
   default     = {}
-  description = "LIVE app-role assignment ids for the extras above, keyed '<app>/<user object id>', read from the app's appRoleAssignedTo by the kit. These ids feed the import blocks ONLY; an entry that is live but missing here would plan a DUPLICATE create (Entra answers 409). Never committed."
+  description = "LIVE app-role assignment ids for the extras above, keyed '<app>/<user object id>', read from the app's appRoleAssignedTo by the kit. Entra appRoleAssignment ids are OPAQUE base64url strings (about 43 characters), NOT GUIDs. These ids feed the import blocks ONLY; an entry that is live but missing here would plan a DUPLICATE create (Entra answers 409). Never committed."
 
   validation {
     condition = alltrue([
       for key, id in var.dev_app_extra_admin_assignment_ids :
       can(regex("^opshub_dev/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", key)) &&
-      can(regex("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", id))
+      can(regex("^[A-Za-z0-9_-]{20,}$", id))
     ])
-    error_message = "dev_app_extra_admin_assignment_ids keys must be 'opshub_dev/<user object id>' and values assignment ids (GUIDs)."
+    error_message = "dev_app_extra_admin_assignment_ids keys must be 'opshub_dev/<user object id>' and values Entra appRoleAssignment ids (opaque base64url, at least 20 chars) — they are NOT GUIDs."
   }
 }
 
