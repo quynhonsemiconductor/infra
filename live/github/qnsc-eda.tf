@@ -50,10 +50,10 @@ resource "github_repository_file" "qnsc_eda_codeowners" {
   branch     = "main"
   file       = ".github/CODEOWNERS"
 
-  content = <<-EOT
-    # Every change needs a review from the platform team or the VLSI leads.
-    * @quynhonsemiconductor/platform @quynhonsemiconductor/vlsi-leads
-  EOT
+  content = <<EOT
+# Every change needs a review from the platform team or the VLSI leads.
+* @quynhonsemiconductor/platform @quynhonsemiconductor/vlsi-leads
+EOT
 
   commit_message      = "chore(codeowners): own qnsc-eda by platform and vlsi-leads"
   overwrite_on_create = true
