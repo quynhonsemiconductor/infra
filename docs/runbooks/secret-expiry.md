@@ -60,6 +60,54 @@ scripts/owner/backfill-kv-expiry.sh --expires 2027-06-30 --apply      # write
 - The AUD/client-id/roster identifiers are skipped.
 - A past date refuses to write (that is a rotation, not a backfill).
 
+## Pruning the unreferenced secrets (2026-11-06 audit)
+
+Three secrets had no consumer left:
+
+| Vault | Secret | Why it is safe |
+|---|---|---|
+| `kv-qnsc-dev` | `kb-dev-app` | legacy JSON bundle; the chart dropped `secrets.bundle` when kb moved to per-value env |
+| `kv-qnsc-prod` | `rova-prod-app` | same legacy bundle shape |
+| `kv-qnsc-admin` | `platform-cnpg-ca-dev` | the dev CNPG CA is hand-applied into `data-dev`; no deployment reads the vault copy |
+
+`scripts/owner/prune-kv-secrets.sh` is the owner's tool. It greps BOTH trees (this repo and the
+gitops checkout) for each name and classifies every hit: a code/config reference BLOCKS all
+deletion; a documentation, test-fixture or comment mention does not. Dry run by default:
+
+```sh
+scripts/owner/prune-kv-secrets.sh --gitops ../gitops          # proof + print the delete commands
+scripts/owner/prune-kv-secrets.sh --gitops ../gitops --apply  # soft-delete the proven ones
+```
+
+The delete is a SOFT delete — Key Vault keeps the secret for 90 days and it can be recovered
+(`az keyvault secret recover`). The script never purges. Its offline test runs in CI
+(`scripts/owner/prune-kv-secrets_test.sh`).
+
+### Expiry on what IaC owns
+
+This stack creates NO Key Vault secret values — there is no `azurerm_key_vault_secret` anywhere in
+the tree, by design (§7: OpenTofu owns shape and access, never values). So an expiry can only be a
+set of owner actions through `scripts/owner/backfill-kv-expiry.sh`; no code change sets one. The
+credentials the identity lane OWNS (`*-graph-cert`) take the certificate's own `notAfter`, which the
+backfill script reads; everything else is a vendor deadline the owner supplies with `--expires`.
+
+### Still without an expiry (owner list)
+
+The audit counted 28 BEFORE the prune (one of them, `rova-prod-app`, is deleted above, so expect 27
+once the script has run). The live dry run of the backfill is authoritative — this is the audit's list:
+
+- **prod (6)**: `kb-prod-graph-cert`, `opshub-prod-graph-cert`, `rova-prod-graph-cert`,
+  `rova-prod-app`, `rova-prod-mcp-access-aud`, `rova-prod-mcp-idempotency-secret`;
+- **platform (4)**: the argocd `grafana-token`, `grafana-url`, `teams-webhook`, `webhook-secret`;
+- **dev (18)**: all ten `kb-dev-*`, `opshub-dev-db-readonly`, `opshub-dev-graph-cert`,
+  `r2-backup-dev-rw-*` (2), `rova-dev-db-readonly`, `rova-dev-graph-cert`, `rova-dev-mcp-access-aud`,
+  `rova-dev-mcp-idempotency-secret`.
+
+Several also lack the `owner` tag (`kb-dev-db-*`, the `*-db-readonly`, `r2-backup-dev-rw-*`, the
+`*-mcp-*`, argocd grafana/teams, `admin-cloudflared-qnsc-admin`). Add it in the same pass.
+Identifiers that never rotate (`*-mcp-access-aud`, `*-client-id`, the platform-admin roster) stay
+without an expiry on purpose.
+
 ## Rotation
 
 - Sign-in app client secrets: `scripts/rotate-signin-secret.sh` (creates the credential, writes the
