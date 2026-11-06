@@ -71,14 +71,14 @@ pve_base_entra_scopes: "openid email profile"
 # "unset" and "explicitly empty" are different. Only the CANONICAL proxmox_entra_admin_emails: []
 # prunes; a leftover legacy pbs_entra_admin_emails: [] is treated as unset (a compatibility guard).
 pve_base_entra_admin_emails: >-
-  {{ proxmox_entra_admin_emails if proxmox_entra_admin_emails is defined
+  {{ proxmox_entra_admin_emails if proxmox_entra_admin_emails is defined and proxmox_entra_admin_emails is not none
      else (pbs_entra_admin_emails if pbs_entra_admin_emails is defined and pbs_entra_admin_emails is not none
            else []) }}
 # A PVE-only inventory (no shared admin list) stays valid: the realm, group and ACL are still
 # managed, only the user pre-creation / membership / offboarding tasks are skipped. An explicitly
 # empty list still RUNS them, which prunes every pre-created account from the admin group.
 pve_base_entra_manage_admins: >-
-  {{ proxmox_entra_admin_emails is defined
+  {{ (proxmox_entra_admin_emails is defined and proxmox_entra_admin_emails is not none)
      or (pbs_entra_admin_emails is defined and pbs_entra_admin_emails is not none
          and (pbs_entra_admin_emails | length) > 0) }}
 # The username claim is fixed at realm creation (Auth/OpenId.pm): a different value stops the role.

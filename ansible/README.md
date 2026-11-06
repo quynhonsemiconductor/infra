@@ -120,9 +120,10 @@ A **PVE-only** inventory may omit the shared list entirely: the realm, group and
 and only the user pre-creation/membership/offboarding tasks are skipped. An **explicitly empty
 `proxmox_entra_admin_emails`** is different: it runs those tasks and prunes every pre-created account from
 the admin group (that is how "remove all admins" is expressed). A leftover legacy
-`pbs_entra_admin_emails: []` is treated as unset, never as a prune request. When the list is present it
-must hold exact Entra email strings with no duplicates, and the canonical `proxmox_entra_admin_emails`
-wins over the legacy `pbs_entra_admin_emails` in both roles (the legacy key defaults to `null`).
+`pbs_entra_admin_emails: []` is treated as unset by PVE (never a prune), and the PBS role **fails** on a
+legacy-only list (including `[]`) with a message to rename it: the canonical key is required there. When
+the list is present it must hold exact, lowercase Entra email strings with no duplicates, and the
+canonical `proxmox_entra_admin_emails` wins over the legacy key in both roles.
 
 **Offboarding, per system.** PVE removes the account from `<oid>-entra` (the PVE user object stays,
 locked by the roll when it was created by the role). PBS revokes its `Admin` ACL on `/`
