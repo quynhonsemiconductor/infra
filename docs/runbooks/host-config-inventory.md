@@ -58,6 +58,8 @@ Priority: **P1** wave 1 (in `ansible/` now), **P2** wave 2 (next), **P3** later,
 | Remote access, tunnels, Access | server-setup.md 12 | OpenTofu `live/onprem`, `live/edge` | done | |
 | Cluster bootstrap (ESO credentials, CA, ArgoCD) | server-setup.md 14 | gitops `cluster.sh` | done | |
 | Monthly maintenance (updates, scrub, SMART) | server-setup.md 15 | Ansible `--check --diff` as a drift report; apt upgrades stay a deliberate window | P2 | the SMART part is automated: `pve_base` writes smartd's `S/../.././01` (short) and `L/../01/./03` (long) on the 1st |
+| journald disk limits | (was unset on every host) | Ansible role `journald` (a dependency of `pve_base` and `vm_guest`): `/etc/systemd/journald.conf.d/90-qnsc.conf` | P1 | `SystemMaxUse=500M`, `SystemKeepFree=1G` on pve01 and all three VMs; restarting systemd-journald applies it, workloads untouched |
+| pod log size | kubelet defaults (10 MiB per file, unbounded files) | Ansible role `kubelet` drop-in: `containerLogMaxSize 10Mi`, `containerLogMaxFiles 3` | P1 | bounds each container at ~30 MiB; same window/restart gate as the other kubelet changes |
 | Disk self-test result and staleness | — | `pve_monitoring` exports `pve_disk_self_test_{failed,age_hours}`; alerts `pve-disk-self-test-failed` / `-stale` in `live/observability-alerting/onprem-host.tf` | P1 | no mail on the host: the alert path is the same Grafana one as every other host signal; stale = the test stopped running |
 | Key Vault secret values, token values | MANUAL-STEPS.md | keep | keep | by design |
 | Laptop `known_hosts`, WARP client | owner steps of 2026-11-02 | Fleet | later | |
