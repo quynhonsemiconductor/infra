@@ -123,7 +123,10 @@ resource "cloudflare_zero_trust_network_hostname_route" "coder" {
 # whole private network the tunnels and the device profile expose: the office LAN,
 # the k8s API, every other route. L4 (network) policies are the firewall for that
 # traffic, evaluated before anything reaches a tunnel. They are IDENTITY policies:
-# `identity.groups.id` is the Entra group object id carried in the WARP identity.
+# `identity.groups.id` is an ARRAY of the Entra group object ids carried in the WARP identity, so it is
+# always tested with `any(...[*] in {...})` — an `==` against it is a wirefilter type error at the API
+# ("cannot perform this operation on type Array(Bytes)", 2026-11-06). live/edge/tests/static.sh forbids
+# the equality form coming back.
 #
 #   900 allow  platform admins             — today's access, stated explicitly so a
 #                                            later blanket rule cannot take it away
@@ -138,7 +141,7 @@ resource "cloudflare_zero_trust_network_hostname_route" "coder" {
 #
 # THE BLOCK MUST BE DESTINATION-SCOPED. The device profile is split tunnel in **Exclude**
 # mode: everything NOT in the exclude list — the public internet included — is sent through
-# WARP and therefore evaluated by Gateway. An unscoped `identity.groups.id == vlsi` block
+# WARP and therefore evaluated by Gateway. An unscoped identity-only block for the VLSI group
 # would cut a VLSI engineer off the public internet: no login.microsoftonline.com (Coder's
 # own OIDC sign-in), no cloudflareaccess.com, nothing. So 920 matches the private ranges
 # only, and public traffic falls through to the default (allow, unchanged from today).
@@ -185,7 +188,7 @@ resource "cloudflare_zero_trust_gateway_policy" "admin_allow_private" {
   enabled     = true
   action      = "allow"
   filters     = ["l4"]
-  traffic     = "identity.groups.id == \"${var.grp_platform_admins_id}\""
+  traffic     = "any(identity.groups.id[*] in {\"${var.grp_platform_admins_id}\"})"
 
   lifecycle {
     # A rule about the account this file does not own, proven before anything is created: our
@@ -229,7 +232,7 @@ resource "cloudflare_zero_trust_gateway_policy" "vlsi_allow_coder" {
   enabled     = true
   action      = "allow"
   filters     = ["l4"]
-  traffic     = "identity.groups.id == \"${var.grp_vlsi_id}\" and any(net.sni.domains[*] == \"coder.qnsc.vn\")"
+  traffic     = "any(identity.groups.id[*] in {\"${var.grp_vlsi_id}\"}) and any(net.sni.domains[*] == \"coder.qnsc.vn\")"
 }
 
 resource "cloudflare_zero_trust_gateway_policy" "vlsi_block_private" {
@@ -249,5 +252,5 @@ resource "cloudflare_zero_trust_gateway_policy" "vlsi_block_private" {
   # above already claims the one public-looking destination the group needs (the Coder
   # hostname, matched on SNI before this rule). Only the allow needs to be there: a request
   # that reaches Coder matches 100 first, everything else private matches here.
-  traffic = "identity.groups.id == \"${var.grp_vlsi_id}\" and any(net.dst.ip[*] in {10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10})"
+  traffic = "any(identity.groups.id[*] in {\"${var.grp_vlsi_id}\"}) and any(net.dst.ip[*] in {10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10})"
 }
