@@ -27,8 +27,9 @@
 #     lane): cloudflared resolves the name before it connects, so an NXDOMAIN
 #     here fails the request even though the route exists;
 #   - the WARP split tunnel must NOT exclude the initial resolved IP ranges
-#     (172.64.128.0/20, 2606:4700:0cf1:4000::/64). warp.tf excludes 172.16.0.0/12
-#     and friends, which do not contain them, so the default profile is correct;
+#     (172.64.128.0/20, 2606:4700:0cf1:4000::/64). warp.tf excludes the RFC 1918
+#     ranges and the Cloudflare defaults, none of which contain them, so the
+#     profile is already correct;
 #   - Gateway proxy on (warp.tf, both toggles), and the host's TLD must not be in
 #     the DNS Local Domain Fallback list;
 #   - TLS: cert-manager with a Let's Encrypt DNS-01 wildcard for
@@ -53,9 +54,8 @@
 #          ExternalSecret; nothing is committed and nothing enters TF state.
 #
 # Route shape notes (Cloudflare docs, 2026-11):
-#   - a single `*` is allowed and MUST be a whole label: *.coder.qnsc.vn covers
-#     ws1.coder.qnsc.vn but not a.b.coder.qnsc.vn, and it does NOT cover the apex;
-#     hence one route per name;
+#   - a single `*` is allowed and MUST be a whole label: the wildcard route covers
+#     ONE label below it and does NOT cover the apex; hence one route per name;
 #   - the docs also say a wildcard route is "saved as" its parent name, so the
 #     first apply must confirm the API accepts the pair. If it answers 409, keep
 #     *.coder.qnsc.vn and serve the control plane on the same wildcard semantics
