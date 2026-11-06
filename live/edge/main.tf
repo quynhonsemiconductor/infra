@@ -212,9 +212,20 @@ resource "cloudflare_pages_project" "landing" {
 
   lifecycle {
     prevent_destroy = true # destroying the Pages project deletes its deployments and detaches its custom domains: the landing site goes down
-    # build_image_auto_upgrade is provider-computed (it records Cloudflare's v1→v3 build-image move): it cannot be
-    # named here and needs no entry — with the update above applied once, no other change is planned and it stays
-    # known. Re-check this when the provider gains UseStateForUnknown on these attributes.
+    # PERPETUAL DIFF, 2026-11-06. Every plan, including the one right after an apply, showed
+    #   ~ resource "cloudflare_pages_project" "landing" { + build_image_auto_upgrade = (known after apply) }
+    # Provider 5.27+ added build_image_auto_upgrade as Computed-only. When a change in
+    # deployment_configs is detected (config omits it, core proposes null, state holds the defaults),
+    # the framework marks every computed-null attribute unknown; Pages' ModifyPlan restores the
+    # others from state but has no clause for this one, and state itself holds null
+    # (cloudflare/terraform-provider-cloudflare#7449; related #7308/#7288/#7262).
+    #
+    # Naming it is impossible (Computed-only: tofu validate warns and has no effect), and a named
+    # ignore_changes is the same warning. `all` is the only lever the resource has left: this project's
+    # configuration is static (name, production branch, build_config above — the build_config values are
+    # already the API's own), so nothing else here is expected to change. Remove `all` and keep only
+    # prevent_destroy when the provider restores this attribute from state (follow #7449).
+    ignore_changes = all
   }
 }
 

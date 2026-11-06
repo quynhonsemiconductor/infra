@@ -6,6 +6,7 @@
 #   pg-rova/    CNPG barman base+WAL        PITR 14 d (barman prunes, not us)
 #   pg-opshub/  CNPG barman base+WAL        PITR 14 d (same rules)
 #   pg-kb/      CNPG barman base+WAL        PITR 14 d (same rules)
+#   pg-coder/   CNPG barman base+WAL        PITR 14 d (same rules; added before its first backup)
 #   dumps/      pg_dump daily 15 d / weekly 35 d / monthly 100 d
 #   files/      rova attachments 35 d; full-<YYYY-MM>/ 35 d
 #   dev/        RETIRED 2026-11-04: pg-dev dumps moved to qnsc-backups-dev
@@ -15,7 +16,7 @@
 #
 # The lock is the immutability control: RW tokens scoped to this bucket, no
 # "write-only" claim (§10.3). Lock covers pg-rova/<server>/wals/,
-# pg-opshub/<server>/wals/, pg-kb/<server>/wals/, dumps/, files/ — 14 days,
+# pg-opshub/<server>/wals/, pg-kb/<server>/wals/, pg-coder/<server>/wals/, dumps/, files/ — 14 days,
 # never longer than the shortest locked lifecycle (daily 15 d > 14 d).
 #
 # Product buckets (rova-dev/opshub-dev/kb-dev + rova-prod files) are imported
@@ -65,6 +66,21 @@ resource "cloudflare_r2_bucket_lock" "qnsc_backups" {
       condition = {
         type            = "Age"
         max_age_seconds = 1209600
+      }
+    },
+    {
+      # WAL segments of the coder CNPG cluster (pg-coder, gitops#376). Written BEFORE the
+      # cluster's first archive on purpose: a lock rule only applies to objects uploaded after
+      # it exists, so the first WAL has to land under it or the earliest PITR window is mutable.
+      # Same shape and same reason as pg-rova below — WAL files are written once, barman-cloud
+      # rewrites backup.info, so base/ stays unlocked. The path carries the archive generation
+      # (serverName in the gitops Cluster spec): bump this prefix together with it.
+      id      = "lock-pg-coder-14d"
+      prefix  = "pg-coder/pg-coder-g1/wals/"
+      enabled = true
+      condition = {
+        type            = "Age"
+        max_age_seconds = 1209600 # 14 days
       }
     },
     {
@@ -213,6 +229,56 @@ resource "cloudflare_r2_bucket_lifecycle" "qnsc_backups" {
       }
       delete_objects_transition = {
         condition = { type = "Age", max_age = 1296000 } # 15 d
+      }
+    },
+    # ── CNPG barman archives: 30 days, base AND wal ────────────────────────
+    #
+    # barman is told to keep 14 days (gitops platform/cnpg/*.yaml retentionPolicy); this is the
+    # BACKSTOP for anything barman fails to prune — an orphaned base after a cluster rebuild, WALs of a
+    # generation nobody deleted. 30 d is more than twice the barman window, so it can never remove a
+    # backup barman still intends to keep, and it is above the 14-day bucket lock on wals/ (a delete
+    # before the lock expires would simply be refused and retried).
+    #
+    # One rule per cluster prefix rather than one for pg-*/: a single new cluster must opt in by
+    # appearing here, which is what keeps this list the audit trail. Ids keep the API's by-id order.
+    {
+      id      = "pg-coder"
+      enabled = true
+      conditions = {
+        prefix = "pg-coder/"
+      }
+      delete_objects_transition = {
+        condition = { type = "Age", max_age = 2592000 } # 30 d
+      }
+    },
+    {
+      id      = "pg-kb"
+      enabled = true
+      conditions = {
+        prefix = "pg-kb/"
+      }
+      delete_objects_transition = {
+        condition = { type = "Age", max_age = 2592000 } # 30 d
+      }
+    },
+    {
+      id      = "pg-opshub"
+      enabled = true
+      conditions = {
+        prefix = "pg-opshub/"
+      }
+      delete_objects_transition = {
+        condition = { type = "Age", max_age = 2592000 } # 30 d
+      }
+    },
+    {
+      id      = "pg-rova"
+      enabled = true
+      conditions = {
+        prefix = "pg-rova/"
+      }
+      delete_objects_transition = {
+        condition = { type = "Age", max_age = 2592000 } # 30 d
       }
     },
   ]

@@ -36,6 +36,17 @@ kubelet_profiles:
 # ~1.9 GB each). 14 days is long enough to debug a rollout and short enough to bound imagefs.
 kubelet_image_maximum_gc_age: "336h"
 
+# Image GC watermarks, per KubeletConfiguration: collection ALWAYS runs above the high percent and
+# never below the low one (must be 0-100 and low < high; upstream defaults are 85/80).
+#
+# 70/60 on every node, decided 2026-11-06 after k3s-01's containerd image store reached ~91 GiB of its
+# 120 GiB root (83% used) before any GC ran: at 85% the collector only starts with ~18 GiB left, which is
+# one image pull plus one backup away from DiskPressure evicting every pod on the node. At 70% it starts
+# with ~36 GiB free and stops at 60%, which still fits the working set (the largest images are ~2 GiB).
+# The age rule above still bounds how long an unused image may sit; this bounds how much space it may take.
+kubelet_image_gc_high_percent: 70
+kubelet_image_gc_low_percent: 60
+
 # The drop-in path k3s documents and the one the live k3s-01 already uses.
 kubelet_config_dir: /var/lib/rancher/k3s/agent/etc/kubelet.conf.d
 kubelet_config_file: "{{ kubelet_config_dir }}/90-qnsc.conf"
@@ -43,3 +54,18 @@ kubelet_config_file: "{{ kubelet_config_dir }}/90-qnsc.conf"
 # A changed drop-in needs a k3s restart, which interrupts every workload on the node. Default:
 # report only. Apply in a maintenance window with -e kubelet_allow_restart=true.
 kubelet_allow_restart: false
+
+# Container log rotation, per node (pod logs under /var/log/pods). Without a cap the kubelet keeps a
+# single 10 MiB file and an unbounded number of files per container, so one chatty pod can fill the root
+# disk between two collections — and k3s-01's root is the disk this size round is about. 10 MiB x 3 files
+# per container (the kubelet defaults for size is 10Mi and for count 5); 3 keeps the last ~30 MiB of a
+# crash-looping container, which is what the incident review usually needs.
+kubelet_container_log_max_size: "10Mi"
+kubelet_container_log_max_files: 3
+
+# The pair must stay valid for every node: both in 0-100 and low < high (KubeletConfiguration, which
+# refuses the whole drop-in otherwise — and k3s would fail to start with it).
+kubelet_image_gc_valid: >-
+  {{ kubelet_image_gc_high_percent > kubelet_image_gc_low_percent
+     and kubelet_image_gc_low_percent >= 0
+     and kubelet_image_gc_high_percent <= 100 }}

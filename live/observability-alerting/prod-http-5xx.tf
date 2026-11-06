@@ -41,7 +41,7 @@
 # serving", not "broken"; the deployment-missing rules already page on that.
 #
 # ── ROUTING ────────────────────────────────────────────────────────────────
-# `env = "production"` matches grafana_notification_policy.root's prod children
+# `env = "prod"` matches grafana_notification_policy.root's prod children
 # (Teams + devops@ email). `product` and `env` are also the notification
 # group_by keys, so rova and opshub cannot group into one notification.
 # =============================================================================
@@ -162,7 +162,7 @@ resource "grafana_rule_group" "prod_http_5xx" {
 
     labels = {
       product  = each.value.product
-      env      = "production"
+      env      = "prod"
       severity = "critical"
     }
 

@@ -1,6 +1,23 @@
 ---
 # One drop-in for every k3s node. The values per profile live in defaults/main.yml, so the server
 # and the agents cannot drift into different reservation or shutdown settings.
+- name: The container log limits are set
+  ansible.builtin.assert:
+    that:
+      - kubelet_container_log_max_size | length > 0
+      - kubelet_container_log_max_files | int >= 1
+    fail_msg: "containerLogMaxSize/containerLogMaxFiles must be set: an unbounded pod log fills the node's root disk."
+    quiet: true
+
+- name: The image GC watermarks are valid
+  ansible.builtin.assert:
+    that: kubelet_image_gc_valid | bool
+    fail_msg: >-
+      kubelet_image_gc_high_percent ({{ kubelet_image_gc_high_percent }}) and kubelet_image_gc_low_percent
+      ({{ kubelet_image_gc_low_percent }}) must both be within 0-100 with low < high — KubeletConfiguration
+      rejects the pair and k3s would not start with an invalid drop-in.
+    quiet: true
+
 - name: The kubelet profile is known
   ansible.builtin.assert:
     that: kubelet_profile in kubelet_profiles
