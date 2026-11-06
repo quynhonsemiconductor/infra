@@ -272,9 +272,12 @@ resource "grafana_rule_group" "onprem_cert_expiry" {
       }
 
       model = jsonencode({
-        refId         = "A"
-        datasource    = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
-        expr          = "(certmanager_certificate_expiration_timestamp_seconds - time()) < 14 * 24 * 3600"
+        refId      = "A"
+        datasource = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
+        # Seconds until expiry, not a pre-filtered boolean: the 7-day data
+        # guard reads A, and `< 14d` in A empties the vector while every
+        # certificate is healthy. B carries the 14-day threshold below.
+        expr          = "(certmanager_certificate_expiration_timestamp_seconds - time())"
         instant       = true
         range         = false
         intervalMs    = 1000
@@ -299,8 +302,8 @@ resource "grafana_rule_group" "onprem_cert_expiry" {
         conditions = [
           {
             evaluator = {
-              type   = "gt"
-              params = [0]
+              type   = "lt"
+              params = [14 * 24 * 3600]
             }
           }
         ]
