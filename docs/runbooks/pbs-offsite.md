@@ -26,12 +26,10 @@ R2 stores the same opaque chunks.
 Corollary: a restore — routine or in a disaster — needs the key file. Keep one copy where you can get it
 without the host (1Password) and one where 1Password is unreachable (paper/USB in the safe).
 
-### 0.1 Create the key once (owner, on pve01)
+### 0.1 Create and store the key (owner, root on pve01)
 
 PVE supports only keys **without** a KDF/passphrase, and it keeps the key in its own config — **the key is
 never a Terraform input**, so it cannot reach the OpenTofu state.
-
-### 0.1 Create and store the key (owner, root on pve01)
 
 ```sh
 # 1. let PVE generate it (the documented generator; --kdf none semantics inside PVE)
@@ -73,8 +71,10 @@ tofu state pull | grep -qF -- "$KEY_DATA" \
   && { echo "STOP: key material found in state"; exit 1; } || echo "key not in state"
 tofu state show proxmox_storage_pbs.pbs_qnsc | grep -E '^[[:space:]]*encryption_key[[:space:]]*=' \
   && { echo "STOP: encryption_key attribute in state"; exit 1; } || echo "no encryption_key attribute"
-``` A `-/+` (replace) on `proxmox_storage_pbs.pbs_qnsc` is **NO-GO** at every
-apply: it would deregister the storage and the key with it.
+```
+
+A `-/+` (replace) on `proxmox_storage_pbs.pbs_qnsc` is **NO-GO** at every apply: it would deregister the
+storage and the key with it.
 
 The next nightly backup is encrypted. Snapshots taken before this moment are **not**. They stay restorable
 without the key and age out on the prune schedule (7 daily / 4 weekly / 6 monthly), **and the off-site sync
@@ -102,9 +102,16 @@ The token is **not** IaC (Cloudflare has no API for minting tokens):
    - Bucket scope: **Only `qnsc-pbs-offsite`** (never account-wide);
    - TTL: none (a sync job runs forever); rotate by creating a replacement and re-running the Ansible run
      with the new keys.
-2. Store the **Access Key ID** and **Secret Access Key** in 1Password as the item
-   **"PBS - R2 off-site sync"**, and add the R2 S3 endpoint (`<account-id>.r2.cloudflarestorage.com`) to the
-   local Ansible inventory as `pbs_offsite_endpoint_host`.
+2. Store the pair in 1Password as an **API Credential** item named
+   **"PBS - R2 off-site sync"** — the field names are what `op read` below uses:
+
+   | 1Password field | holds |
+   |---|---|
+   | `username` | the **Access Key ID** |
+   | `credential` | the **Secret Access Key** |
+
+   Add the R2 S3 endpoint (`<account-id>.r2.cloudflarestorage.com`) to the local Ansible inventory as
+   `pbs_offsite_endpoint_host`.
 
 ## 2. Turn on the off-site copy (owner, `ansible/`)
 
@@ -120,8 +127,8 @@ lines after the first run — a VM that backs up WITHOUT encryption would be ski
 
 ```sh
 cd ansible
-export PBS_S3_ACCESS_KEY="$(op read 'op://QNSC/PBS - R2 off-site sync/access key id')"
-export PBS_S3_SECRET_KEY="$(op read 'op://QNSC/PBS - R2 off-site sync/secret access key')"
+export PBS_S3_ACCESS_KEY="$(op read 'op://QNSC/PBS - R2 off-site sync/username')"
+export PBS_S3_SECRET_KEY="$(op read 'op://QNSC/PBS - R2 off-site sync/credential')"
 
 op run --env-file=<local template> -- \
   ansible-playbook pve-host.yml --tags pbs_offsite --check --diff \
