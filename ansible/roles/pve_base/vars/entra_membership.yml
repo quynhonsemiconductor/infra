@@ -18,3 +18,40 @@ pve_base_entra_removed_users: >-
       | zip(pve_base_entra_realm_users | map(attribute='userid') | map('lower')))
      | rejectattr('1', 'in', pve_base_entra_desired_userids)
      | map(attribute='0') | list }}
+
+# ── idempotent add / remove decisions ───────────────────────────────────────
+#
+# Computed ONCE here so the role's tasks and the offline test (tests/pve_base_entra_membership.yml)
+# evaluate the SAME expression — the test cannot drift from the role.
+#
+# The bug these replace: each task compared the group id with the raw `split(',')` list. Group
+# membership was therefore "missing" whenever the local inventory's object id differed in case
+# from what PVE stored (a paste from Entra, or a group renamed by hand), so EVERY run re-issued
+# `pveum user modify --groups ...` for the same users and reported changed=1 each time. The
+# comparison is now trimmed and case-insensitive on both sides, and it is a SET comparison, not
+# an ordered one.
+#
+# JSON strings on purpose: a Jinja list built with a loop is a string under legacy templating and
+# a list under native, so consumers (and the test) apply `| from_json` and get one shape.
+pve_base_entra_membership_json: >-
+  {%- set out = [] -%}
+  {%- for u in pve_base_entra_realm_users -%}
+    {%- set groups = u.groups | default('') | split(',') | map('trim') | reject('equalto', '') | list -%}
+    {%- set _ = out.append({
+          'userid': u.userid,
+          'groups': groups,
+          'wanted': (u.userid | lower) in pve_base_entra_desired_userids,
+          'has_admin': (pve_base_entra_group_id | lower) in (groups | map('lower') | list)
+        }) -%}
+  {%- endfor -%}
+  {{ out | to_json }}
+
+# Users in the shared list that do not carry the admin group yet (the add loop).
+pve_base_entra_group_adds: >-
+  {{ (pve_base_entra_membership_json | from_json)
+     | selectattr('wanted') | rejectattr('has_admin') | list }}
+
+# Users no longer listed that still carry the admin group (the offboard loop).
+pve_base_entra_group_removals: >-
+  {{ (pve_base_entra_membership_json | from_json)
+     | rejectattr('wanted') | selectattr('has_admin') | list }}

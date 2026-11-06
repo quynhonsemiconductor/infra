@@ -75,3 +75,68 @@
         that:
           - pve_base_entra_removed_users | map(attribute='userid') | list == ['alice@example.com@entra', 'bob@example.com@entra']
         quiet: true
+
+# ── idempotency of the add / remove decisions (the changed=1-every-run bug) ──
+#
+# The role's add and remove loops use THESE two lists. With the group id written in a
+# different case from what PVE stored (a paste from Entra, or a hand-made group), and with a
+# group list padded with spaces, nothing may be added or removed: a converged host must plan
+# zero changes.
+- name: Add/remove decisions are case- and space-insensitive (no perpetual changed)
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    pve_base_entra_realm: entra
+    pve_base_entra_group_id: "ABCDEF01-2345-6789-ABCD-EF0123456789-entra"
+    # set_fact, not play vars: the first play leaves HOST facts behind (set_fact wins over vars),
+    # and this play must start from its own host shape.
+  pre_tasks:
+    - name: The host under test
+      ansible.builtin.set_fact:
+        pve_base_entra_admin_emails: ["bob@example.com", "dave@example.com"]
+        pve_base_entra_users:
+          stdout: "{{ sim_users | to_json }}"
+      vars:
+        sim_users:
+          - {userid: "Bob@Example.com@entra", groups: " abcdef01-2345-6789-abcd-ef0123456789-entra , other"}
+          - {userid: "carol@example.com@entra", groups: "ABCDEF01-2345-6789-ABCD-EF0123456789-entra"}
+          - {userid: "dave@example.com@entra", groups: "other"}
+          - {userid: "root@pam", groups: ""}
+
+  tasks:
+    - name: Load the role's own membership expressions
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../roles/pve_base/vars/entra_membership.yml"
+
+    - name: Bob already has the group in another case; only Dave is added
+      ansible.builtin.assert:
+        that:
+          - pve_base_entra_group_adds | map(attribute='userid') | list == ['dave@example.com@entra']
+        quiet: true
+
+    - name: Only the unlisted Carol is removed
+      ansible.builtin.assert:
+        that:
+          - pve_base_entra_group_removals | map(attribute='userid') | list == ['carol@example.com@entra']
+        quiet: true
+
+    - name: The converged state is a no-op
+      ansible.builtin.set_fact:
+        pve_base_entra_users:
+          stdout: "{{ sim_users_converged | to_json }}"
+      vars:
+        sim_users_converged:
+          - {userid: "bob@example.com@entra", groups: "abcdef01-2345-6789-abcd-ef0123456789-entra"}
+          - {userid: "dave@example.com@entra", groups: "other,abcdef01-2345-6789-abcd-ef0123456789-entra"}
+
+    - name: Re-evaluate against the converged host
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../roles/pve_base/vars/entra_membership.yml"
+
+    - name: Nothing to add and nothing to remove
+      ansible.builtin.assert:
+        that:
+          - pve_base_entra_group_adds | length == 0
+          - pve_base_entra_group_removals | length == 0
+        quiet: true
