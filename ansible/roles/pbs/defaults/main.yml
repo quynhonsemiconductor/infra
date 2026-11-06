@@ -63,10 +63,9 @@ pbs_entra_admin_emails_effective: >-
            else []) }}
 # True when a list was SUPPLIED (canonical, or a non-empty legacy list). Unset = the role fails; an
 # explicit canonical [] = manage and prune.
-pbs_entra_manage_admins: >-
-  {{ (proxmox_entra_admin_emails is defined and proxmox_entra_admin_emails is not none)
-     or (pbs_entra_admin_emails is defined and pbs_entra_admin_emails is not none
-         and (pbs_entra_admin_emails | length) > 0) }}
+# PBS accepts the CANONICAL key only. A legacy-only list (empty or not) is not
+# a valid configuration here: the assert below fails with the rename message.
+pbs_entra_manage_admins: "{{ proxmox_entra_admin_emails is defined and proxmox_entra_admin_emails is not none }}"
 # Lowercased ids for the membership match; the original case is kept for the CLI calls.
 pbs_entra_desired_userids: >-
   {{ pbs_entra_admin_emails_effective | map('regex_replace', '$', '@' ~ pbs_entra_realm)

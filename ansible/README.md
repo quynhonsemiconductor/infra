@@ -120,26 +120,14 @@ A **PVE-only** inventory may omit the shared list entirely: the realm, group and
 and only the user pre-creation/membership/offboarding tasks are skipped. An **explicitly empty
 `proxmox_entra_admin_emails`** is different: it runs those tasks and prunes every pre-created account from
 the admin group (that is how "remove all admins" is expressed). A leftover legacy
-`pbs_entra_admin_emails: []` is treated as unset by PVE (never a prune), and the PBS role **fails** on a
-legacy-only list (including `[]`) with a message to rename it: the canonical key is required there. When
-the list is present it must hold exact, lowercase Entra email strings with no duplicates, and the
-canonical `proxmox_entra_admin_emails` wins over the legacy key in both roles.
+`pbs_entra_admin_emails` is only a PVE fallback. The PBS role accepts the CANONICAL key only: a
+legacy-only list (empty or not) **fails** with a message to rename it. When the list is present it must
+hold exact, lowercase Entra email strings with no duplicates.
 
-**Offboarding, per system.** PVE removes the account from `<oid>-entra` (the PVE user object stays,
-locked by the roll when it was created by the role). PBS revokes its `Admin` ACL on `/`
+**Offboarding, per system.** PVE removes the account from `<oid>-entra` (the PVE user object stays). PBS revokes its `Admin` ACL on `/`
 (`proxmox-backup-manager acl update / Admin --auth-id <id> --delete`); a `--check` run prints
 `would revoke Admin on / from <id>`, and `[]` (canonical key) revokes everyone. Neither system deletes
 the account here.
-
-Verify the last-group clear ONCE on pve01 with a scratch user (the role relies on `--groups ""`):
-
-```sh
-pveum user add scratch@entra
-pveum user modify scratch@entra --groups "<group-object-id>-entra"
-pveum user modify scratch@entra --groups ""
-pveum user list | grep scratch        # groups column is empty
-pveum user delete scratch@entra
-```
 
 The client secret comes from the environment of the run (Key Vault `kv-qnsc-admin`,
 `admin-proxmox-oidc-secret`, created in identity step 4 with `scripts/rotate-signin-secret.sh`):
