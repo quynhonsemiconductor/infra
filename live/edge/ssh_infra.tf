@@ -10,6 +10,12 @@
 # usernames come from TF_VAR_ssh_infra_targets (JSON in a repo secret /
 # owner environment file). Empty = feature off (plan unchanged).
 #
+# Because those values live in this stack's state, every CI pass over live/edge runs
+# `scripts/ssh-targets-guard.sh` before planning: it masks the values, and it REFUSES to
+# plan when the secret is missing while the state still holds targets. That step needs the
+# same ARM_* identity as the plan step beside it — read identity in the plan and drift jobs,
+# write identity only in apply-edge (whose production environment binds the credential).
+#
 #   {
 #     "<gpu-node>": { "hostname": "<gpu-node>", "ipv4": "<gpu-node address>", "usernames": ["<login>"] }
 #   }
