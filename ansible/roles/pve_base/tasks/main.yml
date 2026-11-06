@@ -626,7 +626,7 @@
   notify: Restart smartd
   tags: [pve_base_smartd]
 
-- name: smartd runs and starts with the host
+- name: smartd is enabled and running
   ansible.builtin.service:
     name: "{{ pve_base_smartd_service }}"
     state: started
