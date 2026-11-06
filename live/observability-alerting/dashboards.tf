@@ -289,6 +289,69 @@ resource "grafana_dashboard" "platform_health" {
           refId        = "A"
         }]
       },
+      {
+        id      = 18
+        type    = "row"
+        title   = "VLSI / Coder (GPU panels fill in when dcgm is deployed)"
+        gridPos = { h = 1, w = 24, x = 0, y = 25 }
+      },
+      {
+        id          = 19
+        title       = "Coder up"
+        type        = "stat"
+        gridPos     = { h = 4, w = 6, x = 0, y = 26 }
+        datasource  = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
+        fieldConfig = { defaults = { unit = "none", thresholds = { mode = "absolute", steps = [{ color = "red", value = null }, { color = "green", value = 1 }] } } }
+        targets     = [{ expr = "min(up{job=\"coder\"})", refId = "A" }]
+      },
+      {
+        id          = 20
+        title       = "Coder workspaces (agents)"
+        type        = "stat"
+        gridPos     = { h = 4, w = 6, x = 6, y = 26 }
+        datasource  = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
+        fieldConfig = { defaults = { unit = "none" } }
+        targets     = [{ expr = "sum(coderd_agent_aggregator_workspace_count_total)", refId = "A" }]
+      },
+      {
+        id          = 21
+        title       = "vlsi-ws quota used (worst)"
+        type        = "stat"
+        gridPos     = { h = 4, w = 6, x = 12, y = 26 }
+        datasource  = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
+        fieldConfig = { defaults = { unit = "percentunit", max = 1, thresholds = { mode = "absolute", steps = [{ color = "green", value = null }, { color = "yellow", value = 0.85 }] } } }
+        targets = [{
+          expr  = "max(max by (resource) (kube_resourcequota{namespace=\"vlsi-ws\", type=\"used\"} / ignoring(type) kube_resourcequota{namespace=\"vlsi-ws\", type=\"hard\"}))"
+          refId = "A"
+        }]
+      },
+      {
+        id          = 22
+        title       = "GPU utilisation"
+        type        = "stat"
+        gridPos     = { h = 4, w = 6, x = 18, y = 26 }
+        datasource  = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
+        fieldConfig = { defaults = { unit = "percent", max = 100 } }
+        targets     = [{ expr = "max(DCGM_FI_DEV_GPU_UTIL)", refId = "A" }]
+      },
+      {
+        id          = 23
+        title       = "GPU framebuffer used (MiB)"
+        type        = "stat"
+        gridPos     = { h = 4, w = 6, x = 0, y = 30 }
+        datasource  = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
+        fieldConfig = { defaults = { unit = "none" } }
+        targets     = [{ expr = "max(DCGM_FI_DEV_FB_USED)", refId = "A" }]
+      },
+      {
+        id          = 24
+        title       = "GPU temperature (°C)"
+        type        = "stat"
+        gridPos     = { h = 4, w = 6, x = 6, y = 30 }
+        datasource  = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
+        fieldConfig = { defaults = { unit = "celsius", thresholds = { mode = "absolute", steps = [{ color = "green", value = null }, { color = "yellow", value = 80 }] } } }
+        targets     = [{ expr = "max(DCGM_FI_DEV_GPU_TEMP)", refId = "A" }]
+      },
     ]
   })
 }
