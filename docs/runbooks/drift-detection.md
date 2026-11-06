@@ -47,7 +47,7 @@ Run 42179043406 (main `275f1f7`):
 | Stack | Pass | Cause |
 |---|---|---|
 | edge | unapplied config (exit 2) | `cloudflare_pages_project.landing` → `build_image_auto_upgrade = (known after apply)`: a provider-computed attribute, still pending because the edge apply of #427 was **cancelled** (2026-11-06T08:45Z). The last green edge apply is `c529c85` (#413, 2026-11-05T16:24Z). Run the edge apply; if the attribute keeps re-planning after it, it is a provider artifact and belongs in `ignore_changes`, not in a nightly red. |
-| identity | both passes (exit 1) | all six `IDENTITY_*` inputs were empty (the run's env block lists them blank); the kit stopped. Nothing about the tenant was wrong. |
+| identity | both passes (exit 1) | every `IDENTITY_*` input was empty (the run's env block lists them blank); the kit stopped. Nothing about the tenant was wrong. |
 
 The edge Cloudflare token was **present** in that run (`HAVE_TOKEN: true`, and the
 plan refreshed every Cloudflare resource). The "Drift cannot see Cloudflare" text in
@@ -89,6 +89,7 @@ secret.
 | `IDENTITY_PBS_HOST` | secret | PBS admin door hostname → the second redirect URI (must differ from PVE's) |
 | `IDENTITY_DEV_APP_EXTRA_OWNERS` | secret | the hand-added owners of the DEV sign-in apps (`app=upn,...`). `live/identity` owns those owner sets now; unset, the plan proposes **removing** live owners → exit 2 |
 | `IDENTITY_DEV_APP_EXTRA_ADMINS` | secret | the hand-added holders of the OpsHub Dev `admin` app role (the 2026-08-31 testers, adopted by infra#426). Unset, the plan proposes **removing** those live assignments → exit 2 |
+| `IDENTITY_KV_AUDIT_EMAIL` | secret | recipient of the Key Vault audit alerts (`var.kv_audit_email` has no default, so the kit stops without it; infra#435). Kept out of Git because this repo is public |
 
 The last two are "optional" to the kit and **required for a green nightly run**.
 If the intent is to drop those owners/admins, run the plan locally, apply the
@@ -124,7 +125,7 @@ list of empty names before the kit runs.
 
 `drift-detection.yml` has a PR guard for exactly this list:
 `scripts/test_drift_identity_inputs.py` parses the workflow and fails if any step
-that runs the kit drops one of the six `IDENTITY_*` vars (or if the preflight
+that runs the kit drops one of the seven `IDENTITY_*` vars (or if the preflight
 stops naming one). It runs on PRs that touch the workflow, not nightly.
 
 The kit stops (it never guesses) if one is missing, an app name is ambiguous, a

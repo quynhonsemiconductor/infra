@@ -1,6 +1,6 @@
 """Guard: every identity-kit step in drift-detection.yml gets every IDENTITY_* input.
 
-The kit builds TF_VAR_* from read-only lookups plus six IDENTITY_* inputs. A step
+The kit builds TF_VAR_* from read-only lookups plus seven IDENTITY_* inputs. A step
 that forgets one still runs: the kit silently drops that input (the plan then
 proposes removing the live DEV owners / OpsHub Dev admins) or stops with a
 one-line message. Both shapes were observed on 2026-11-06 (#440 review).
@@ -24,6 +24,7 @@ REQUIRED = (
     "IDENTITY_PBS_HOST",
     "IDENTITY_DEV_APP_EXTRA_OWNERS",
     "IDENTITY_DEV_APP_EXTRA_ADMINS",
+    "IDENTITY_KV_AUDIT_EMAIL",
 )
 
 STEP = re.compile(r"^      - name: (?P<name>.*)$")
@@ -85,7 +86,7 @@ class IdentityKitSteps(unittest.TestCase):
         values = env_map(preflight[0])
         self.assertEqual(set(values), {f"IN_{key}" for key in
                                        ("OWNER_UPN", "SECOND_UPN", "PVE_HOST", "PBS_HOST",
-                                        "EXTRA_OWNERS", "EXTRA_ADMINS")})
+                                        "EXTRA_OWNERS", "EXTRA_ADMINS", "KV_AUDIT_EMAIL")})
         for key in REQUIRED:
             self.assertIn(key, preflight[0], f"preflight does not name {key}")
 
