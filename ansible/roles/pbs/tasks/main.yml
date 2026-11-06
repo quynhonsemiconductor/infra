@@ -67,11 +67,15 @@
   when: not (ansible_check_mode and pbs_repo is changed)
   tags: [pbs_install]
 
+# TAGGED FOR EVERY BLOCK THAT READS IT. `--tags pbs_offsite` alone used to skip this task and
+# then fail on the first `when: pbs_cli.stat.exists` with "pbs_cli is undefined" (owner run
+# 2026-11-06). Any new tag that runs a block reading pbs_cli must be added here too; the CI check
+# in .github/workflows/ansible-lint.yml runs `--tags pbs_offsite --check` for exactly that.
 - name: Is the PBS command line available (not in --check on a host without PBS)
   ansible.builtin.stat:
     path: /usr/sbin/proxmox-backup-manager
   register: pbs_cli
-  tags: [pbs_install]
+  tags: [pbs_install, pbs_offsite, pbs_identity, pbs_fingerprint]
 
 - name: PBS services are enabled and running
   ansible.builtin.service:
@@ -637,20 +641,33 @@
 
     # S3 datastores are production-supported from PBS 4.2; `--encrypted-only` on sync jobs arrived with 4.0.
     # Both are hard requirements here, so stop on an older PBS instead of failing halfway through the block.
+    #
+    # The version comes from `versions --output-format json`: `proxmox-backup-manager --version` does not
+    # exist ("Error: no such command '--version'", owner run 2026-11-06). The `proxmox-backup-server` entry
+    # carries "running version: 4.2.8" in ExtraInfo; `version` is the fallback for an older build.
     - name: Read the PBS version
-      ansible.builtin.command: proxmox-backup-manager --version
-      register: pbs_version_raw
+      ansible.builtin.command: proxmox-backup-manager versions --output-format json
+      register: pbs_versions_raw
       changed_when: false
       check_mode: false
 
     - name: The PBS is new enough for an S3 datastore and encrypted-only sync
       vars:
-        pbs_version: "{{ pbs_version_raw.stdout | regex_search('[0-9]+\\.[0-9]+(\\.[0-9]+)?') | default('0', true) }}"
+        pbs_version: >-
+          {{ (pbs_versions_raw.stdout | from_json
+              | selectattr('name', 'equalto', 'proxmox-backup-server')
+              | map(attribute='ExtraInfo', default='') | list
+              | first | default('', true)
+              | regex_search('running version:\\s*([0-9.]+)', '\\1')
+              | default([], true) | first | default('', true))
+             | default('0', true) }}
       ansible.builtin.assert:
         that: pbs_version is version('4.2', '>=')
         fail_msg: >-
-          PBS {{ pbs_version }} is too old: S3 datastores need 4.2 or newer (and --encrypted-only needs 4.0+).
-          `apt update && apt dist-upgrade` on pve01 first (server-setup.md), then re-run.
+          PBS {{ pbs_version }} is too old (or its version could not be read) : S3 datastores need 4.2 or
+          newer and --encrypted-only needs 4.0+. `apt update && apt dist-upgrade` on pve01
+          (server-setup.md), then re-run. To see what was parsed:
+          proxmox-backup-manager versions --output-format json
         quiet: true
 
     # The cache is mandatory for an S3 datastore and must be its own dataset with a quota: it holds hot
