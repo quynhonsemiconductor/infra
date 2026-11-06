@@ -138,6 +138,34 @@ jobs:
           az login --service-principal --username "$AZURE_CLIENT_ID" --tenant "$AZURE_TENANT_ID" \
             --federated-token "$token" --allow-no-subscriptions --output none
 
+      # The owner kit stops on the FIRST missing input, with a one-line message
+      # that reads like a kit bug in a nightly run (2026-11-06: all six were
+      # empty and the failure surfaced as "identity — refresh exit 1, plan
+      # exit 1"). Name every missing input at once, before the kit starts.
+      - name: Identity drift inputs present
+        if: matrix.stack == 'identity'
+        env:
+          IN_OWNER_UPN: ${{ secrets.IDENTITY_OWNER_OPERATOR_UPN }}
+          IN_SECOND_UPN: ${{ secrets.IDENTITY_SECOND_OWNER_UPN }}
+          IN_PVE_HOST: ${{ secrets.IDENTITY_PROXMOX_HOST }}
+          IN_PBS_HOST: ${{ secrets.IDENTITY_PBS_HOST }}
+          IN_EXTRA_OWNERS: ${{ secrets.IDENTITY_DEV_APP_EXTRA_OWNERS }}
+          IN_EXTRA_ADMINS: ${{ secrets.IDENTITY_DEV_APP_EXTRA_ADMINS }}
+        run: |
+          set -euo pipefail
+          missing=""
+          check() { [ -n "$2" ] || missing="$missing $1"; }
+          check IDENTITY_OWNER_OPERATOR_UPN "$IN_OWNER_UPN"
+          check IDENTITY_SECOND_OWNER_UPN "$IN_SECOND_UPN"
+          check IDENTITY_PROXMOX_HOST "$IN_PVE_HOST"
+          check IDENTITY_PBS_HOST "$IN_PBS_HOST"
+          check IDENTITY_DEV_APP_EXTRA_OWNERS "$IN_EXTRA_OWNERS"
+          check IDENTITY_DEV_APP_EXTRA_ADMINS "$IN_EXTRA_ADMINS"
+          if [ -n "$missing" ]; then
+            echo "::error title=Identity drift needs owner inputs::Repository secrets missing or empty:${missing}. Set each with: gh secret set <NAME> -R ${GITHUB_REPOSITORY} (type the value at the prompt, or pipe it from the password manager; never --body). The two EXTRA_* inputs are required because live/identity now owns the hand-added DEV app owners and OpsHub Dev admin-role holders: with them unset the plan proposes removing those live grants, so the job would be red every night even with the four host/UPN inputs set. See docs/runbooks/drift-detection.md."
+            exit 1
+          fi
+
       - name: tofu init
         working-directory: live/${{ matrix.stack }}
         run: tofu init -input=false
