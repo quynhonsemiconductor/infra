@@ -106,7 +106,8 @@ jobs:
           # drift_report.py prints drifted resource ADDRESSES, and the identity for_each keys are user
           # and app object ids. This repo is public; exit 2 is red with a "details withheld" line only. Required repo secrets (owner):
           # IDENTITY_OWNER_OPERATOR_UPN, IDENTITY_SECOND_OWNER_UPN, IDENTITY_PROXMOX_HOST,
-          # IDENTITY_PBS_HOST.
+          # IDENTITY_PBS_HOST, IDENTITY_KV_AUDIT_EMAIL (added with the Key Vault alerts:
+          # live/identity now has a required kv_audit_email with no default).
           - identity
 
     steps:
@@ -318,6 +319,7 @@ jobs:
           IDENTITY_SECOND_OWNER_UPN:   ${{ secrets.IDENTITY_SECOND_OWNER_UPN }}
           IDENTITY_PROXMOX_HOST:       ${{ secrets.IDENTITY_PROXMOX_HOST }}
           IDENTITY_PBS_HOST:           ${{ secrets.IDENTITY_PBS_HOST }}
+          IDENTITY_KV_AUDIT_EMAIL:     ${{ secrets.IDENTITY_KV_AUDIT_EMAIL }}
         run: |
           set +e
           scripts/owner/identity-env/identity-env.sh -- \
@@ -340,6 +342,7 @@ jobs:
           IDENTITY_SECOND_OWNER_UPN:   ${{ secrets.IDENTITY_SECOND_OWNER_UPN }}
           IDENTITY_PROXMOX_HOST:       ${{ secrets.IDENTITY_PROXMOX_HOST }}
           IDENTITY_PBS_HOST:           ${{ secrets.IDENTITY_PBS_HOST }}
+          IDENTITY_KV_AUDIT_EMAIL:     ${{ secrets.IDENTITY_KV_AUDIT_EMAIL }}
         run: |
           set +e
           scripts/owner/identity-env/identity-env.sh -- \
