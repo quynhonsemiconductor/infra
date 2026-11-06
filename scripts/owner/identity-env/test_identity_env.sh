@@ -12,6 +12,9 @@ FX="$T/fx"; BIN="$T/bin"; mkdir -p "$FX" "$BIN" "$T/stack" "$T/eso"
 for c in jq openssl xxd; do command -v "$c" >/dev/null || { echo "need $c"; exit 2; }; done
 
 g() { printf '%08x-0000-4000-8000-%012x' "$1" "$2"; }   # deterministic GUIDs: g <n> <m>
+# Entra appRoleAssignment ids are NOT GUIDs: opaque base64url, ~43 chars. Fixtures
+# use a deterministic shape with both url-safe symbols so a GUID check fails them.
+aid() { printf 'kl2Jm9-%s_' "$(printf '%036x' "$1")"; }   # aid <n>
 mkcert() { openssl req -x509 -newkey rsa:2048 -nodes -keyout "$T/$1.key" -out "$T/$1.crt" -subj "/CN=stub-$1" -days 2 >/dev/null 2>&1; }
 b64thumb() { openssl x509 -in "$1" -noout -fingerprint -sha1 | sed 's/.*=//; s/://g' | tr 'A-F' 'a-f' | xxd -r -p | base64 | tr -d '\n'; }
 slot_i() { case "$1" in rova_prod) echo 1;; rova_dev) echo 2;; opshub_dev) echo 3;; kb_dev) echo 4;; esac; }
@@ -88,9 +91,9 @@ build() { # build the fixture set from scratch
       '[{keyId:$kid,customKeyIdentifier:$th,startDateTime:$st,key:$key}]' >"$FX/keys-$(g 20 $i).json"
     # live appRoleAssignments on Microsoft Graph: rova_prod 1 (User.Invite.All), opshub_dev 3, the rest none
     case "$k" in
-      rova_prod) jq -n --arg id "$(g 92 1)" --arg r "$(g 91 1)" --arg g "$(g 90 1)" --arg p "$(g 23 $i)" \
+      rova_prod) jq -n --arg id "$(aid 101)" --arg r "$(g 91 1)" --arg g "$(g 90 1)" --arg p "$(g 23 $i)" \
         '{value:[{id:$id,appRoleId:$r,resourceId:$g,principalId:$p}]}' >"$FX/grants-$(g 23 $i).json" ;;
-      opshub_dev) jq -n --arg a "$(g 92 2)" --arg b "$(g 92 3)" --arg c "$(g 92 4)" \
+      opshub_dev) jq -n --arg a "$(aid 102)" --arg b "$(aid 103)" --arg c "$(aid 104)" \
         --arg r1 "$(g 91 2)" --arg r2 "$(g 91 3)" --arg r3 "$(g 91 4)" --arg g "$(g 90 1)" --arg p "$(g 23 $i)" \
         '{value:[{id:$a,appRoleId:$r1,resourceId:$g,principalId:$p},{id:$b,appRoleId:$r2,resourceId:$g,principalId:$p},{id:$c,appRoleId:$r3,resourceId:$g,principalId:$p}]}' >"$FX/grants-$(g 23 $i).json" ;;
       *) echo '{"value":[]}' >"$FX/grants-$(g 23 $i).json" ;;
@@ -120,7 +123,7 @@ build() { # build the fixture set from scratch
   for r in admin it-admin security hr manager helpdesk auditor; do n=$((n+1)); roles=$(jq -c --arg r "$r" --arg id "$(g 30 $n)" '.+[{value:$r,id:$id,isEnabled:true}]' <<<"$roles"); done
   jq --argjson r "$roles" '.appRoles=$r' "$FX/app-OpsHub-Dev" >"$FX/x" && mv "$FX/x" "$FX/app-OpsHub-Dev"
   # extra OpsHub Dev admin holders: two live assignments of the admin role on its SP
-  jq -n --arg sp "$(g 12 3)" --arg r "$(g 30 1)" --arg a "$(g 31 1)" --arg b "$(g 31 2)" \
+  jq -n --arg sp "$(g 12 3)" --arg r "$(g 30 1)" --arg a "$(aid 1)" --arg b "$(aid 2)" \
     --arg p1 "$(g 3 8)" --arg p2 "$(g 3 9)" \
     '{value:[{id:$a,appRoleId:$r,principalId:$p1,resourceId:$sp},{id:$b,appRoleId:$r,principalId:$p2,resourceId:$sp}]}' \
     >"$FX/assigned-$(g 12 3).json"
@@ -272,17 +275,17 @@ jq -e --arg a "$(g 3 8)" --arg b "$(g 3 9)" 'keys==["opshub_dev"] and (.opshub_d
 run env IDENTITY_DEV_APP_EXTRA_ADMINS="opshub_dev=admin1@tenant.example,opshub_dev=admin2@tenant.example" \
   bash "$SCRIPT" -- sh -c 'printf "%s" "$TF_VAR_dev_app_extra_admin_assignment_ids"' >"$T/admassign.json" 2>/dev/null \
   || fail "extra admins: assignment-id run mode"
-jq -e --arg k1 "opshub_dev/$(g 3 8)" --arg k2 "opshub_dev/$(g 3 9)" --arg v1 "$(g 31 1)" --arg v2 "$(g 31 2)" \
+jq -e --arg k1 "opshub_dev/$(g 3 8)" --arg k2 "opshub_dev/$(g 3 9)" --arg v1 "$(aid 1)" --arg v2 "$(aid 2)" \
   '(keys|sort)==([$k1,$k2]|sort) and .[$k1]==$v1 and .[$k2]==$v2' "$T/admassign.json" >/dev/null \
   || fail "extra admins: wrong assignment-id map"
 grep -q 'servicePrincipals/.*/appRoleAssignedTo' "$FX/calls.log" || fail "extra admins: assignments not read via appRoleAssignedTo"
 # appRoleAssignedTo is paged: a second assignment behind @odata.nextLink is still imported
 build
-jq -n --arg sp "$(g 12 3)" --arg r "$(g 30 1)" --arg a "$(g 31 1)" --arg p1 "$(g 3 8)" \
+jq -n --arg sp "$(g 12 3)" --arg r "$(g 30 1)" --arg a "$(aid 1)" --arg p1 "$(g 3 8)" \
   --arg n "https://graph.microsoft.com/v1.0/servicePrincipals/$(g 12 3)/appRoleAssignedTo?\$skiptoken=2" \
   '{value:[{id:$a,appRoleId:$r,principalId:$p1,resourceId:$sp}],"@odata.nextLink":$n}' \
   >"$FX/assigned-$(g 12 3).json"
-jq -n --arg sp "$(g 12 3)" --arg r "$(g 30 1)" --arg b "$(g 31 2)" --arg p2 "$(g 3 9)" \
+jq -n --arg sp "$(g 12 3)" --arg r "$(g 30 1)" --arg b "$(aid 2)" --arg p2 "$(g 3 9)" \
   '{value:[{id:$b,appRoleId:$r,principalId:$p2,resourceId:$sp}]}' >"$FX/assigned2-$(g 12 3).json"
 run env IDENTITY_DEV_APP_EXTRA_ADMINS="opshub_dev=admin1@tenant.example,opshub_dev=admin2@tenant.example" \
   bash "$SCRIPT" -- sh -c 'printf "%s" "$TF_VAR_dev_app_extra_admin_assignment_ids"' >"$T/admassign-page.json" 2>/dev/null \
