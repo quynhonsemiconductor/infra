@@ -231,56 +231,23 @@ resource "cloudflare_r2_bucket_lifecycle" "qnsc_backups" {
         condition = { type = "Age", max_age = 1296000 } # 15 d
       }
     },
-    # ── CNPG barman archives: 30 days, base AND wal ────────────────────────
+    # ── CNPG barman archives: lifecycle backstop REVERTED (2026-11-07) ──────
     #
-    # barman is told to keep 14 days (gitops platform/cnpg/*.yaml retentionPolicy); this is the
-    # BACKSTOP for anything barman fails to prune — an orphaned base after a cluster rebuild, WALs of a
-    # generation nobody deleted. 30 d is more than twice the barman window, so it can never remove a
-    # backup barman still intends to keep, and it is above the 14-day bucket lock on wals/ (a delete
-    # before the lock expires would simply be refused and retried).
+    # The four 30-day rules for pg-rova/ pg-opshub/ pg-kb/ pg-coder/ made every onprem apply fail:
+    #   PUT .../r2/buckets/qnsc-backups/lifecycle: 400
+    #   {"code":10040,"message":"The JSON you provided was not well formed."}
     #
-    # One rule per cluster prefix rather than one for pg-*/: a single new cluster must opt in by
-    # appearing here, which is what keeps this list the audit trail. Ids keep the API's by-id order.
-    {
-      id      = "pg-coder"
-      enabled = true
-      conditions = {
-        prefix = "pg-coder/"
-      }
-      delete_objects_transition = {
-        condition = { type = "Age", max_age = 2592000 } # 30 d
-      }
-    },
-    {
-      id      = "pg-kb"
-      enabled = true
-      conditions = {
-        prefix = "pg-kb/"
-      }
-      delete_objects_transition = {
-        condition = { type = "Age", max_age = 2592000 } # 30 d
-      }
-    },
-    {
-      id      = "pg-opshub"
-      enabled = true
-      conditions = {
-        prefix = "pg-opshub/"
-      }
-      delete_objects_transition = {
-        condition = { type = "Age", max_age = 2592000 } # 30 d
-      }
-    },
-    {
-      id      = "pg-rova"
-      enabled = true
-      conditions = {
-        prefix = "pg-rova/"
-      }
-      delete_objects_transition = {
-        condition = { type = "Age", max_age = 2592000 } # 30 d
-      }
-    },
+    # The body is NOT the problem. Replayed against the pinned provider (5.28.1) with a local HTTP
+    # endpoint (CLOUDFLARE_BASE_URL), the PUT body is the same shape that created the eight rules
+    # above — a `rules` array only, twelve entries, every field exactly as the R2 API schema names it
+    # (scripts/owner/r2-lifecycle-probe.sh reproduces the body and can send it). So the API is
+    # rejecting the CONTENT, and the one property unique to these four rules is that each prefix also
+    # carries a bucket lock (14 days on <prefix>/<gen>/wals/).
+    #
+    # Until the owner runs the probe (one authenticated call, below) and we know which part the API
+    # objects to, the backstop stays out of the provider-managed list: a red apply blocks every other
+    # onprem change. Nothing is unbounded meanwhile — barman's retentionPolicy prunes at 14 days and
+    # the bucket lock still protects those WALs.
   ]
 
   # The API fills the UNUSED transition of every rule with an empty
