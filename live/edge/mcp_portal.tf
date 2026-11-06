@@ -95,14 +95,24 @@ resource "cloudflare_zero_trust_access_ai_controls_mcp_portal" "qnsc" {
       server_id = s.id
       on_behalf = true
     }],
+    # opshub-dev and kb-dev (mcp_opshub_dev.tf, mcp_kb_dev.tf): DEV only, 2026-11-06.
+    [for s in cloudflare_zero_trust_access_ai_controls_mcp_server.opshub_dev : {
+      server_id = s.id
+      on_behalf = true
+    }],
+    [for s in cloudflare_zero_trust_access_ai_controls_mcp_server.kb_dev : {
+      server_id = s.id
+      on_behalf = true
+    }],
   )
 
-  # Same provider bug on the portal: Cloudflare fills servers[].updated_tools after each sync, the config never
-  # sets it, and the PUT sends null, which the API refuses. Membership changes (adding/removing a server) therefore
-  # need this line removed in that PR; the hub servers join that way when mcp_hub_enabled flips.
-  lifecycle {
-    ignore_changes = [servers]
-  }
+  # NO lifecycle { ignore_changes = [servers] } in THIS PR on purpose (removed
+  # 2026-11-06): the provider fills servers[].updated_tools after each sync and
+  # sends null on PUT, so any membership change is silently skipped while the
+  # line is present. Removing it is what lets opshub-dev and kb-dev join. The
+  # PUT with the full server list is exactly what this apply needs; restore the
+  # block in a follow-up once the membership is live and no server changes are
+  # pending (same workaround as rova_dev, mcp_portal.tf).
 }
 
 # Portal login policy (owner decision 2026-10-24): company Entra identity,
