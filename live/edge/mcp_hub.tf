@@ -54,6 +54,10 @@ resource "cloudflare_zero_trust_access_ai_controls_mcp_server" "github" {
   is_shared_oauth_callback_enabled = true
 
   lifecycle {
+    # Write-only from our side: PR plans and the plan-first stage run without the secret, the apply job has it.
+    # Without this, a secret-less plan shows an update the write plan does not, and the apply fingerprint check
+    # fails closed. Rotating the secret = taint/replace this server on purpose.
+    ignore_changes = [client_secret]
     precondition {
       # The secret is NOT checked: PR plans run without environment secrets
       # (read-only tokens) and must still plan; the apply job holds it.
@@ -88,13 +92,15 @@ resource "cloudflare_zero_trust_access_ai_controls_mcp_server" "grafana" {
   is_shared_oauth_callback_enabled = local.mcp_grafana_manual ? true : null
 
   lifecycle {
+    ignore_changes = [client_secret]
     precondition {
+      # The secret is not checked here (secret-less PR/drift/plan-first runs must plan); the apply-edge
+      # workflow guard enforces it at apply time.
       condition = !local.mcp_grafana_manual || (
-        var.mcp_grafana_oauth_client_secret != "" &&
         var.mcp_grafana_authorization_endpoint != "" &&
         var.mcp_grafana_token_endpoint != ""
       )
-      error_message = "a manual Grafana client needs its secret and both endpoints (HUB-SETUP.md)."
+      error_message = "a manual Grafana client needs both endpoints (HUB-SETUP.md)."
     }
   }
 }

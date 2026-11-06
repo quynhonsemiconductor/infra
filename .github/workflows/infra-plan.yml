@@ -236,6 +236,18 @@ jobs:
       - name: live/identity static guard
         run: sh live/identity/tests/static.sh
 
+      # live/edge's wirefilter strings are opaque to `tofu validate`; the API rejects a wrong selector
+      # only at apply time (identity.groups.id is an Array(Bytes): "cannot perform this operation on
+      # type Array(Bytes)", 2026-11-06). This greps the array form in, on every PR.
+      - name: live/edge static guard
+        run: sh live/edge/tests/static.sh
+
+      # The observability audit round (2026-11-06) shipped four new rules with
+      # env="production" while the policy matches env="prod" — a critical that
+      # never reaches Teams. Plan-free grep, same pattern as the identity guard.
+      - name: live/observability-alerting static guard
+        run: sh live/observability-alerting/tests/static.sh
+
       # The owner apply kit builds live/identity's TF_VAR_* from read-only az/op lookups. This runs it against
       # stub az/op and captured-shape fixtures: no credential, no live call; every broken input must stop it.
       - name: identity apply kit (offline test)

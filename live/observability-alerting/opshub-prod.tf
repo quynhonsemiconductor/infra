@@ -55,8 +55,8 @@
 # NOTE ON THE SM ALERT ROUTE: no alert_sensitivity (SM legacy alerting is
 # forbidden on new installations) and SM check labels do not become alert
 # labels — the real alert is the flag-gated grafana_rule_group below, whose
-# labels (product=opshub, env=production) match the existing
-# grafana_notification_policy.root child policy (env=production → Teams +
+# labels (product=opshub, env=prod) match the existing
+# grafana_notification_policy.root child policy (env=prod → Teams +
 # devops@), which is §12's routing. No new contact point or rule.
 # =============================================================================
 
@@ -83,7 +83,7 @@ locals {
 # alert labels and alert_sensitivity creates no rules by itself, so routing
 # runs through the grafana_rule_group below: it fires on
 # probe_success{job="opshub-prod-readyz"} == 0 and carries rule labels
-# env=production + product=opshub, which is exactly what
+# env=prod + product=opshub, which is exactly what
 # grafana_notification_policy.root matches (Teams for prod, devops@ always).
 
 # The opshub-prod slot of §12's SIX-check budget (rova+opshub prod+dev, kb-dev,
@@ -109,7 +109,7 @@ resource "grafana_synthetic_monitoring_check" "opshub_prod_readyz" {
 
   labels = {
     product = "opshub"
-    env     = "production" # matches notification policy matcher, NOT "prod"
+    env     = "prod" # matches notification policy matcher, NOT "prod"
   }
 
   settings {
@@ -127,7 +127,7 @@ resource "grafana_synthetic_monitoring_check" "opshub_prod_readyz" {
 
 # ── Synthetic Monitoring alert rule ─────────────────────────────────────────
 # §12's prod routing as code: fires when the check's probe reports failure
-# (probe_success == 0) for 5 minutes. Rule labels env=production + product=opshub
+# (probe_success == 0) for 5 minutes. Rule labels env=prod + product=opshub
 # route it through grafana_notification_policy.root — Teams for prod, devops@
 # always — the same policy every other rule in this stack uses. Same datasource
 # (the stack's managed Prometheus, where SM publishes probe_success) as
@@ -200,7 +200,7 @@ resource "grafana_rule_group" "opshub_prod_readyz_down" {
 
     labels = {
       product  = "opshub"
-      env      = "production" # matches the notification policy matcher, NOT "prod"
+      env      = "prod"
       severity = "critical"
     }
 
