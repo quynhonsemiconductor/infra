@@ -99,9 +99,13 @@ resource "azurerm_monitor_action_group" "kv_audit" {
 # ── Data plane: three scheduled-query rules (+ the silence check below) ───
 # `time_aggregation_method = "Count"` with `threshold = 0` fires on ANY row
 # the query returns; the queries already aggregate per identity/client, so a
-# single row is one event class, not one log line. (`kv-audit-silent` at the
-# end uses Maximum/LessThan instead, because its query returns exactly one
-# numeric row.)
+# single row is one event class, not one log line. Count counts ROWS, so
+# `metric_measure_column` must be OMITTED — the provider/API rejects it with
+# "Metric Measure Column can not be specified on Time Aggregation of Count"
+# (azurerm docs: "`metric_measure_column` can not be specified if
+# `time_aggregation_method` is `Count`"). The numeric column is only for the
+# non-Count aggregations, e.g. `kv-audit-silent` below uses Maximum over
+# `events`.
 
 # 1. Any secret/key/certificate deletion. Soft delete makes it recoverable,
 #    but on a vault that holds deploy credentials it is never routine.
@@ -127,7 +131,6 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "kv_deletion" {
       | summarize deletions = count() by Resource, OperationName, objectId, appId, CallerIPAddress, bin(TimeGenerated, 15m)
     KQL
     time_aggregation_method = "Count"
-    metric_measure_column   = "deletions"
     operator                = "GreaterThan"
     threshold               = 0
   }
@@ -169,7 +172,6 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "kv_denied_spike" {
       | where denied >= 5
     KQL
     time_aggregation_method = "Count"
-    metric_measure_column   = "denied"
     operator                = "GreaterThan"
     threshold               = 0
   }
@@ -206,7 +208,6 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "kv_unknown_principal"
       | summarize reads = count() by Resource, objectId, appId, CallerIPAddress, bin(TimeGenerated, 15m)
     KQL
     time_aggregation_method = "Count"
-    metric_measure_column   = "reads"
     operator                = "GreaterThan"
     threshold               = 0
   }
