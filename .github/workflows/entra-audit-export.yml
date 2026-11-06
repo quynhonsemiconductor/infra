@@ -1,0 +1,99 @@
+# =============================================================================
+# Entra directory AUDIT log export · nightly
+#
+# Hardening decision 8 (PLAN-PLATFORM-HARDENING-2026-11-04): no Entra ID P1, so
+# Microsoft keeps 7 days of audit and sign-in logs. This exports what the FREE
+# tier allows — directory AUDIT logs — to the private WORM container
+# `stqnsckvaudit/entra-audit` (365 days). Sign-in logs are refused on this
+# tenant (Graph 403 Authentication_RequestFromNonPremiumTenantOrB2CTenant); the
+# gap and its weekly manual review are in docs/runbooks/entra-activity-logs.md.
+#
+# Identity: "QNSC Entra Audit Export" (live/identity/entra_audit_export.tf),
+# secret-less GitHub OIDC, subject ref:refs/heads/main. Graph application
+# permission AuditLog.Read.All + Storage Blob Data Contributor on the audit
+# account, nothing else.
+#
+# The job SKIPS (green) until the owner sets repo variable
+# AZURE_CLIENT_ID_ENTRA_AUDIT: an unconfigured export must not paint the repo
+# red every night before it exists.
+# =============================================================================
+name: Entra audit export
+
+on:
+  schedule:
+    # 01:23 UTC = 08:23 Asia/Ho_Chi_Minh, after the nightly drift job starts.
+    # Offset from :00 so it is not in the same runner burst as everything else.
+    - cron: '23 1 * * *'
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'scripts/entra_audit_export.py'
+      - 'scripts/test_entra_audit_export.py'
+      - '.github/workflows/entra-audit-export.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/entra_audit_export.py'
+      - 'scripts/test_entra_audit_export.py'
+      - '.github/workflows/entra-audit-export.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: entra-audit-export-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Unit tests
+    if: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+
+      - name: Unit tests (stdlib only)
+        run: python3 -m unittest scripts/test_entra_audit_export.py -v
+
+  export:
+    name: Nightly Entra audit export
+    if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && vars.AZURE_CLIENT_ID_ENTRA_AUDIT != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write     # Azure OIDC, subject ref:refs/heads/main
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # No azure/login action: one federated token exchange is all this needs,
+      # and every `uses:` in this repository is SHA-pinned.
+      - name: Azure login (audit export identity, OIDC)
+        env:
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID_ENTRA_AUDIT }}
+          AZURE_TENANT_ID: ${{ vars.ENTRA_TENANT_ID }}
+        run: |
+          set -euo pipefail
+          token="$(curl -fsS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange" | jq -r .value)"
+          if [ -z "$token" ] || [ "$token" = "null" ]; then
+            echo "::error::no federated token"; exit 1
+          fi
+          az login --service-principal --username "$AZURE_CLIENT_ID" --tenant "$AZURE_TENANT_ID" \
+            --federated-token "$token" --allow-no-subscriptions --output none
+
+      # 72 h overlap: a missed run is re-covered by the next one (dedupe by the
+      # record id happens in whatever consumes the files). The API keeps 7 days.
+      - name: Export directory audit logs
+        run: python3 scripts/entra_audit_export.py --hours 72
