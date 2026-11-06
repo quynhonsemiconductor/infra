@@ -41,7 +41,7 @@ trees() { # fresh empty trees; the product dirs are always supplied so --apply n
 	: >"$LOG"
 }
 run() {
-	PATH="$BIN:$PATH" AZ_LOG="$LOG" bash "$SCRIPT" \
+	PATH="$BIN:$PATH" AZ_LOG="$LOG" PRUNE_KV_TEST_FIXTURE=1 bash "$SCRIPT" \
 		--infra "$T/infra" --gitops "$T/gitops" \
 		--product-dir "rova=$T/prod/rova" --product-dir "opshub=$T/prod/opshub" \
 		--product-dir "qnsc-kb-backend=$T/prod/qnsc-kb-backend" \
@@ -83,6 +83,23 @@ printf '%s\n' "$out" | grep -q 'STOP: at least one candidate is referenced; noth
 printf '%s\n' "$out" | grep -q 'nothing to delete' && fail "all-blocked run printed 'nothing to delete'"
 [ ! -s "$LOG" ] || fail "all-blocked run called az"
 pass "all-blocked STOP"
+
+# `#` is a comment only at start-of-line or after whitespace; `a#b` is data
+trees
+printf 'token: kb-dev-app#fragment\n' >"$T/gitops/values/hash.yaml"
+if out=$(run 2>&1); then printf '%s\n' "$out"; fail "mid-token # was treated as a comment"; fi
+printf '%s\n' "$out" | grep -q '^BLOCKED  kv-qnsc-dev/kb-dev-app' || { printf '%s\n' "$out"; fail "mid-token # reference not reported"; }
+pass "mid-token hash is data"
+
+# a plain directory WITHOUT the fixture flag is refused (the proof must read origin/main)
+trees
+if out=$(env -u PRUNE_KV_TEST_FIXTURE PATH="$BIN:$PATH" AZ_LOG="$LOG" bash "$SCRIPT" \
+    --infra "$T/infra" --gitops "$T/gitops" 2>&1); then
+  printf '%s\n' "$out"; fail "non-git dir accepted without the fixture flag"
+fi
+printf '%s\n' "$out" | grep -q 'STOP: not a git repository' || { printf '%s\n' "$out"; fail "non-git dir wrong stop"; }
+[ ! -s "$LOG" ] || fail "non-git refusal called az"
+pass "non-git dir refused"
 
 # a trailing `# name` on a code line is still a comment for that name
 trees

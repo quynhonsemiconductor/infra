@@ -82,8 +82,11 @@ ROOTS=(); LABELS=()
 git_tree() { # git_tree <dir> <label>: extract the COMMITTED origin/main tree
   local dir="$1" label="$2"
   if ! git -C "$dir" rev-parse --git-dir >/dev/null 2>&1; then
-    # Plain directory (the offline test's fixtures): scan it as given.
-    ROOTS+=("$dir"); LABELS+=("$label"); return
+    # A plain directory is NOT the proof: the tree must be what origin/main
+    # holds, not a working checkout. Only the offline test may bypass that.
+    [[ "${PRUNE_KV_TEST_FIXTURE:-0}" = "1" ]] \
+      || { echo "STOP: not a git repository: $dir — the proof reads committed origin/main (PRUNE_KV_TEST_FIXTURE=1 is for the offline test only)" >&2; exit 1; }
+    ROOTS+=("$dir"); LABELS+=("$label (TEST FIXTURE, not origin/main)"); return
   fi
   git -C "$dir" fetch -q origin main
   mkdir -p "$PROOF/$label"
@@ -139,9 +142,11 @@ classify() { # classify <path> <text> <name> : prints reference|comment
   case "$path" in
     */tests/*|*/docs/*|*.md|*/test_*|*_test.sh|*_test.py) echo doc; return ;;
   esac
-  # Code before a trailing comment. `#` inside a quoted string can mislead a
+  # Code before a trailing comment. A `#` starts a comment only at the first
+  # non-space character or after whitespace — `a#b` (a URL fragment, a token)
+  # is data, not a comment. `#` inside a quoted string can still mislead a
   # human grepping this by hand; the printed hit makes that visible.
-  code=${text%%#*}
+  code=$(printf '%s' "$text" | sed -E 's/(^|[[:space:]])#.*$//')
   if ! printf '%s' "$code" | grep -qE "(^|[^A-Za-z0-9_-])$name([^A-Za-z0-9_-]|\$)"; then
     echo comment
   else

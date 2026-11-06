@@ -101,11 +101,12 @@ backfill script reads; everything else is a vendor deadline the owner supplies w
 
 ### Still without an expiry (owner list)
 
-The audit counted 28 BEFORE the prune (one of them, `rova-prod-app`, is deleted above, so expect 27
-once the script has run). The live dry run of the backfill is authoritative — this is the audit's list:
+The audit counted 28 BEFORE the prune. BOTH `kb-dev-app` and `rova-prod-app` are deleted above, so
+expect 26 once the script has run. The live dry run of the backfill is authoritative — this is the
+audit's list, minus the two pruned names:
 
-- **prod (6)**: `kb-prod-graph-cert`, `opshub-prod-graph-cert`, `rova-prod-graph-cert`,
-  `rova-prod-app`, `rova-prod-mcp-access-aud`, `rova-prod-mcp-idempotency-secret`;
+- **prod (5 after the prune)**: `kb-prod-graph-cert`, `opshub-prod-graph-cert`, `rova-prod-graph-cert`,
+  `rova-prod-mcp-access-aud`, `rova-prod-mcp-idempotency-secret`;
 - **platform (4)**: the argocd `grafana-token`, `grafana-url`, `teams-webhook`, `webhook-secret`;
 - **dev (18)**: all ten `kb-dev-*`, `opshub-dev-db-readonly`, `opshub-dev-graph-cert`,
   `r2-backup-dev-rw-*` (2), `rova-dev-db-readonly`, `rova-dev-graph-cert`, `rova-dev-mcp-access-aud`,
