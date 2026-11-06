@@ -93,12 +93,13 @@ on a phone.
 ## Developer (read-only) — same steps, different outcome
 
 Same app, same kubeconfig, same command. RBAC gives `grp-qnsc-developers` the ClusterRole
-`qnsc-k8s-developer-readonly`: get/list/watch on pods (and `pods/log`), services, endpoints, configmaps, events,
+`qnsc-k8s-developer-readonly`: get/list/watch on pods (and `pods/log`), services, endpoints, events,
 namespaces, nodes, PVCs, workloads (apps/batch), ingresses/networkpolicies, HPAs, metrics, Argo CD objects.
 
 What a developer **cannot** do, by design:
 
-- read `secrets` — no `get` on secrets at all, even one's own app's;
+- read `secrets` **or `configmaps`** — both hold credentials here, so neither is in the cluster-wide role.
+  A team that needs a configmap gets a namespaced RoleBinding, decided on its own;
 - change anything (`apply`, `delete`, `scale`, `exec`). Those are admin actions; ask an admin or change the
   deployment through GitOps.
 
@@ -107,8 +108,11 @@ If a developer needs more than that, the fix is a role change discussed with the
 ## Day-to-day
 
 - `kubectl get/describe/logs` — works until the refresh token expires; when it does, kubelogin opens the
-  browser again. `kubelogin clean-cache` forces it early.
+  browser again. `kubelogin remove-tokens` forces it early.
 - `kubectl exec` and `kubectl port-forward` need cluster-admin; engineers do not get them by default.
+- **Audit lines show the object id**, not the UPN: the API server names the user `oidc:<object id>` because
+  that is the only immutable identifier (a UPN is renamed, and Entra can reissue a freed one). Map an id
+  when reading a log: `az ad user show --id <oid> --query userPrincipalName`.
 - ArgoCD, Grafana etc. keep their own sign-in; this page is only the API server.
 
 ## Break-glass: the admin kubeconfig
@@ -116,6 +120,9 @@ If a developer needs more than that, the fix is a role change discussed with the
 - The `/etc/rancher/k3s/k3s.yaml` copy (server `https://127.0.0.1:6443`, `system:admin`) is the **offline**
   break-glass. It lives in **1Password**, is fetched only when Entra or WARP is the thing that is broken, and
   is deleted from the machine after use.
+- It is **unaffected by the OIDC flags or by the restart**: it authenticates with the API server's client
+  certificate (`CN=system:admin`), a path that does not go through OIDC. That is exactly why it stays as the
+  last door.
 - Rule: a laptop that carries it does not also have it in shell history, `KUBECONFIG` exports or a synced
   folder.
 - It is not revoked by any day-to-day change; rotating it is its own owner action (`k3s` rewrites it on
@@ -129,4 +136,5 @@ If a developer needs more than that, the fix is a role change discussed with the
 | `error: You must be logged in to the server (Unauthorized)` before the browser | the token's audience/issuer does not match the flags: compare `--oidc-issuer-url` (v2.0 endpoint) with the app's `signInAudience` |
 | signed in, `forbidden` on everything | the `Groups:` line in `auth whoami` does not carry the expected group object id — see the setup step 4 |
 | `dial tcp … i/o timeout` | WARP is off, or you are not on the office VLAN |
+| `forbidden` for everyone at once, `auth whoami` shows no groups | the token carried no `groups` claim: Entra switches to an overage (`_claim_names`/`_claim_sources`) when a user is in **more than ~200 groups**, and the API server then sees no group. Reduce membership or use the object id allow-list pattern instead |
 | works, then asks for the browser again after about an hour | no refresh token: the app must request `offline_access` (it does) and kubelogin must ask for it (`--oidc-extra-scope=…,offline_access`). The Entra tenant's sign-in frequency policy can still force a new sign-in |
