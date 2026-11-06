@@ -330,6 +330,14 @@
       loop_control:
         label: "{{ item.name }}"
 
+    - name: Sudoers directory
+      ansible.builtin.file:
+        path: "{{ ssh_infra_sudoers_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
     - name: Sudo without a password (identity + MFA happen at Cloudflare)
       ansible.builtin.copy:
         dest: "{{ ssh_infra_sudoers_dir }}/qnsc-{{ item.name }}"
