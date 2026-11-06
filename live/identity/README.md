@@ -480,6 +480,75 @@ lookups; nothing is typed or committed):
    credential after a verified Access sign-in. The weekly expiry watch already
    covers it (metadata only).
 
+## Coder sign-in (`coder.tf`): app "Coder" + group grp-qnsc-vlsi
+
+The VLSI workspace platform (product-docs `projects/vlsi-platform/00_DESIGN.md` §5.2)
+signs users in with Coder's own Entra OIDC. It is the ONE sign-in app with no
+Cloudflare Access in front: Access breaks `coder` CLI, `coder ssh`, the workspace
+agents and the `/api/v2` websockets. The door is Coder's allow list, and Coder is
+not reachable from the public internet at all — live/edge routes `coder.qnsc.vn` and
+`*.coder.qnsc.vn` over WARP only (private hostname routes).
+
+Created here (nothing imported — the registration is new):
+
+- `azuread_group.vlsi` — **grp-qnsc-vlsi**, security group. Membership is managed in
+  the Entra admin center (`ignore_changes = [members]`); adding an engineer to the
+  VLSI team is adding them to this group.
+- `azuread_application.coder` — "Coder", single tenant, redirect
+  `https://coder.qnsc.vn/api/v2/users/oidc/callback`, delegated scopes
+  openid/profile/email/offline_access, `group_membership_claims = ["SecurityGroup"]`
+  and id-token optional claims `groups`, `email`, `preferred_username`.
+- its service principal (`app_role_assignment_required = false`) and the tenant-wide
+  delegated grant, so no user meets a consent prompt.
+
+Why the claim carries group OBJECT IDS: the tenant has no Entra ID P1, so
+`ApplicationGroup` / group-based app assignment is unavailable and `SecurityGroup` is
+the only form — the claim lists object ids. Coder compares the claim entries verbatim
+against `CODER_OIDC_ALLOWED_GROUPS`, so the allow list is the object id printed by
+`output grp_vlsi_id`.
+
+**`CODER_OIDC_GROUP_FIELD=groups` is required, not cosmetic.** In Coder's AGPL code
+(`coderd/idpsync/group.go`, `AGPLIDPSync.ParseGroupClaims`) the allow-list check runs
+only when the group field is set AND the list is non-empty; with the field unset the
+list is ignored silently. Group SYNC (mapping groups to Coder roles) is Premium and
+is not used.
+
+Owner steps:
+
+1. Apply (this adds 4 resources — group, app, service principal, delegated grant —
+   and creates no credential):
+
+   ```sh
+   scripts/owner/identity-env/identity-env.sh -- tofu apply -auto-approve tfplan
+   tofu output -json | jq '{coder_oidc_client_id, coder_signin_app_object_id, grp_vlsi_id, coder_oidc_issuer_url}'
+   ```
+
+2. Create the client secret OUT OF BAND — 6 months, straight into
+   `kv-qnsc-platform` (the `platform` ESO store's vault), never printed, never in
+   state:
+
+   ```sh
+   scripts/rotate-signin-secret.sh <coder_signin_app_object_id> kv-qnsc-platform coder-oidc-client-secret
+   ```
+
+   The weekly expiry watch reads that vault and covers the new secret automatically
+   (`kv-qnsc-platform` is a STRICT vault: a missing expiry is a FAIL).
+
+3. Record the two ids in the gitops values for the Coder deployment (lane D):
+   `coder_oidc_client_id` → `CODER_OIDC_CLIENT_ID`; `grp_vlsi_id` →
+   `CODER_OIDC_ALLOWED_GROUPS` (with `CODER_OIDC_GROUP_FIELD=groups`);
+   `coder_oidc_issuer_url` → `CODER_OIDC_ISSUER_URL`. The client secret reaches the
+   pod through ESO from `kv-qnsc-platform`, not through a values file.
+
+4. Add the VLSI engineers to **grp-qnsc-vlsi** in the Entra admin center. Anyone not
+   in it is refused by Coder after a successful Entra sign-in. The same group is what
+   live/edge enrolls in WARP (`ENTRA_GRP_VLSI_ID`) — membership is the single switch for
+   both halves.
+
+Pilot check before the team lands: sign in once as a member (works) and once as a
+non-member (Coder refuses with "Not a member of an allowed group"), and confirm from a
+non-member's WARP client that `coder.qnsc.vn` does not resolve.
+
 ## Proxmox VE + PBS login (`proxmox.tf`): app "QNSC Proxmox", plan, secret
 
 Adds the Entra half of the Proxmox VE and Proxmox Backup Server OpenID realms;
