@@ -59,7 +59,7 @@ resource "grafana_rule_group" "onprem_crashloop_prod" {
           "max by (namespace, pod, container) (",
           "  kube_pod_container_status_waiting_reason{",
           "    reason=\"CrashLoopBackOff\",",
-          "    namespace=~\"rova-prod|opshub-prod|kb-prod|platform|argocd|data-prod|restore-test\"",
+          "    namespace=~\"rova-prod|opshub-prod|kb-prod|ai|platform|argocd|data-prod|restore-test\"",
           "  }",
           ") > 0",
         ])

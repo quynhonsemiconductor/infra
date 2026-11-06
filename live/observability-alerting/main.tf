@@ -326,14 +326,14 @@ resource "grafana_notification_policy" "root" {
   # did not opt in. Ordered before the prod children: a matched child stops the
   # list only when `continue = false`, and this one continues so email still
   # fires from the root.
+  # OPT-IN PAGE, ANY ENV: a rule that must reach Teams adds `paging = "teams"`.
+  # This used to require env=development as well; the authenticated-429 rules
+  # are prod warnings that must page, so the matcher is now `paging` alone.
+  # Dev still defaults to email (root); prod criticals are matched by the child
+  # below regardless of this one.
   dynamic "policy" {
     for_each = local.alerting_enabled ? [1] : []
     content {
-      matcher {
-        label = "env"
-        match = "="
-        value = "development"
-      }
       matcher {
         label = "paging"
         match = "="
@@ -344,6 +344,13 @@ resource "grafana_notification_policy" "root" {
     }
   }
 
+  # PROD TEAMS = CRITICAL ONLY (audit 2026-11-06). The matcher used to be
+  # env=production alone, so every prod warning (filesystem 80%, NVMe wear,
+  # MCP write spike, 429, crashloop) paged Teams: the noise source. Now Teams
+  # is for `severity = "critical"`; prod warnings fall through to the email
+  # child below. A warning that MUST page carries `paging = "teams"`, caught by
+  # the dev/opt-in child above — that is how the authenticated-429 rules keep
+  # their no-friction page.
   dynamic "policy" {
     for_each = local.alerting_enabled ? [1] : []
     content {
@@ -351,6 +358,11 @@ resource "grafana_notification_policy" "root" {
         label = "env"
         match = "="
         value = "production"
+      }
+      matcher {
+        label = "severity"
+        match = "="
+        value = "critical"
       }
       contact_point = grafana_contact_point.teams[0].name
       continue      = true
@@ -370,7 +382,7 @@ resource "grafana_notification_policy" "root" {
 # ── SERIES CAP: one rule, in billable-alert.tf ──────────────────────────────
 # This group used to carry two more copies of the cap signal (active-series
 # count at 70% and 80%). The audit (S-H3) found five rules firing on the same
-# condition; billable-alert.tf now owns the only warning (8,000) and critical
+# condition; billable-alert.tf now owns the only warning (9,000 since 2026-11-06) and critical
 # (10,000) pair on the org BILLABLE meter, which is the one the Free cap
 # actually enforces. The System Overview dashboard keeps the active-series
 # panel above for eyeballing the number.

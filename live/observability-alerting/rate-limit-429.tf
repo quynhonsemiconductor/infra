@@ -167,6 +167,9 @@ resource "grafana_rule_group" "prod_rate_limit_429" {
       product  = each.value.product
       env      = "production" # matches the notification policy matcher, NOT "prod"
       severity = "warning"
+      # Warnings reach email only since the 2026-11-06 severity split; a
+      # refused tier is a page, so opt in explicitly (policy matcher: paging).
+      paging = "teams"
     }
 
     annotations = {

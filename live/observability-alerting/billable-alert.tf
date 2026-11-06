@@ -5,9 +5,13 @@
 # series copies in main.tf were removed (S-H3); the billable meter is the one
 # whose breach drops series at ingestion. Two tiers:
 #
-#   WARNING (> 8,000, email only): no `env` label on purpose — the same
+#   WARNING (> 9,000, email only): no `env` label on purpose — the same
 #   pattern as every other platform rule — so the notification policy's root
 #   (devops@) handles it and the Teams child (env=production) never matches.
+#   The threshold was 8,000, which the meter sits at in steady state (7.5-8.2k
+#   measured 2026-11-06), so the warning fired chronically and trained people
+#   to ignore it. 9,000 keeps ~1,000 of headroom before the 10,000 cap — the
+#   critical tier owns the actual breach; the warning now means "rising".
 #
 #   CRITICAL (> 10,000, Teams + devops@, `for` 1 h): ALWAYS ARMED since
 #   2026-11-04. The former `billable_critical_enabled` gate was dropped with
@@ -84,7 +88,7 @@ resource "grafana_rule_group" "billable_series" {
           {
             evaluator = {
               type   = "gt"
-              params = [8000]
+              params = [9000]
             }
           }
         ]
@@ -99,7 +103,7 @@ resource "grafana_rule_group" "billable_series" {
     }
 
     annotations = {
-      summary = "Org billable series is above the Free tier's included allowance (warning line). Series are at risk of being dropped at ingestion; the recorded reductions (Adaptive Metrics rules, infra#213) bring this back down — re-measure 48 h after they apply."
+      summary = "Org billable series is above 9,000, closing on the Free tier's 10,000 cap. Series are at risk of being dropped at ingestion; the recorded reductions (Adaptive Metrics rules, infra#213) bring this back down — re-measure 48 h after they apply."
     }
   }
 
