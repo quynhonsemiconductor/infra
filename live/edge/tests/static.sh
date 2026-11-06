@@ -31,7 +31,16 @@ done <<EOF
 $hits
 EOF
 
-# Belt and braces: no scalar or indexed comparison, in code or comment.
+# 2. Identity selectors live in the policy's `identity` attribute, NEVER inside `traffic`: the API
+#    rejects that with 400 code 2091 "expression contains fields that are not allowed for rule-type
+#    traffic" (2026-11-06, the same resource's third failure). The `traffic` and `identity` attributes
+#    are separate wirefilter expressions in the Gateway rule (Cloudflare API reference, Gateway rules:
+#    traffic / identity / device_posture).
+in_traffic=$(grep -rnE 'traffic[[:space:]]*=.*identity\.' --include='*.tf' . || true)
+[ -z "$in_traffic" ] || fail "an identity selector is inside a traffic expression — move it to the policy's identity attribute:
+$in_traffic"
+
+# 3. Belt and braces: no scalar or indexed comparison, in code or comment.
 bad=$(grep -rnE 'identity\.groups\.id(\[\*\])?[[:space:]]*(==|!=)' --include='*.tf' . || true)
 [ -z "$bad" ] || fail "identity.groups.id compared with ==/!= — it is an Array(Bytes); use any(...[*] in {...}):
 $bad"
