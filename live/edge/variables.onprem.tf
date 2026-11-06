@@ -36,6 +36,22 @@ variable "grp_platform_admins_id" {
   description = "Entra object id of grp-qnsc-platform-admins. TF_VAR_grp_platform_admins_id (repo variable)."
 }
 
+# grp-qnsc-vlsi (live/identity coder.tf, output grp_vlsi_id). EMPTY means the VLSI team
+# is not enrolled yet: no WARP enrollment entry and no Gateway network policy is created,
+# so nothing widens and there is no half-guarded state (a group that can reach the tunnel
+# but is not covered by the block policy is exactly the mistake this gates against).
+# The owner sets the repo variable ENTRA_GRP_VLSI_ID after the identity apply prints the id.
+variable "grp_vlsi_id" {
+  type        = string
+  default     = ""
+  description = "Entra object id of grp-qnsc-vlsi. TF_VAR_grp_vlsi_id (repo variable ENTRA_GRP_VLSI_ID). Empty = VLSI access is off: nobody new can enroll and no gateway policy is created."
+
+  validation {
+    condition     = var.grp_vlsi_id == "" || can(regex("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", var.grp_vlsi_id))
+    error_message = "grp_vlsi_id must be empty or the Entra group OBJECT id (a GUID). A display name would silently never match."
+  }
+}
+
 variable "grp_developers_id" {
   type        = string
   description = "Entra object id of grp-qnsc-developers. TF_VAR_grp_developers_id (repo variable)."

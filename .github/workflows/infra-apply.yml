@@ -138,7 +138,7 @@ jobs:
           else
             CHANGED="$(git diff --name-only "$BEFORE" "$AFTER")"
             echo "Changed files:"; echo "$CHANGED"
-            if echo "$CHANGED" | grep -qE '^\.github/(workflows/infra-apply\.yml|scripts/(plan-fingerprint|ssh-targets-guard)\.sh)$'; then
+            if echo "$CHANGED" | grep -qE '^\.github/(workflows/infra-apply\.yml|scripts/(plan-fingerprint|ssh-targets-guard|tofu-error)\.sh)$'; then
               sel="$DEFAULT"
             else
               for s in $KNOWN; do
@@ -228,7 +228,11 @@ jobs:
         run: bash "$GITHUB_WORKSPACE/.github/scripts/ssh-targets-guard.sh"
         env:
           SSH_INFRA_TARGETS: ${{ secrets.SSH_INFRA_TARGETS }}
-          ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          # READ identity, exactly as the init and plan steps in THIS job: the write
+          # identity's federated credential is bound to environment:production, and this job
+          # deliberately has no environment, so a write id here fails the token exchange
+          # (AADSTS700213, subject ref:refs/heads/main). Fix: keep the two in step.
+          ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID_READ }}
           ARM_TENANT_ID: ${{ vars.ENTRA_TENANT_ID }}
           ARM_USE_OIDC: 'true'
 
@@ -246,7 +250,7 @@ jobs:
           set -e
           if [ "$ec" = "1" ]; then
             if [ "$STACK" = "edge" ]; then
-              sed -n '/^╷/,/^╵/p' plan.txt
+              bash "$GITHUB_WORKSPACE/.github/scripts/tofu-error.sh" plan.txt
             else
               cat plan.txt
             fi | sed -E 's/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/<redacted>/g' >&2
@@ -279,6 +283,7 @@ jobs:
           TF_VAR_grp_developers_id:     ${{ vars.ENTRA_GRP_DEVELOPERS_ID }}
           TF_VAR_grp_dev_users_id:    ${{ vars.ENTRA_GRP_DEV_USERS_ID }}
           TF_VAR_grp_staff_id: ${{ vars.ENTRA_GRP_STAFF_ID }}
+          TF_VAR_grp_vlsi_id:           ${{ vars.ENTRA_GRP_VLSI_ID }}
           TF_VAR_entra_tenant_id:       ${{ vars.ENTRA_TENANT_ID }}
           TF_VAR_entra_idp_client_id:   ${{ vars.ENTRA_IDP_CLIENT_ID }}
           TF_VAR_entra_idp_client_secret: ${{ secrets.ENTRA_IDP_CLIENT_SECRET }}
@@ -517,8 +522,9 @@ jobs:
           echo "tofu plan detailed exit code: $ec (0=no change, 2=changes, 1=error)"
           echo "exitcode=$ec" >> "$GITHUB_OUTPUT"
           if [ "$ec" = "1" ]; then
-            # Diagnostics only: the `╷ … ╵` error boxes, never the plan body (values masked by the guard).
-            sed -n '/^╷/,/^╵/p' plan.txt >&2
+            # Diagnostics only — the boxes or the plain Error block; never the plan body. Values are
+            # masked by the guard (::add-mask:: on every SSH target string and node name).
+            bash "$GITHUB_WORKSPACE/.github/scripts/tofu-error.sh" plan.txt >&2
             exit 1
           fi
         env:
@@ -551,9 +557,20 @@ jobs:
           TF_VAR_grp_developers_id: ${{ vars.ENTRA_GRP_DEVELOPERS_ID }}
           TF_VAR_grp_dev_users_id: ${{ vars.ENTRA_GRP_DEV_USERS_ID }}
           TF_VAR_grp_staff_id: ${{ vars.ENTRA_GRP_STAFF_ID }}
+          TF_VAR_grp_vlsi_id: ${{ vars.ENTRA_GRP_VLSI_ID }}
           TF_VAR_entra_tenant_id: ${{ vars.ENTRA_TENANT_ID }}
           TF_VAR_entra_idp_client_id: ${{ vars.ENTRA_IDP_CLIENT_ID }}
           TF_VAR_entra_idp_client_secret: ${{ secrets.ENTRA_IDP_CLIENT_SECRET }}
+
+      # The check block in coder.tf fires inside the plan text, which this job never prints. Surface its one
+      # actionable line as an annotation (our own message; no private value).
+      - name: Stale Gateway policy notice (edge)
+        if: steps.plan.outputs.exitcode == '2'
+        working-directory: live/edge
+        run: |
+          if grep -q 'Default deny for private traffic' plan.txt; then
+            echo "::warning title=stale gateway policy::The hand-made 'Default deny for private traffic' (Block, disabled since 2026-07-09, not in IaC) still exists. Delete it: Gateway -> Firewall policies -> that rule -> Delete. Deleting a disabled rule changes no traffic; it duplicates the per-group block in coder.tf."
+          fi
 
       # APPROVE WHAT YOU SAW: the plan above ran with the write credentials; its fingerprint (sha256 of the sorted
       # "<address> <action>" lines) must equal the one the plan stage showed for approval, else nothing is applied.
@@ -594,8 +611,11 @@ jobs:
           tofu apply -input=false -no-color tfplan > apply.txt 2>&1
           ec=$?
           if [ "$ec" != "0" ]; then
-            sed -n '/^╷/,/^╵/p' apply.txt >&2
-            echo "::error::edge apply failed (exit $ec); apply text withheld because it carries private SSH targets" >&2
+            # The error, never the body: a failed apply on 2026-11-06 printed nothing and had to be
+            # diagnosed from the dashboard. tofu-error.sh prints the boxes (or the plain Error block)
+            # and has an offline test that proves both shapes.
+            bash "$GITHUB_WORKSPACE/.github/scripts/tofu-error.sh" apply.txt >&2
+            echo "::error::edge apply failed (exit $ec); only the error diagnostics above are printed (the body carries private SSH targets)" >&2
             exit "$ec"
           fi
           echo "edge apply: done (text withheld because it carries private SSH targets)"
@@ -935,6 +955,9 @@ jobs:
           owner: quynhonsemiconductor
           permission-administration: write
           permission-environments: write
+          # The team grants for qnsc-eda: the endpoint needs repo admin (above)
+          # and the ability to see the team. Nothing else is requested.
+          permission-members: read
 
       - name: tofu init
         working-directory: live/github

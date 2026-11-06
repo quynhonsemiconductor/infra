@@ -102,10 +102,14 @@ locals {
     # 100 GiB free is ~8%, where PostgreSQL's WAL and a base backup can still
     # consume the rest in a day. Absolute, so it does not shift with pool size.
     db_storage_free = {
-      name      = "k3s-db-storage-free-below-100g"
-      expr      = "node_filesystem_avail_bytes{mountpoint=\"/var/lib/rancher/k3s/storage\", fstype!~\"tmpfs|overlay|squashfs\"} < 100 * 1024^3"
-      op        = "gt"
-      threshold = 0
+      name = "k3s-db-storage-free-below-100g"
+      # Raw free bytes here; the 100 GiB floor is the rule's threshold below.
+      # A pre-filtered expression (the old `< 100 * 1024^3`) returns nothing
+      # while the disk is healthy, which the 7-day data guard reads as a
+      # broken selector.
+      expr      = "node_filesystem_avail_bytes{mountpoint=\"/var/lib/rancher/k3s/storage\", fstype!~\"tmpfs|overlay|squashfs\"}"
+      op        = "lt"
+      threshold = 100 * 1024 * 1024 * 1024
       for       = "15m"
       no_data   = "OK"
       product   = "platform"
