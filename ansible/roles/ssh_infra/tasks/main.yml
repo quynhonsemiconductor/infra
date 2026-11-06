@@ -50,6 +50,9 @@
 - name: Work out the removed accounts (independent of the current list size)
   ansible.builtin.set_fact:
     ssh_infra_removed_names: "{{ ssh_infra_old_names | difference(ssh_infra_desired_names) }}"
+- name: Does this node carry any SSH-access state
+  ansible.builtin.set_fact:
+    ssh_infra_has_state: "{{ (ssh_infra_host_users | length) > 0 or (ssh_infra_old_names | length) > 0 }}"
   tags: [ssh_infra]
 
 - name: Remove the Access for Infrastructure trust when disabled
@@ -115,7 +118,7 @@
           - >-
             s=$(getent shadow "$1" || true); pw=${s#*:}; pw=${pw%%:*};
             exp=$(printf '%s' "$s" | cut -d: -f8);
-            if [ "${pw#!}" != "${pw}" ] && [ "${exp}" = "1" ] && [ ! -e "/home/$1/.ssh/authorized_keys" ]; then
+            if [ "${pw#!}" != "${pw}" ] && [ -n "${exp}" ] && [ "${exp}" -le 1 ] && [ ! -e "/home/$1/.ssh/authorized_keys" ]; then
               echo reusable;
             else
               echo not;
@@ -428,6 +431,7 @@
   ansible.builtin.stat:
     path: "{{ ssh_infra_sudoers_dir }}"
   register: ssh_infra_sudoers_stat
+  when: ssh_infra_has_state | bool
   tags: [ssh_infra]
 
 - name: Find managed sudoers files
@@ -436,7 +440,9 @@
     patterns: "qnsc-*"
     file_type: file
   register: ssh_infra_sudoers_files
-  when: ssh_infra_sudoers_stat.stat.exists
+  when:
+    - ssh_infra_has_state | bool
+    - ssh_infra_sudoers_stat.stat.exists
   tags: [ssh_infra]
 
 - name: Remove sudo from accounts not listed for this node
@@ -444,7 +450,9 @@
     path: "{{ item.path }}"
     state: absent
   loop: "{{ ssh_infra_sudoers_files.files | default([]) }}"
-  when: (item.path | basename | regex_replace('^qnsc-', '')) not in ssh_infra_desired_names
+  when:
+    - ssh_infra_has_state | bool
+    - (item.path | basename | regex_replace('^qnsc-', '')) not in ssh_infra_desired_names
   loop_control:
     label: "{{ item.path | basename }}"
   tags: [ssh_infra]
@@ -453,6 +461,7 @@
   ansible.builtin.stat:
     path: "{{ ssh_infra_principals_dir }}"
   register: ssh_infra_principals_stat
+  when: ssh_infra_has_state | bool
   tags: [ssh_infra]
 
 - name: Find certificate principal files
@@ -460,7 +469,9 @@
     paths: "{{ ssh_infra_principals_dir }}"
     file_type: file
   register: ssh_infra_principal_files
-  when: ssh_infra_principals_stat.stat.exists
+  when:
+    - ssh_infra_has_state | bool
+    - ssh_infra_principals_stat.stat.exists
   tags: [ssh_infra]
 
 - name: Remove the principal file of an account not listed for this node
@@ -468,7 +479,9 @@
     path: "{{ item.path }}"
     state: absent
   loop: "{{ ssh_infra_principal_files.files | default([]) }}"
-  when: (item.path | basename) not in ssh_infra_desired_names
+  when:
+    - ssh_infra_has_state | bool
+    - (item.path | basename) not in ssh_infra_desired_names
   loop_control:
     label: "{{ item.path | basename }}"
   tags: [ssh_infra]
@@ -492,4 +505,16 @@
     owner: root
     group: root
     mode: "0644"
+  when: ssh_infra_has_state | bool
+  tags: [ssh_infra]
+
+# The run stays RED until every lock succeeded; failed names remain in the marker for a retry.
+- name: Every offboarded lock must succeed
+  ansible.builtin.assert:
+    that: (ssh_infra_failed_locks | default([]) | length) == 0
+    fail_msg: >-
+      {{ ssh_infra_failed_locks | join(', ') }} could not be locked. The marker keeps the name(s);
+      fix the cause and re-run. The play fails until the lock succeeds.
+    quiet: true
+  when: ssh_infra_has_state | bool
   tags: [ssh_infra]

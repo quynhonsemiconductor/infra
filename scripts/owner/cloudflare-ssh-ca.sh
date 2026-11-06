@@ -32,6 +32,11 @@ token="${CLOUDFLARE_API_TOKEN:-}"
   echo "STOP: CLOUDFLARE_ACCOUNT_ID must be the 32-hex account id (confirm it in the dashboard)" >&2
   exit 1
 }
+# The token goes into a curl config line; keep it to the API token charset.
+[[ "$token" =~ ^[A-Za-z0-9_-]+$ ]] || {
+  echo "STOP: CLOUDFLARE_API_TOKEN contains characters outside [A-Za-z0-9_-]" >&2
+  exit 1
+}
 command -v curl >/dev/null || { echo "STOP: need curl" >&2; exit 1; }
 command -v jq >/dev/null || { echo "STOP: need jq" >&2; exit 1; }
 

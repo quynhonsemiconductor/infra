@@ -11,7 +11,7 @@
 # owner environment file). Empty = feature off (plan unchanged).
 #
 #   {
-#     "ai-01": { "hostname": "ai-01", "ipv4": "192.0.2.21", "usernames": ["<login>"] }
+#     "<gpu-node>": { "hostname": "<gpu-node>", "ipv4": "<gpu-node address>", "usernames": ["<login>"] }
 #   }
 #
 # The account's GATEWAY CA is not exposed by the provider (the
@@ -29,7 +29,7 @@ variable "ssh_infra_targets" {
   default     = {}
   description = <<-EOT
     Access for Infrastructure SSH targets, keyed by node. hostname is the friendly target name, ipv4 the node's
-    address on the admin VLAN, usernames the UNIX accounts a matching admin may use (they must exist on the node
+    address, usernames the UNIX accounts a matching admin may use (they must exist on the node
     and be listed in the LOCAL Ansible inventory node_admin_users). Supplied as TF_VAR_ssh_infra_targets (JSON) from
     a repo secret/owner env file; no address or person name is committed to this public repo. Empty = no SSH targets.
   EOT

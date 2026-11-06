@@ -216,8 +216,9 @@ GPU node, writes a `sudoers.d` file when `sudo: true`, and a principal file
 containing exactly the login name. Reserved/operator names (`root`, `qnsc`,
 `ubuntu`, system accounts) are refused, and so is any pre-existing account this
 role did not create. Removed from the list → the account is locked (expiry in
-the past), its sudoers and principal files are removed, and the home stays; the
-name stays in the marker so a failed lock is retried next run. An empty CA key
+the past), its active sessions are killed, its sudoers and principal files are
+removed, and the home stays; only a FAILED lock stays in the marker for a
+retry. Re-adding the account clears the lock and the expiry. An empty CA key
 **removes** the drop-in, `/etc/ssh/ca.pub` and the principal directory (a real
 revoke, not a silent skip). The break-glass operator account is never touched.
 
@@ -230,8 +231,9 @@ Re-run the same command: `changed=0`.
 
 **Dry-run a removal** (proves offboarding before it happens): delete one
 `node_admin_users` entry, run `--check --diff`; expect
-`would lock <login> (home kept) and remove its certificate principal`. Re-add
-the entry to cancel, or run without `--check` to complete the offboarding.
+`would lock <login> (home kept), kill its sessions and remove its sudo and
+certificate principal`. Re-add the entry to cancel, or run without `--check` to
+complete the offboarding.
 
 ### 3. Verify
 

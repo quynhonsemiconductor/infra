@@ -65,9 +65,10 @@ jobs:
           printf '%s\n' "$out"
           grep -q "would lock daemon" <<<"$out"
 
-      # Re-adding an offboarded account (locked + expired) must report a
-      # re-enable, not refuse it as a foreign account. --check; /tmp paths.
-      - name: SSH re-add path (--check)
+      # Re-adding an offboarded account (locked + expired) must clear the lock
+      # and expiry for real. --check first, then a real run on /tmp paths;
+      # asserts passwd/chage state and that the account is not locked.
+      - name: SSH re-add path (check + real)
         shell: bash
         run: |
           set -euo pipefail
@@ -75,8 +76,15 @@ jobs:
           sudo useradd -m qnsc-test-admin
           sudo usermod -L -e 1 qnsc-test-admin
           if ! out=$(ansible-playbook -i localhost, -c local --check tests/ssh_infra_readd.yml 2>&1); then
-            printf '%s\n' "$out"
-            exit 1
+            printf '%s\n' "$out"; exit 1
           fi
           printf '%s\n' "$out"
           grep -q "would re-enable qnsc-test-admin" <<<"$out"
+          if ! out=$(ansible-playbook -i localhost, -c local tests/ssh_infra_readd.yml 2>&1); then
+            printf '%s\n' "$out"; exit 1
+          fi
+          printf '%s\n' "$out"
+          state=$(passwd -S qnsc-test-admin | awk '{print $2}')
+          [ "$state" != "L" ] || { echo "qnsc-test-admin is still locked"; exit 1; }
+          chage -l qnsc-test-admin | grep -qi '^Account expires.*never' \
+            || { chage -l qnsc-test-admin; echo "expiry was not cleared"; exit 1; }

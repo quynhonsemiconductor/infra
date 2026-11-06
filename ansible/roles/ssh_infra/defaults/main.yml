@@ -8,7 +8,7 @@
 # Values (LOCAL inventory, git-ignored):
 #   node_ssh_ca_public_key: "ssh-ed25519 AAAA... "   # scripts/owner/cloudflare-ssh-ca.sh
 #   node_admin_users:
-#     - { name: <login>, sudo: true, hosts: [ai-01] }
+#     - { name: <login>, sudo: true, hosts: ["<gpu-node>"] }
 #
 # The unprefixed inventory names are aliased here so the role keeps its own
 # prefix without making the owner's inventory awkward.
