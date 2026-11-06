@@ -1,0 +1,63 @@
+# =============================================================================
+# One-off, manual: delete the AWS-era rova alert group and SLO that filter a
+# label value on-prem never emits (audit S-H1, 2026-11-04).
+#
+# OWNER SETUP before the first run (one-time):
+#   1. Create a Grafana token scoped to delete alert rules/SLOs and store it as
+#      repo secret GRAFANA_DELETE_TOKEN. Do NOT reuse GRAFANA_ALERTS_TOKEN
+#      (the daily health check) for a destructive run.
+#   2. Settings -> Environments -> `alerting-prod`, add required reviewers.
+#      The job cannot run until that approval.
+#
+# Run from Actions -> "Prune dead AWS-era alerts" -> Run workflow.
+#   apply = false (default): dry run, prints every match, changes nothing.
+#   apply = true:           requires confirm = "DELETE rova (production)".
+#
+# The script itself pins the six exact rule titles and the folder UID, and
+# aborts if the matched set differs. This workflow is the second lock, not the
+# only one.
+# =============================================================================
+name: Prune dead AWS-era alerts
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: "Actually delete (leave false for a dry run)"
+        type: boolean
+        default: false
+      confirm:
+        description: 'Type DELETE rova (production) to arm a delete run'
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  prune:
+    name: rova (production) rules + SLO
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Protected environment: add required reviewers in repo settings. The job
+    # waits for that approval before it can read GRAFANA_DELETE_TOKEN.
+    environment: alerting-prod
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Prune
+        env:
+          GRAFANA_DELETE_TOKEN: ${{ secrets.GRAFANA_DELETE_TOKEN }}
+          # Pass inputs through env, never interpolate them into the shell.
+          APPLY: ${{ inputs.apply }}
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [ "$APPLY" = "true" ]; then
+            args+=(--apply --confirm "$CONFIRM")
+          fi
+          python3 scripts/prune_dead_rova_alerts.py "${args[@]}" | tee -a "$GITHUB_STEP_SUMMARY"

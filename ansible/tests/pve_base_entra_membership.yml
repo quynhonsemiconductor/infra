@@ -1,0 +1,179 @@
+---
+# Offline regression check for the PVE Entra membership/offboarding expressions.
+# It includes the ROLE'S OWN vars/entra_membership.yml (not a re-implementation),
+# so the test and the role cannot drift.
+#
+# The original bug: `selectattr('userid', 'match', '@entra$')` anchors at the
+# START (Jinja match == re.match), so it matched nothing and offboarding never
+# removed an account. The shared expression uses `search`.
+- name: PVE Entra membership selectors
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    pve_base_entra_realm: entra
+    pve_base_entra_group_id: g-entra
+    pve_base_entra_admin_emails: ["bob@example.com"]
+    # alice is no longer listed; bob is; carol is a suffix decoy; root is PAM.
+    sim_users:
+      - userid: "alice@example.com@entra"
+        groups: "g-entra"
+      - userid: "bob@example.com@entra"
+        groups: "g-entra,other"
+      - userid: "carol@example.com@entra-other"
+        groups: ""
+      - userid: "root@pam"
+        groups: ""
+    pve_base_entra_users:
+      stdout: "{{ sim_users | to_json }}"
+  tasks:
+    - name: Load the role's own membership expressions
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../roles/pve_base/vars/entra_membership.yml"
+
+    - name: The role's selector matches by suffix and drops the removed admin
+      ansible.builtin.assert:
+        that:
+          - pve_base_entra_realm_users | map(attribute='userid') | list == ['alice@example.com@entra', 'bob@example.com@entra']
+          - pve_base_entra_removed_users | map(attribute='userid') | list == ['alice@example.com@entra']
+          # the OLD filter (match) selects nothing: this is the regression guard
+          - (sim_users | selectattr('userid', 'match', '@' ~ pve_base_entra_realm ~ '$') | list | length) == 0
+        quiet: true
+
+    - name: The removed account loses the admin group but keeps other groups
+      ansible.builtin.set_fact:
+        sim_alice_groups: >-
+          {{ (pve_base_entra_removed_users | selectattr('userid', 'equalto', 'alice@example.com@entra') | first).groups
+             | split(',') | map('trim') | reject('equalto', '')
+             | reject('equalto', pve_base_entra_group_id) | join(',') }}
+        sim_bob_groups: >-
+          {{ (sim_users | selectattr('userid', 'equalto', 'bob@example.com@entra') | first).groups
+             | split(',') | map('trim') | reject('equalto', '')
+             | reject('equalto', pve_base_entra_group_id) | join(',') }}
+
+    - name: Group removal leaves alice without the admin group
+      ansible.builtin.assert:
+        that:
+          - pve_base_entra_group_id not in sim_alice_groups.split(',')
+          - sim_bob_groups == 'other'
+        quiet: true
+
+    # An EXPLICITLY empty list must still prune (unset is different: that is the
+    # PVE-only inventory case and is asserted by the role's manage_admins gate).
+    - name: An explicit empty admin list prunes every realm user
+      ansible.builtin.set_fact:
+        pve_base_entra_admin_emails: []
+        pve_base_entra_users:
+          stdout: "{{ sim_users | to_json }}"
+
+    - name: Re-evaluate the shared expressions with an empty list
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../roles/pve_base/vars/entra_membership.yml"
+
+    - name: Both realm users are now removed from the admin group
+      ansible.builtin.assert:
+        that:
+          - pve_base_entra_removed_users | map(attribute='userid') | list == ['alice@example.com@entra', 'bob@example.com@entra']
+        quiet: true
+
+    # ── idempotency of the add / remove decisions (the changed=1-every-run bug) ──
+    #
+    # The role's add and remove loops use THESE lists. With the group id written in a case
+    # different from what PVE stored (a paste from Entra, or a hand-made group) and a group
+    # list padded with spaces, nothing may be added or removed: a converged host plans zero
+    # changes. set_fact (not play vars) because the earlier tasks in this play used facts.
+    - name: A host with mixed-case and space-padded group membership
+      ansible.builtin.set_fact:
+        pve_base_entra_group_id: "ABCDEF01-2345-6789-ABCD-EF0123456789-entra"
+        pve_base_entra_admin_emails: ["bob@example.com", "dave@example.com"]
+        pve_base_entra_users:
+          stdout: >-
+            {{ [
+                 {'userid': 'Bob@Example.com@entra', 'groups': ' abcdef01-2345-6789-abcd-ef0123456789-entra , other'},
+                 {'userid': 'carol@example.com@entra', 'groups': 'ABCDEF01-2345-6789-ABCD-EF0123456789-entra'},
+                 {'userid': 'dave@example.com@entra', 'groups': 'other'},
+                 {'userid': 'root@pam', 'groups': ''}
+               ] | to_json }}
+
+    - name: Re-evaluate the role's expressions against that host
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../roles/pve_base/vars/entra_membership.yml"
+
+    - name: Bob already has the group in another case; only Dave is added
+      ansible.builtin.assert:
+        that:
+          - pve_base_entra_group_adds | map(attribute='userid') | list == ['dave@example.com@entra']
+        quiet: true
+
+    - name: Only the unlisted Carol is removed
+      ansible.builtin.assert:
+        that:
+          - pve_base_entra_group_removals | map(attribute='userid') | list == ['carol@example.com@entra']
+        quiet: true
+
+    - name: The role's --groups rebuild drops the case-variant duplicate
+      ansible.builtin.assert:
+        that:
+          - >-
+            (pve_base_entra_membership_json | from_json
+             | selectattr('userid', 'equalto', 'Bob@Example.com@entra') | first
+            ).groups
+            | reject('search', '(?i)^' ~ (pve_base_entra_group_id | regex_escape) ~ '$')
+            | list == ['other']
+        quiet: true
+
+    - name: A converged host has nothing to add and nothing to remove
+      ansible.builtin.set_fact:
+        pve_base_entra_users:
+          stdout: >-
+            {{ [
+                 {'userid': 'bob@example.com@entra', 'groups': 'abcdef01-2345-6789-abcd-ef0123456789-entra'},
+                 {'userid': 'dave@example.com@entra', 'groups': 'other,abcdef01-2345-6789-abcd-ef0123456789-entra'}
+               ] | to_json }}
+
+    - name: Re-evaluate against the converged host
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../roles/pve_base/vars/entra_membership.yml"
+
+    - name: Neither list has an entry
+      ansible.builtin.assert:
+        that:
+          - pve_base_entra_group_adds | length == 0
+          - pve_base_entra_group_removals | length == 0
+        quiet: true
+
+
+    # A user the shared list wants but the realm read does not show yet is CREATED in the same
+    # run, so the add list must contain it too — otherwise a brand-new admin only reaches the
+    # group on the second run (review round 3).
+    - name: A brand-new admin converges in one run
+      ansible.builtin.set_fact:
+        pve_base_entra_group_id: g-entra
+        pve_base_entra_admin_emails: ["bob@example.com", "erin@example.com"]
+        pve_base_entra_users:
+          stdout: >-
+            {{ [{'userid': 'bob@example.com@entra', 'groups': ''}] | to_json }}
+
+    - name: Re-evaluate with the new admin absent from the read
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../roles/pve_base/vars/entra_membership.yml"
+
+    - name: The newly created user joins the group in the same run
+      ansible.builtin.assert:
+        that:
+          - pve_base_entra_group_adds | map(attribute='userid') | list == ['bob@example.com@entra', 'erin@example.com@entra']
+        quiet: true
+
+    - name: Nobody is added twice when the same user exists and lacks the group
+      ansible.builtin.assert:
+        that:
+          - pve_base_entra_group_adds | map(attribute='userid') | unique | list | length == (pve_base_entra_group_adds | length)
+        quiet: true
+
+    # CI runs this file and the two gate files in ONE invocation, and set_fact facts are
+    # host-wide: leave the host in the state the NEXT file sets up for itself (it asserts on an
+    # empty list). Without this the gate test fails on facts this file created.
+    - name: Hand the host back in the shape the next test file expects
+      ansible.builtin.set_fact:
+        pve_base_entra_group_id: g-entra
+        pve_base_entra_admin_emails: []

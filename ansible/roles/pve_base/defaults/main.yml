@@ -28,3 +28,90 @@ pve_base_zfs_properties:
 
 # Header comment of the files this role writes (group_vars/all.yml sets qnsc_ansible_managed).
 pve_base_managed_comment: "{{ qnsc_ansible_managed | default('Managed by infra/ansible. Do not edit by hand.') }}"
+
+# Notifications: warnings and errors (failed backup jobs, replication, fencing, ...) go to the platform Teams
+# channel through a Teams *Workflows* webhook, which posts only an Adaptive Card message (files/teams-webhook-body.json,
+# Proxmox Handlebars template). PVE only accepts a literal https URL, so the endpoint keeps the host in plain text and
+# the rest of the webhook URL (path and query, with the signature) as the endpoint secret "path" (root-only /etc/pve/priv),
+# never read back. It comes from the environment of the run, only when the endpoint is created
+# or rotated:
+#   op run --env-file=<local template> -- ansible-playbook pve-host.yml --tags pve_base_notify
+# The built-in default-matcher (mail-to-root) is left as it is.
+pve_base_notify_teams: true
+pve_base_notify_teams_endpoint: teams
+pve_base_notify_teams_matcher: teams-warnings-errors
+pve_base_notify_teams_severities: [warning, error]
+pve_base_notify_teams_webhook_url: "{{ lookup('ansible.builtin.env', 'TEAMS_WEBHOOK_URL') }}"
+# Set true (-e pve_base_notify_teams_rotate=true) to replace the stored URL with the one from the environment.
+pve_base_notify_teams_rotate: false
+
+# ── Entra OpenID login ──────────────────────────────────────────────────────
+# The realm is backed by the "QNSC Proxmox" app in live/identity (one app for PVE and PBS). The three
+# values below are site values: the LOCAL inventory (git-ignored) sets them. The client secret comes from
+# the environment of the run, never from a file in Git or from the inventory:
+#   PROXMOX_OIDC_CLIENT_SECRET   (kv-qnsc-admin/admin-proxmox-oidc-secret; ansible/README.md)
+# The role never disables root@pam: it is the break-glass account (LAN only, password + TOTP).
+pve_base_entra_enabled: true
+pve_base_entra_realm: entra
+pve_base_entra_issuer_url: "{{ proxmox_oidc_issuer_url | default('') }}"
+pve_base_entra_client_id: "{{ proxmox_oidc_client_id | default('') }}"
+# Object id of grp-qnsc-platform-admins. PVE appends "-<realm>" to the group name, so the PVE group
+# is "<object-id>-entra".
+pve_base_entra_admin_group_oid: "{{ proxmox_oidc_admin_group_oid | default('') }}"
+pve_base_entra_group_id: "{{ pve_base_entra_admin_group_oid }}-{{ pve_base_entra_realm }}"
+pve_base_entra_client_secret: "{{ lookup('ansible.builtin.env', 'PROXMOX_OIDC_CLIENT_SECRET') }}"
+pve_base_entra_username_claim: email
+pve_base_entra_scopes: "openid email profile"
+# The SHARED admin list (the same one PBS uses): exact Entra `mail`/email-claim strings, matching the app's
+# direct assignments and grp-qnsc-platform-admins. The role pre-creates <email>@<realm> and makes each one
+# a member of the admin group; PVE does NOT synchronise groups from the token (Entra's userinfo has no
+# groups claim, and groups-overwrite stays off). Canonical name: proxmox_entra_admin_emails. The old
+# pbs_entra_admin_emails key is still honoured as a fallback.
+# pbs_entra_admin_emails is null when the owner never set it (the PBS role's compat default), so
+# "unset" and "explicitly empty" are different. Only the CANONICAL proxmox_entra_admin_emails: []
+# prunes; a leftover legacy pbs_entra_admin_emails: [] is treated as unset (a compatibility guard).
+pve_base_entra_admin_emails: >-
+  {{ proxmox_entra_admin_emails if proxmox_entra_admin_emails is defined and proxmox_entra_admin_emails is not none
+     else (pbs_entra_admin_emails if pbs_entra_admin_emails is defined and pbs_entra_admin_emails is not none
+           else []) }}
+# A PVE-only inventory (no shared admin list) stays valid: the realm, group and ACL are still
+# managed, only the user pre-creation / membership / offboarding tasks are skipped. An explicitly
+# empty list still RUNS them, which prunes every pre-created account from the admin group.
+pve_base_entra_manage_admins: >-
+  {{ (proxmox_entra_admin_emails is defined and proxmox_entra_admin_emails is not none)
+     or (pbs_entra_admin_emails is defined and pbs_entra_admin_emails is not none
+         and (pbs_entra_admin_emails | length) > 0) }}
+# The username claim is fixed at realm creation (Auth/OpenId.pm): a different value stops the role.
+# The key is only written on creation or when this is true (a rotation), so an ordinary run never needs
+# the secret.
+pve_base_entra_rotate_client_key: false
+
+# ── ZFS ARC ceiling (host memory, shared with the VMs) ──────────────────────
+# 4 GiB. pve01 is a 60.5 GiB host and the VMs ask for 52 GiB (24 + 24 + 4), so
+# the ceiling is NOT extra allocation: ZFS reclaims ARC under pressure. 4 GiB
+# leaves the host and the co-located PBS room for their own working sets. At
+# 4 GiB PBS GC/verify is slower (less chunk/metadata cached) — accepted by the
+# owner (2026-11-06): the host has only ~8.5 GiB beyond the 52 GiB of VMs.
+pve_base_zfs_arc_max_bytes: 4294967296
+
+# ── SMART: monthly LONG self-test ──────────────────────────────────────────
+#
+# smartmontools is installed above; smartd was never configured, so only the
+# "critical warning" flag was watched (pve_monitoring exports it, Grafana alerts
+# on it). A drive degrades before that flag trips; a long test exercises the
+# whole surface, which a short one does not.
+#
+# DEVICESCAN covers whatever disks the host has (the NVMe and the two HDDs today)
+# and stays right after a disk swap. The schedule is smartd's T/MM/DD/d/HH
+# regular expression, and the two tests differ on purpose:
+#   S/../.././01   SHORT, every day at 01:00  (`.` in the day field = every day;
+#                  cheap, seconds, catches a drive that failed since yesterday)
+#   L/../01/./03   LONG,  the 1st at 03:00    (`01` in the day field = day 1 only;
+#                  hours, so after the 01:30 backup and before the 05:00 jobs)
+# Long every day would load the disks for hours for no new information; short
+# every month would miss a drive that degraded three weeks ago. Both results land
+# in pve_disk_self_test_* (pve_monitoring) and are alerted on.
+pve_base_smartd_conf: /etc/smartd.conf
+pve_base_smartd_devicescan_line: >-
+  DEVICESCAN -a -s (S/../.././01|L/../01/./03) -n standby,10,q
+pve_base_smartd_service: smartd

@@ -10,15 +10,16 @@ holds no Proxmox token, and the API endpoint is the admin door.
 
 ## Owns
 
-- `proxmox_virtual_environment_vm.k3s_01` — 28 vCPU, 24 GiB since Phase 3 (balloon off),
+- `proxmox_virtual_environment_vm.k3s_01` — 28 vCPU, 24 GiB (unchanged by the VM re-balance and by the
+  VLSI rollout), balloon off,
   q35 + OVMF, virtio-scsi-single, scsi0 120 G, scsi1 1200 G, net0 on the
   server VLAN, serial0 socket, VGA std. `prevent_destroy` is set: the VM holds
   every PVC. `reboot_after_update = false` — this stack never power-cycles the
   node as a side effect.
-- `files/k3s/config.yaml` + `files/k3s/version` — the k3s server config as it
-  should stand on the node, and the version pin. Applied **by hand** on the
-  node; nothing here writes into a running VM.
-
+- Proxmox API objects of the host, imported (`proxmox_iam.tf`, `proxmox_host.tf`): the user
+  `terraform@pve`, the API token `tofu`, the role `TofuStartupOrder` (Sys.Modify), the ACL entries, the PCI
+  mapping `gpu-rtx5060ti`, and the storages `local` and `local-zfs`. Provider
+  `bpg/proxmox ~> 0.120`. See "Proxmox API objects" and "Where IaC stops" below.
 - `proxmox_storage_pbs.pbs_qnsc` + `proxmox_backup_job.nightly` (`backup.tf`) — PVE side of the
   co-located Proxmox Backup Server: storage `pbs-qnsc` (token login, pinned certificate fingerprint)
   and the nightly snapshot-mode backup of VMs 100, 101 and 102. Retention, GC and verify are PBS jobs
@@ -27,6 +28,8 @@ holds no Proxmox token, and the API endpoint is the admin door.
   ```sh
   export TF_VAR_pbs_token_secret="$(op read 'op://QNSC/<item-id>/secret')"
   ```
+  `backup.tf` is the **only** owner of the PBS storage and of every backup job: do not add a
+  `proxmox_backup_job` anywhere else.
 
 ## Not managed, on purpose
 
@@ -36,8 +39,9 @@ holds no Proxmox token, and the API endpoint is the admin door.
   VM. The rest of k3s-01's cloud-init (ide2, IP, DNS, user, keys) IS described, as it
   stands on the live VM.
 - Tags, description — the live VM has neither, and setting one is a diff.
-- Anything inside the guest (disks, filesystems, k3s install). Those are the
-  node's own state; `files/k3s/*` is the source of truth for the config.
+- Anything inside the guest (disks, filesystems, k3s install, the kubelet
+  drop-in). Those are the node's own state. The k3s config and version pin have
+  ONE source: the Ansible `k3s_server` role (see below).
 
 ## Before the first plan — the live VM is the authority
 
@@ -86,24 +90,103 @@ tofu plan        # must be: No changes.
 ```
 
 ## The k3s config on the node
-`files/k3s/config.yaml` is the live node's `/etc/rancher/k3s/config.yaml`, byte for byte
-(verified 2026-11-02). The OIDC issuer args for ESO workload identity (infra#252) are
-added in that PR, not here. Diff before any change:
+
+There is ONE source: the Ansible `k3s_server` role (`ansible/roles/k3s_server/templates/config.yaml.j2`,
+the `k3s_version` pin in `ansible/group_vars/k3s.yml`, and the `kubelet` role's drop-in). This stack
+no longer carries a copy under `files/`: a second copy without the ESO issuer lines made a rebuild
+silently lose workload identity. Run from `ansible/`:
+
 ```sh
-scp files/k3s/config.yaml qnsc@<node>:/tmp/config.yaml
-ssh qnsc@<node> 'sudo diff -u /etc/rancher/k3s/config.yaml /tmp/config.yaml'
+ansible-playbook k3s-server.yml --check --diff
+ansible-playbook k3s-server.yml          # writes config; reports that a restart is needed
+ansible-playbook k3s-server.yml -e k3s_server_allow_restart=true -e kubelet_allow_restart=true
 ```
 
-`files/k3s/version` pins `vX.Y.Z+k3s1`: an upgrade is
-`curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION=<version> sh -` on the node
-after editing the file.
+Set `k3s_server_oidc_issuer` (and its `_old` second issuer) in the git-ignored local inventory; the
+value must equal `live/onprem-oidc` and `live/identity` `eso_oidc_issuer`.
+
+## Proxmox API objects (import, then No changes)
+
+Everything here already exists on pve01, made by hand. `imports.tf` carries the `import {}` blocks; they run
+on the first apply, nothing is created, and the target is a plan that reports **No changes** for them. A diff
+means a `.tf` value disagrees with the host: change the file (or your `site.tfvars`), never the host.
+
+**Site values stay local.** The ACL entries and the PCI mapping details are variables
+(`pve_acls`, `gpu_pci_mapping`, default empty/null); put the real ones in the git-ignored
+`site.tfvars` (the SA's copy is `sa-local/onprem-vm.site.tfvars`). `site.tfvars.example` shows the shapes.
+
+Read the facts on pve01 (owner, as root; read-only, nothing here prints a secret):
+
+```sh
+# 1. identity: the user, the token (look at `privsep`), the role, the ACLs
+pveum user list --output-format json | jq '.[] | select(.userid=="terraform@pve")'
+pveum user token list terraform@pve --output-format json            # tokenid "tofu", privsep 0|1
+pveum role list --output-format json | jq '.[] | select(.roleid=="TofuStartupOrder")'
+pveum acl list --output-format json | jq '.[] | select(.ugid | startswith("terraform@pve"))'
+#   one pve_acls entry per row: path, roleid -> role_id, propagate; ugid `terraform@pve` -> user_id,
+#   `terraform@pve!tofu` -> token_id
+
+# 2. the PCI mapping (iommugroup and subsystem-id are what Proxmox validates at VM start)
+pvesh get /cluster/mapping/pci/gpu-rtx5060ti --output-format json
+scripts/owner/pve-gpu-passthrough.sh --check        # also prints a gpu_pci_mapping snippet from sysfs
+
+# 3. storages
+pvesh get /storage --output-format json | jq '.[] | {storage, type, path, pool, content, nodes}'
+pvesh get /storage/local --output-format json
+pvesh get /storage/local-zfs --output-format json
+```
+
+The import ids the blocks use (so you can also run them by hand with `tofu import`):
+
+| Resource | Import id |
+|---|---|
+| `proxmox_virtual_environment_role.tofu_startup_order` | `TofuStartupOrder` |
+| `proxmox_virtual_environment_user.terraform` | `terraform@pve` |
+| `proxmox_user_token.tofu` | `terraform@pve!tofu` |
+| `proxmox_acl.managed["<key>"]` | `<path>?<terraform@pve or terraform@pve!tofu>?<role>` |
+| `proxmox_hardware_mapping_pci.gpu[0]` | `gpu-rtx5060ti` |
+| `proxmox_storage_directory.local` / `proxmox_storage_zfspool.local_zfs` | `local` / `local-zfs` |
+
+Then, as for VM 100: `tofu plan` must say **No changes** for all of them before any apply. Reconcile field
+by field if not (`comment`, `email`, `enabled` of the user; the storage `content` and `thin_provision`):
+the host is the authority. Four things to know:
+
+- **The token secret is not in IaC.** In provider 0.120.0 `proxmox_user_token` exposes `value` only as a
+  `computed` + `sensitive` attribute, populated on create and never on read or import: an import leaves it null,
+  so nothing is rotated and no secret enters state. That is why the token IS managed here. This stack
+  authenticates with that token, so every one of these resources has `prevent_destroy`, and the token must
+  never be recreated from here.
+- **The user has no `password`**, for the same reason (an import cannot read it back; setting one is a write).
+- **The PBS storage and every backup job belong to `backup.tf`**, not to this section: they are created (or
+  adopted) there, and `backup.tf` is their single owner.
+- **`proxmox_acl` / `proxmox_hardware_mapping_pci` / the directory and zfspool storages use the provider's
+  newer `proxmox_*` resource names** (the legacy `proxmox_virtual_environment_*` twins exist for some); the user
+  and role, and the VMs, only exist under the legacy names.
+
+## Where IaC stops
+
+| Layer | Owner | Where |
+|---|---|---|
+| Proxmox **API objects**: VMs, users, token, role, ACLs, PCI mapping, storages | OpenTofu | this stack |
+| Host **OS**: kernel cmdline (`iommu=pt`), vfio / nouveau modprobe files, initramfs, ZFS ARC limit, `snippets` on `local`, UPS/NUT, PBS install | idempotent owner scripts and runbooks run as root on pve01 | `scripts/owner/pve-gpu-passthrough.sh`, the server-setup runbook |
+| The VM **template** 9000 (an Ubuntu cloud image turned into a template) | idempotent owner script | `scripts/owner/pve-template-9000.sh` |
+| Inside the VMs: k3s install and config, kubelet drop-in, drivers | Ansible `k3s_server` / `k3s_agent*` / `kubelet` (the join script remains for ai-01) | `ansible/`, `qnsc-k3s-agent-join.sh` |
+
+Why the template is a script, not `proxmox_download_file` + a `template = true` VM (the usual bpg pattern):
+`disk.import_from` is a create-time argument the provider cannot read back, so importing the existing template
+would plan a REPLACEMENT of the VM every clone depends on, and "No changes" cannot be proven without the host;
+and a template is a build artefact, not desired state. The stack consumes it by id (`clone { vm_id = 9000 }`).
+`pve-template-9000.sh --check` reports it, `--apply` builds it once and never deletes anything.
+
+Order for a whole new site: `docs/runbooks/site-from-zero.md`.
 
 ## ai-01 — the GPU agent node (§9.1)
 
 Same stack, second VM: `ai-01` (101), cloned from template 9000, 8 vCPU,
-12 GiB (Phase 3; was 20) with ballooning off, 40 GiB system disk + 300 GiB model-cache disk, the
+12 GiB (3x the measured 4.0 GB peak; the e5 and reranker models sit in VRAM) with ballooning off,
+40 GiB system disk + 300 GiB model-cache disk, the
 RTX 5060 Ti via the `gpu-rtx5060ti` mapping, and only the `ai` namespace by
-taint. k3s-01 keeps 28 vCPU; the split leaves the hypervisor headroom.
+taint. k3s-01 keeps 28 vCPU and is not resized.
 
 **Order (a host reboot is in the middle of it):**
 
@@ -167,3 +250,132 @@ moment it decides.
 
 `cpu.units`: vlsi-01 has weight 25, k3s-01 and ai-01 keep the Proxmox default (100 on cgroup v2, 1024 on v1),
 so production wins when the host runs out of CPU. It only matters under contention.
+
+## VM re-balance — 24 / 28 / 4 (2026-11-05)
+
+PLAN-PLATFORM-HARDENING, "VM re-balance". k3s-01 is NOT resized: its memory requests are ~16.4 GiB with
+kb prod plus the 2 GiB systemReserved, so the earlier 18 GiB target is no longer safe. The spare RAM goes
+to ai-01; vlsi-01 shrinks until the VLSI team starts.
+
+| VM | now | after |
+|---|---|---|
+| `k3s-01` (100) | 24 GiB, 28 vCPU | **unchanged** |
+| `ai-01` (101) | 12 GiB, 8 vCPU, GPU | **24 GiB, 12 vCPU**, GPU (pinned, no ballooning) |
+| `vlsi-01` (102) | 20 GiB, 12 vCPU | **4 GiB, 4 vCPU** |
+
+Totals: 52 GiB of the host's 60.5 GiB (24 + 24 + 4), leaving ~8.5 GiB for the host and the ZFS ARC.
+44 vCPUs are assigned across 32
+host threads — time-sliced, not a hard limit. Inside k3s the shape is Burstable (requests ~p95, limits
+higher); nothing is ballooned.
+
+**Exactly TWO in-place VM updates; k3s-01 shows no line at all.** ai-01 and vlsi-01 both need a
+stop/start for dedicated memory and cores, so their new size lands at the next boot.
+
+**Does the provider reboot by itself?** bpg's `reboot_after_update` defaults to **true**, but this stack
+sets it to **false** on all three VMs. false means the provider never power-cycles a VM: an update that
+cannot be applied online fails, and one applied with a pending-until-reboot change emits a warning. So
+the OWNER reboots/restarts, never the provider. In this window the VM is stopped before the apply, so
+there is no pending state at all.
+
+Owner window (TEI / kb search is down ~2-3 min while ai-01 boots; k3s-01 and every other product stay up):
+
+1. Check the GPU is not mid-job (the single 16 GiB RTX 5060 Ti is shared with kb prod TEI):
+   `ssh root@<admin-door host> 'qm config 101 | grep -i hostpci'` and on ai-01 `nvidia-smi`.
+2. Stop the two agent VMs:
+   `qm shutdown 102 --timeout 120`, then `qm shutdown 101 --timeout 180`.
+3. `tofu plan` go/no-go: **`0 to add, 2 to change, 0 to destroy`**, each change in place, no replacement,
+   and **no line for VM 100**:
+
+   ```
+   ~ cpu    { cores = 8 -> 12 }          # ai-01
+   ~ memory { dedicated = 12288 -> 24576 }
+   ~ cpu    { cores = 12 -> 4 }          # vlsi-01
+   ~ memory { dedicated = 20480 -> 4096 }
+   ```
+
+   **Both ai-01 lines MUST appear.** If only one does, `site.tfvars` still pins the other old value
+   (8 cores or 12288 MB); update or delete those lines and re-plan — never apply a partial shape.
+
+4. `tofu apply tfplan`, then `qm start 101` and `qm start 102`. Wait for both nodes Ready; confirm
+   `nvidia-smi` on ai-01 and the TEI pod healthy.
+5. Apply the kubelet drop-ins in the same window on ai-01 and vlsi-01
+   (`-e kubelet_allow_restart=true`; a drop-in change restarts k3s on that agent only). Profiles:
+   gpu 1 CPU / 2 Gi, vlsi 250m / 512 Mi.
+
+`site.tfvars` (git-ignored) may still carry the old values (`vm_cores`, `vm_memory_mb`, `ai01_cores`,
+`ai01_memory_mb`); delete those lines to take the defaults, or set them to the "after" column.
+`vlsi01_cores` / `vlsi01_memory_mb` are not in the example: the new defaults are the target.
+
+**Next step:** re-audit ALL VM sizes once every product is live, using pod requests/p95 (not guest
+usage) as the input to the next re-balance.
+
+## VLSI rollout — 12 / 16 (2026-11-06)
+
+Owner decision 2026-11-06 ("go VLSI", design: product-docs `projects/vlsi-platform/00_DESIGN.md`):
+**no RAM purchase**, a re-split. The measured 7-day peaks are 6.7 GB on k3s-01 and 4.0 GB on ai-01, so
+the room for the VLSI pool comes from ai-01 and stays with the platform's own node budget.
+
+| VM | before | after |
+|---|---|---|
+| `k3s-01` (100) | 24 GiB, 28 vCPU | **unchanged** |
+| `ai-01` (101) | 24 GiB, 12 vCPU, GPU | **12 GiB, 8 vCPU**, GPU (pinned, no ballooning) |
+| `vlsi-01` (102) | 4 GiB, 4 vCPU | **16 GiB, 12 vCPU**, `cpu.units` 25 (lower than the products) |
+
+Totals: 52 GiB of the host's 60.5 GiB (24 + 12 + 16), unchanged from before this window — the VLSI pool
+comes out of ai-01's margin, not out of the host. 48 vCPUs are assigned across 32 host threads
+(time-sliced, not a limit). Inside k3s the shape is Burstable; nothing is ballooned.
+
+**Kubelet reservations move with the sizes** (`ansible/roles/kubelet`, applied in the same window):
+gpu stays 1 CPU / 2 Gi, vlsi becomes 500m / 1 Gi. vlsi-01's allocatable after the 500Mi evictionHard
+floor is ~14.5 GiB — the number design §5.1 sizes the workspace quota against.
+
+**Exactly TWO in-place VM updates; k3s-01 shows no line at all.** Both need a stop/start: dedicated
+memory and cores land at the next boot, and `reboot_after_update = false` means the provider never
+power-cycles a VM.
+
+Owner window (TEI / kb search is down ~2-3 min while ai-01 boots; k3s-01 and every other product stay up):
+
+1. Check the GPU is not mid-job (the single 16 GiB RTX 5060 Ti is shared with kb prod TEI):
+   `ssh root@<admin-door host> 'qm config 101 | grep -i hostpci'` and on ai-01 `nvidia-smi`.
+2. Drain both agents so their pods move BEFORE the shutdown, instead of being killed by it:
+   `kubectl drain vlsi-01 --ignore-daemonsets --delete-emptydir-data --timeout=300s`, then the same for
+   `ai-01`. (On ai-01 the TEI pod has no other node to go to — it restarts after the VMs boot.)
+3. Stop the two agent VMs: `qm shutdown 102 --timeout 120`, then `qm shutdown 101 --timeout 180`.
+4. `tofu plan` go/no-go — **`0 to add, 2 to change, 0 to destroy`**, each change in place, no replacement,
+   and **no line for VM 100**. Because the VMs are now STOPPED outside tofu and the stack says
+   `started = true`, each of the two resources also shows the start it will perform — that is expected:
+
+   ```
+   ~ cpu     { cores = 12 -> 8 }              # ai-01
+   ~ memory  { dedicated = 24576 -> 12288 }
+   ~ started { false -> true }                # the apply powers it back on
+   ~ cpu     { cores = 4 -> 12 }              # vlsi-01
+   ~ memory  { dedicated = 4096 -> 16384 }
+   ~ started { false -> true }
+   ```
+
+   **All six lines MUST appear.** If a cores/memory pair is half present, `site.tfvars` still pins the
+   other old value (`ai01_cores` / `ai01_memory_mb` / `vlsi01_cores` / `vlsi01_memory_mb`); fix the file
+   and re-plan — never apply a partial shape. If `started` does NOT appear, the VM was not actually
+   stopped (check `qm status` before applying).
+
+5. `tofu apply tfplan`. The provider updates the stopped VM and **starts it at the end of the apply**
+   (`started = true` is the desired state), so do NOT run `qm start` for a VM it already started:
+   check `qm status 101`, `qm status 102` and start only what is still stopped. Wait for both nodes to
+   report Ready — they come back **cordoned** (step 2 drained them) and stay that way until step 8.
+6. Mount vlsi-01's data disk **before anything can schedule there**, i.e. while the node is still cordoned:
+   the disk is blank and nothing is at the mount path, so this is the simple path of
+   docs/runbooks/agent-data-disks.md — `ansible-playbook k3s-agent.yml --tags k3s_data_disk
+   -e k3s_data_disk_enabled=true -e k3s_data_disk_device=/dev/disk/by-id/<the 300G id>
+   -e k3s_data_disk_format=true` (`--check --diff` first). It mounts at `/var/lib/rancher/k3s/storage`
+   and restarts k3s-agent on that node only. Uncordoning first is the mistake this step exists to prevent:
+   a single `/home` PVC created on the 40 GiB root fills it and evicts the workspaces.
+7. Apply the kubelet drop-ins in the same window on ai-01 and vlsi-01 (also while cordoned)
+   (`ansible-playbook k3s-agent-gpu.yml -e kubelet_allow_restart=true` and
+   `k3s-agent.yml -e kubelet_allow_restart=true`; a drop-in change restarts k3s on that agent only).
+   Profiles: gpu 1 CPU / 2 Gi, vlsi 500m / 1 Gi. k3s-01's drop-in does not change.
+8. NOW uncordon: `kubectl uncordon ai-01`, `kubectl uncordon vlsi-01`. Then the smoke checks: `nvidia-smi`
+   on ai-01, the TEI pod healthy, `findmnt --mountpoint /var/lib/rancher/k3s/storage` on vlsi-01 (a ~300 G
+   filesystem, not the 40 G root).
+
+**Rollback:** the same four values in reverse and the same window; nothing else in this stack moves.

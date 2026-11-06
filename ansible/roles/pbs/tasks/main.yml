@@ -1,5 +1,42 @@
 ---
-# ── install ─────────────────────────────────────────────────────────────────
+# ── repositories ────────────────────────────────────────────────────────────
+# pve01's apt-get update returned 401 until the owner disabled pbs-enterprise.sources by hand
+# (2026-11-05). The no-subscription source below replaces it; the enterprise file stays on disk
+# with Enabled: no, the same way pve_base handles pve-enterprise and ceph.
+- name: Read the PBS enterprise source
+  ansible.builtin.slurp:
+    src: "{{ pbs_enterprise_repo_file }}"
+  register: pbs_enterprise_file
+  failed_when: false
+  tags: [pbs_install]
+
+- name: Disable the PBS enterprise source (it needs a subscription)
+  ansible.builtin.lineinfile:
+    path: "{{ pbs_enterprise_repo_file }}"
+    regexp: "^Enabled:"
+    line: "Enabled: no"
+    insertafter: "^Types:"
+    mode: "0644"
+  when:
+    - pbs_disable_enterprise_repos | bool
+    - pbs_enterprise_file.content is defined
+    - "'enterprise.proxmox.com' in (pbs_enterprise_file.content | b64decode)"
+  notify: Update apt cache for PBS
+  tags: [pbs_install]
+
+# A host managed by the GUI may already carry a no-subscription source (deb822 or the older
+# .list). Adding a second one makes apt warn on every update, so write ours only when none
+# names it yet.
+- name: Look for an existing PBS no-subscription source
+  ansible.builtin.command: >-
+    grep -rlE "pbs-no-subscription" /etc/apt
+    --include=sources.list --include=*.list --include=*.sources
+  register: pbs_nosub_existing
+  changed_when: false
+  failed_when: pbs_nosub_existing.rc > 1
+  check_mode: false
+  tags: [pbs_install]
+
 - name: PBS repository (no-subscription)
   ansible.builtin.copy:
     dest: "{{ pbs_repository_file }}"
@@ -12,6 +49,7 @@
       Suites: {{ pbs_apt_suite }}
       Components: pbs-no-subscription
       Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+  when: pbs_nosub_existing.rc == 1 or (pbs_repository_file in pbs_nosub_existing.stdout_lines)
   register: pbs_repo
   notify: Update apt cache for PBS
   tags: [pbs_install]
@@ -29,11 +67,15 @@
   when: not (ansible_check_mode and pbs_repo is changed)
   tags: [pbs_install]
 
+# TAGGED FOR EVERY BLOCK THAT READS IT. `--tags pbs_offsite` alone used to skip this task and
+# then fail on the first `when: pbs_cli.stat.exists` with "pbs_cli is undefined" (owner run
+# 2026-11-06). Any new tag that runs a block reading pbs_cli must be added here too; the CI check
+# in .github/workflows/ansible-lint.yml runs `--tags pbs_offsite --check` for exactly that.
 - name: Is the PBS command line available (not in --check on a host without PBS)
   ansible.builtin.stat:
     path: /usr/sbin/proxmox-backup-manager
   register: pbs_cli
-  tags: [pbs_install]
+  tags: [pbs_install, pbs_offsite, pbs_identity, pbs_fingerprint]
 
 - name: PBS services are enabled and running
   ansible.builtin.service:
@@ -45,6 +87,314 @@
     - proxmox-backup-proxy
   when: pbs_cli.stat.exists
   tags: [pbs_install]
+
+# ── Entra OpenID login ──────────────────────────────────────────────────────
+# The same "QNSC Proxmox" app as the PVE realm. PBS ignores group claims: its realm creates users but
+# grants nothing, so each admin user is created up front and gets Admin on /. root@pam is NOT touched:
+# it is the break-glass account, LAN only. The username comes from the token's email claim.
+- name: Entra OpenID realm, admin users and ACLs
+  when: pbs_entra_enabled | bool
+  tags: [pbs_entra]
+  block:
+    - name: Is the PBS command line available
+      ansible.builtin.stat:
+        path: "{{ pbs_entra_cli_path }}"
+      register: pbs_entra_cli
+      check_mode: false
+
+    - name: Refuse to configure a realm without PBS installed
+      ansible.builtin.assert:
+        that: pbs_entra_cli.stat.exists
+        fail_msg: >-
+          {{ pbs_entra_cli_path }} is missing: install PBS first
+          (`ansible-playbook pve-host.yml --tags pbs_install`), or set pbs_entra_enabled=false.
+        quiet: true
+
+    - name: The Entra site values are present (local inventory)
+      ansible.builtin.assert:
+        that:
+          - pbs_entra_issuer_url is match('^https://login\.microsoftonline\.com/[^/]+/v2\.0$')
+          - pbs_entra_client_id is match('^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
+          - pbs_entra_realm is match('^[a-z][a-z0-9]*$')
+          - pbs_entra_manage_admins | bool
+          - pbs_entra_admin_emails_effective | select('match', '^[^@\s]+@[^@\s]+$') | list | length == pbs_entra_admin_emails_effective | length
+        fail_msg: >-
+          Set proxmox_oidc_issuer_url and proxmox_oidc_client_id plus proxmox_entra_admin_emails in the
+          LOCAL inventory (ansible/README.md, "Entra OpenID login"), or set pbs_entra_enabled=false.
+          The canonical list is REQUIRED (exact Entra casing); an explicit [] is allowed. A legacy-only
+          pbs_entra_admin_emails (empty or not) is NOT accepted — rename it to proxmox_entra_admin_emails.
+        quiet: true
+
+    # Every realm carries its client key in this output: hide it.
+    - name: Read the OpenID realms (client keys stay hidden)
+      ansible.builtin.command: proxmox-backup-manager openid list --output-format json
+      register: pbs_entra_realms
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Find the realm among them
+      ansible.builtin.set_fact:
+        pbs_entra_existing: >-
+          {{ (pbs_entra_realms.stdout | from_json)
+             | selectattr('realm', 'equalto', pbs_entra_realm) | list }}
+
+    - name: An existing realm must use the fixed username claim
+      ansible.builtin.assert:
+        that:
+          - pbs_entra_existing[0]['username-claim'] | default('') == pbs_entra_username_claim
+        fail_msg: >-
+          realm "{{ pbs_entra_realm }}" exists with another username claim. It is fixed at creation:
+          delete and recreate the realm deliberately (`proxmox-backup-manager openid delete
+          {{ pbs_entra_realm }}`), then re-run this role.
+        quiet: true
+      when: pbs_entra_existing | length == 1
+
+    - name: Read the scopes the realm reports
+      ansible.builtin.set_fact:
+        pbs_entra_have_scopes_raw: "{{ pbs_entra_existing[0]['scopes'] | default('') }}"
+      when: pbs_entra_existing | length == 1
+
+    - name: Work out the drift (the key and the username claim are excluded by design)
+      ansible.builtin.set_fact:
+        pbs_entra_drift: >-
+          {{ pbs_entra_existing[0]['issuer-url'] | default('') != pbs_entra_issuer_url
+             or pbs_entra_existing[0]['client-id'] | default('') != pbs_entra_client_id
+             or not (pbs_entra_existing[0]['default'] | default(false) | bool)
+             or ((pbs_entra_have_scopes_raw | join(' ') if pbs_entra_have_scopes_raw is not string
+                  else pbs_entra_have_scopes_raw) | split | sort | join(' '))
+                != (pbs_entra_scopes.split() | sort | join(' ')) }}
+      when: pbs_entra_existing | length == 1
+
+    - name: Refuse to create or rotate the realm without the client secret
+      ansible.builtin.assert:
+        that: pbs_entra_client_secret | length > 0
+        fail_msg: >-
+          PROXMOX_OIDC_CLIENT_SECRET is empty. Run with it exported from
+          kv-qnsc-admin/admin-proxmox-oidc-secret (ansible/README.md, "Entra OpenID login").
+        quiet: true
+      when: >-
+        pbs_entra_existing | length == 0
+        or pbs_entra_rotate_client_key | bool
+
+    - name: Report the realm creation (check mode)
+      ansible.builtin.debug:
+        msg: "would create the {{ pbs_entra_realm }} OpenID realm"
+      changed_when: true
+      when:
+        - ansible_check_mode
+        - pbs_entra_existing | length == 0
+
+    # Per-user ACLs do the authorization, so autocreate stays off: an unlisted user is refused even if
+    # Entra handed out a token. The key is momentarily in the CLI's argv; pve01 is a single-admin host.
+    - name: Create the realm (default at login, no autocreate)
+      ansible.builtin.command:
+        argv:
+          - proxmox-backup-manager
+          - openid
+          - create
+          - "{{ pbs_entra_realm }}"
+          - --issuer-url
+          - "{{ pbs_entra_issuer_url }}"
+          - --client-id
+          - "{{ pbs_entra_client_id }}"
+          - --client-key
+          - "{{ pbs_entra_client_secret }}"
+          - --username-claim
+          - "{{ pbs_entra_username_claim }}"
+          - --scopes
+          - "{{ pbs_entra_scopes }}"
+          - --autocreate
+          - "0"
+          - --default
+          - "1"
+          - --comment
+          - "Entra grp-qnsc-platform-admins (realm {{ pbs_entra_realm }})"
+      no_log: true
+      changed_when: true
+      when:
+        - not ansible_check_mode
+        - pbs_entra_existing | length == 0
+
+    - name: Report the realm drift fix (check mode)
+      ansible.builtin.debug:
+        msg: "would align the {{ pbs_entra_realm }} OpenID realm with the inventory"
+      changed_when: true
+      when:
+        - ansible_check_mode
+        - pbs_entra_existing | length == 1
+        - pbs_entra_drift | bool
+
+    - name: Align the realm settings (never the key or the username claim)
+      ansible.builtin.command:
+        argv:
+          - proxmox-backup-manager
+          - openid
+          - update
+          - "{{ pbs_entra_realm }}"
+          - --issuer-url
+          - "{{ pbs_entra_issuer_url }}"
+          - --client-id
+          - "{{ pbs_entra_client_id }}"
+          - --scopes
+          - "{{ pbs_entra_scopes }}"
+          - --default
+          - "1"
+      changed_when: true
+      when:
+        - not ansible_check_mode
+        - pbs_entra_existing | length == 1
+        - pbs_entra_drift | bool
+
+    - name: Report the client-key rotation (check mode)
+      ansible.builtin.debug:
+        msg: "would replace the client key of realm {{ pbs_entra_realm }}"
+      changed_when: true
+      when:
+        - ansible_check_mode
+        - pbs_entra_existing | length == 1
+        - pbs_entra_rotate_client_key | bool
+
+    - name: Rotate the client key
+      ansible.builtin.command:
+        argv:
+          - proxmox-backup-manager
+          - openid
+          - update
+          - "{{ pbs_entra_realm }}"
+          - --client-key
+          - "{{ pbs_entra_client_secret }}"
+      no_log: true
+      changed_when: true
+      when:
+        - not ansible_check_mode
+        - pbs_entra_existing | length == 1
+        - pbs_entra_rotate_client_key | bool
+
+    - name: Read the PBS users
+      ansible.builtin.command: proxmox-backup-manager user list --output-format json
+      register: pbs_entra_users
+      changed_when: false
+      check_mode: false
+
+    - name: Report the Entra user creation (check mode)
+      ansible.builtin.debug:
+        msg: "would create PBS user {{ item }}@{{ pbs_entra_realm }}"
+      changed_when: true
+      loop: "{{ pbs_entra_admin_emails_effective }}"
+      when:
+        - ansible_check_mode
+        - (pbs_entra_users.stdout | from_json
+           | selectattr('userid', 'search', '(?i)^' ~ (item | regex_escape) ~ '@' ~ pbs_entra_realm ~ '$') | list | length) == 0
+
+    - name: Create the Entra admin users (no password, OpenID only)
+      ansible.builtin.command:
+        argv:
+          - proxmox-backup-manager
+          - user
+          - create
+          - "{{ item }}@{{ pbs_entra_realm }}"
+      changed_when: true
+      loop: "{{ pbs_entra_admin_emails_effective }}"
+      when:
+        - not ansible_check_mode
+        - (pbs_entra_users.stdout | from_json
+           | selectattr('userid', 'search', '(?i)^' ~ (item | regex_escape) ~ '@' ~ pbs_entra_realm ~ '$') | list | length) == 0
+
+    - name: Read the PBS ACLs
+      ansible.builtin.command: proxmox-backup-manager acl list --output-format json
+      register: pbs_entra_acls
+      changed_when: false
+      check_mode: false
+
+    - name: Report the Administrator ACLs (check mode)
+      ansible.builtin.debug:
+        msg: "would grant Admin on / to {{ item }}@{{ pbs_entra_realm }}"
+      changed_when: true
+      loop: "{{ pbs_entra_admin_emails_effective }}"
+      when:
+        - ansible_check_mode
+        - (pbs_entra_acls.stdout | from_json
+           | selectattr('path', 'equalto', '/')
+           | selectattr('ugid', 'search', '(?i)^' ~ (item | regex_escape) ~ '@' ~ pbs_entra_realm ~ '$')
+           | selectattr('roleid', 'equalto', 'Admin') | list | length) == 0
+
+    - name: Grant Admin on / to each Entra admin
+      ansible.builtin.command:
+        argv:
+          - proxmox-backup-manager
+          - acl
+          - update
+          - /
+          - Admin
+          - --auth-id
+          - "{{ ((pbs_entra_users.stdout | from_json
+                 | selectattr('userid', 'search', '(?i)^' ~ (item | regex_escape) ~ '@' ~ pbs_entra_realm ~ '$')
+                 | list | default([{}], true) | first).userid | default(item ~ '@' ~ pbs_entra_realm)) }}"
+      changed_when: true
+      loop: "{{ pbs_entra_admin_emails_effective }}"
+      when:
+        - not ansible_check_mode
+        - (pbs_entra_acls.stdout | from_json
+           | selectattr('path', 'equalto', '/')
+           | selectattr('ugid', 'search', '(?i)^' ~ (item | regex_escape) ~ '@' ~ pbs_entra_realm ~ '$')
+           | selectattr('roleid', 'equalto', 'Admin') | list | length) == 0
+
+    # Prune: a realm user who is no longer in the effective list loses the
+    # Admin ACL on /. Same semantics as PVE (an explicitly empty canonical list
+    # revokes everyone; an unset/legacy-empty list never prunes).
+    - name: Work out the Admin ACLs to revoke
+      ansible.builtin.set_fact:
+        pbs_entra_revoked_acls: >-
+          {{ ((pbs_entra_acls.stdout | from_json)
+              | selectattr('path', 'equalto', '/')
+              | selectattr('roleid', 'equalto', 'Admin')
+              | selectattr('ugid', 'search', '@' ~ pbs_entra_realm ~ '$') | list)
+             | zip(((pbs_entra_acls.stdout | from_json)
+                    | selectattr('path', 'equalto', '/')
+                    | selectattr('roleid', 'equalto', 'Admin')
+                    | selectattr('ugid', 'search', '@' ~ pbs_entra_realm ~ '$') | list)
+                   | map(attribute='ugid') | map('lower'))
+             | rejectattr('1', 'in', pbs_entra_desired_userids)
+             | map(attribute='0') | list }}
+      when: pbs_entra_manage_admins | bool
+
+    - name: Report the Admin ACL revocations (check mode)
+      ansible.builtin.debug:
+        msg: "would revoke Admin on / from {{ item.ugid }}"
+      changed_when: true
+      loop: "{{ pbs_entra_revoked_acls | default([]) }}"
+      when: ansible_check_mode
+
+    - name: Revoke Admin on / from an unlisted realm user
+      ansible.builtin.command:
+        argv:
+          - proxmox-backup-manager
+          - acl
+          - update
+          - /
+          - Admin
+          - --auth-id
+          - "{{ item.ugid }}"
+          - --delete
+      changed_when: true
+      loop: "{{ pbs_entra_revoked_acls | default([]) }}"
+      when: not ansible_check_mode
+
+    # root@pam is the last door (PAM, LAN): never let the realm work leave it disabled.
+    - name: The root@pam account stays enabled (break-glass)
+      ansible.builtin.assert:
+        that:
+          - pbs_entra_users.stdout | from_json
+            | selectattr('userid', 'equalto', 'root@pam') | list | length == 1
+          - pbs_entra_users.stdout | from_json
+            | selectattr('userid', 'equalto', 'root@pam')
+            | selectattr('enable', 'defined')
+            | selectattr('enable', 'equalto', false) | list | length == 0
+        fail_msg: >-
+          root@pam is missing or disabled: it is the break-glass account (LAN, password + TOTP).
+          Re-enable it before changing the realm.
+        quiet: true
 
 # ── storage ─────────────────────────────────────────────────────────────────
 - name: ZFS dataset for the datastore (on the existing pool)
@@ -81,9 +431,37 @@
       changed_when: false
       check_mode: false
 
+    - name: The datastore path is its own mounted ZFS dataset
+      ansible.builtin.command: "findmnt -n -o FSTYPE --mountpoint {{ pbs_datastore_path }}"
+      register: pbs_datastore_mount
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when: not ansible_check_mode
+
+    - name: Refuse to create a datastore on the root filesystem
+      ansible.builtin.assert:
+        that: pbs_datastore_mount.rc == 0 and pbs_datastore_mount.stdout | trim == 'zfs'
+        fail_msg: >-
+          {{ pbs_datastore_path }} is not a mounted ZFS dataset (findmnt: '{{ pbs_datastore_mount.stdout | default('') }}',
+          rc {{ pbs_datastore_mount.rc | default('?') }}). Import/mount the backup pool first; never let PBS
+          create a datastore on the root filesystem.
+        quiet: true
+      when: not ansible_check_mode
+
+    # Tier B of docs/runbooks/dr.md: after a Proxmox reinstall the datastore CONFIG is gone but its
+    # chunks are still on the imported HDD pool. PBS refuses a non-empty directory unless told to
+    # reuse it, so detect the existing chunk store and pass --reuse-datastore in that one case.
+    - name: Is there an existing datastore at the configured path (a rebuilt host)
+      ansible.builtin.stat:
+        path: "{{ pbs_datastore_path }}/.chunks"
+      register: pbs_existing_chunks
+      tags: [pbs_config]
+
     - name: Create the datastore with its GC schedule
       ansible.builtin.command: >-
         proxmox-backup-manager datastore create {{ pbs_datastore_name }} {{ pbs_datastore_path }}
+        {{ '--reuse-datastore' if pbs_existing_chunks.stat.exists else '' }}
         --gc-schedule '{{ pbs_gc_schedule }}'
       when: (pbs_datastores.stdout | from_json | selectattr('name', 'equalto', pbs_datastore_name) | list | length) == 0
       changed_when: true
@@ -235,3 +613,223 @@
     msg: "{{ pbs_cert_info.stdout_lines | select('search', '(?i)fingerprint') | list }}"
   when: pbs_cli.stat.exists
   tags: [pbs_fingerprint]
+
+# ── off-site copy: R2-backed datastore + weekly local sync ──────────────────
+#
+# Opt-in (pbs_offsite_enabled). Creates, in order: the local cache dataset, the S3 endpoint, the S3-backed
+# datastore, and the weekly sync job that pulls from the local `qnsc` datastore into it. Nothing here holds
+# a credential: the access/secret keys come from the run's environment and the endpoint create is no_log.
+- name: Off-site copy to Cloudflare R2
+  when:
+    - pbs_cli.stat.exists
+    - pbs_offsite_enabled | bool
+  tags: [pbs_offsite]
+  block:
+    - name: The off-site inputs are present
+      ansible.builtin.assert:
+        that:
+          - pbs_offsite_endpoint_host | length > 0
+          - pbs_offsite_bucket | length > 0
+          - pbs_s3_access_key | length > 0
+          - pbs_s3_secret_key | length > 0
+        fail_msg: >-
+          pbs_offsite_enabled is true but an input is missing: set pbs_offsite_endpoint_host in the LOCAL
+          inventory (R2's S3 endpoint, <account-id>.r2.cloudflarestorage.com) and export PBS_S3_ACCESS_KEY /
+          PBS_S3_SECRET_KEY from 1Password for the run. The bucket itself is created by live/onprem
+          (backups.tf, qnsc-pbs-offsite).
+        quiet: true
+
+    # S3 datastores are production-supported from PBS 4.2; `--encrypted-only` on sync jobs arrived with 4.0.
+    # Both are hard requirements here, so stop on an older PBS instead of failing halfway through the block.
+    #
+    # The version comes from `versions --output-format json`: `proxmox-backup-manager --version` does not
+    # exist ("Error: no such command '--version'", owner run 2026-11-06). The `proxmox-backup-server` entry
+    # carries "running version: 4.2.8" in ExtraInfo; `version` is the fallback for an older build.
+    - name: Read the PBS version
+      ansible.builtin.command: proxmox-backup-manager versions --output-format json
+      register: pbs_versions_raw
+      changed_when: false
+      check_mode: false
+
+    - name: The PBS is new enough for an S3 datastore and encrypted-only sync
+      vars:
+        pbs_version: >-
+          {{ (pbs_versions_raw.stdout | from_json
+              | selectattr('name', 'equalto', 'proxmox-backup-server')
+              | map(attribute='ExtraInfo', default='') | list
+              | first | default('', true)
+              | regex_search('running version:\\s*([0-9.]+)', '\\1')
+              | default([], true) | first | default('', true))
+             | default('0', true) }}
+      ansible.builtin.assert:
+        that: pbs_version is version('4.2', '>=')
+        fail_msg: >-
+          PBS {{ pbs_version }} is too old (or its version could not be read) : S3 datastores need 4.2 or
+          newer and --encrypted-only needs 4.0+. `apt update && apt dist-upgrade` on pve01
+          (server-setup.md), then re-run. To see what was parsed:
+          proxmox-backup-manager versions --output-format json
+        quiet: true
+
+    # The cache is mandatory for an S3 datastore and must be its own dataset with a quota: it holds hot
+    # chunks plus the index, so it fills slowly but without a quota it would fill the pool.
+    - name: Is the off-site cache dataset there
+      ansible.builtin.command: "zfs list -H -o name {{ pbs_offsite_cache_dataset }}"
+      register: pbs_offsite_cache
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Create the off-site cache dataset (quota {{ pbs_offsite_cache_quota }})
+      ansible.builtin.command: >-
+        zfs create -o mountpoint={{ pbs_offsite_cache_mount }} -o quota={{ pbs_offsite_cache_quota }}
+        {{ pbs_offsite_cache_dataset }}
+      when: pbs_offsite_cache.rc != 0
+      changed_when: true
+
+    - name: Read the S3 endpoints
+      ansible.builtin.command: proxmox-backup-manager s3 endpoint list --output-format json
+      register: pbs_offsite_endpoints
+      changed_when: false
+      check_mode: false
+
+    # The endpoint carries the secrets; PBS stores them in its own config, which is root-only. no_log keeps
+    # them out of the job output (the command line would otherwise print them).
+    - name: Create the R2 S3 endpoint
+      ansible.builtin.command:
+        argv:
+          - proxmox-backup-manager
+          - s3
+          - endpoint
+          - create
+          - "{{ pbs_offsite_endpoint_id }}"
+          - --access-key
+          - "{{ pbs_s3_access_key }}"
+          - --secret-key
+          - "{{ pbs_s3_secret_key }}"
+          - --endpoint
+          - "{{ pbs_offsite_endpoint_host }}"
+          - --region
+          - "{{ pbs_offsite_region }}"
+          # R2 is path-style only (PBS otherwise prefers vhost-style), and never Object Lock / versioning.
+          - --path-style
+          - "true"
+      no_log: true
+      when: >-
+        (pbs_offsite_endpoints.stdout | from_json
+         | selectattr('id', 'equalto', pbs_offsite_endpoint_id) | list | length) == 0
+      changed_when: true
+
+    # ROTATION: PBS does not expose the stored keys, so compare a hash of the two values this run was given
+    # with the one the last run left behind. Different hash = the owner replaced the R2 token in 1Password,
+    # and PBS must be told (s3 endpoint update), or every sync keeps using the revoked token.
+    - name: The credentials hash the run is using
+      ansible.builtin.copy:
+        dest: "{{ pbs_offsite_cred_hash_file }}"
+        owner: root
+        group: root
+        mode: "0600"
+        content: "{{ (pbs_s3_access_key ~ ':' ~ pbs_s3_secret_key) | hash('sha256') }}\n"
+      register: pbs_offsite_cred_write
+      no_log: true
+
+    - name: Update the R2 S3 endpoint when the credentials changed
+      ansible.builtin.command:
+        argv:
+          - proxmox-backup-manager
+          - s3
+          - endpoint
+          - update
+          - "{{ pbs_offsite_endpoint_id }}"
+          - --access-key
+          - "{{ pbs_s3_access_key }}"
+          - --secret-key
+          - "{{ pbs_s3_secret_key }}"
+      no_log: true
+      when:
+        - (pbs_offsite_endpoints.stdout | from_json
+           | selectattr('id', 'equalto', pbs_offsite_endpoint_id) | list | length) == 1
+        - pbs_offsite_cred_write.changed
+      changed_when: true
+
+    - name: Read the datastores again (the off-site one may exist already)
+      ansible.builtin.command: proxmox-backup-manager datastore list --output-format json
+      register: pbs_datastores_after
+      changed_when: false
+      check_mode: false
+
+    - name: Create the off-site datastore (S3-backed, cache {{ pbs_offsite_cache_mount }})
+      ansible.builtin.command: >-
+        proxmox-backup-manager datastore create {{ pbs_offsite_store_name }} {{ pbs_offsite_cache_mount }}
+        --backend type=s3,client={{ pbs_offsite_endpoint_id }},bucket={{ pbs_offsite_bucket }}
+        --gc-schedule '{{ pbs_offsite_gc_schedule }}'
+      when: >-
+        (pbs_datastores_after.stdout | from_json
+         | selectattr('name', 'equalto', pbs_offsite_store_name) | list | length) == 0
+      changed_when: true
+
+    - name: Align the off-site datastore's GC schedule
+      ansible.builtin.command: >-
+        proxmox-backup-manager datastore update {{ pbs_offsite_store_name }}
+        --gc-schedule '{{ pbs_offsite_gc_schedule }}'
+      when: >-
+        (pbs_datastores_after.stdout | from_json
+         | selectattr('name', 'equalto', pbs_offsite_store_name) | list | length) == 1 and
+        (pbs_datastores_after.stdout | from_json
+         | selectattr('name', 'equalto', pbs_offsite_store_name)
+         | map(attribute='gc-schedule', default='') | first) != pbs_offsite_gc_schedule
+      changed_when: true
+
+    - name: Read the sync jobs
+      ansible.builtin.command: proxmox-backup-manager sync-job list --output-format json
+      register: pbs_sync_jobs
+      changed_when: false
+      check_mode: false
+
+    # A LOCAL sync job: source = the `qnsc` datastore on this PBS (no --remote), target = the S3 datastore.
+    # Deletions are NOT propagated (no --remove-vanished): the off-site copy is append-only, so a mistake
+    # or a prune on the local store cannot reach back and erase the last good off-site snapshot. It costs
+    # storage in R2 and is the point.
+    - name: Create the weekly off-site sync job (encrypted snapshots only)
+      ansible.builtin.command: >-
+        proxmox-backup-manager sync-job create {{ pbs_offsite_sync_job_id }}
+        --store {{ pbs_offsite_store_name }} --remote-store {{ pbs_datastore_name }}
+        --schedule '{{ pbs_offsite_sync_schedule }}' --encrypted-only true
+      when: (pbs_sync_jobs.stdout | from_json | selectattr('id', 'equalto', pbs_offsite_sync_job_id) | list | length) == 0
+      changed_when: true
+
+    - name: Align the off-site sync job
+      ansible.builtin.command: >-
+        proxmox-backup-manager sync-job update {{ pbs_offsite_sync_job_id }}
+        --store {{ pbs_offsite_store_name }} --remote-store {{ pbs_datastore_name }}
+        --schedule '{{ pbs_offsite_sync_schedule }}' --encrypted-only true
+      vars:
+        pbs_sync_current: "{{ pbs_sync_jobs.stdout | from_json | selectattr('id', 'equalto', pbs_offsite_sync_job_id) | list | first | default({}) }}"
+      when:
+        - pbs_sync_current | length > 0
+        - pbs_sync_current['schedule'] | default('') != pbs_offsite_sync_schedule or
+          not (pbs_sync_current['encrypted-only'] | default(false) | bool)
+      changed_when: true
+
+    # A weekly verify of the OFF-SITE store: the chunks come back over the WAN through the cache, which is the
+    # only routine proof that what R2 holds is readable.
+    - name: Read the verify jobs (again)
+      ansible.builtin.command: proxmox-backup-manager verify-job list --output-format json
+      register: pbs_verify_jobs_after
+      changed_when: false
+      check_mode: false
+
+    - name: Create the weekly off-site verify job
+      ansible.builtin.command: >-
+        proxmox-backup-manager verify-job create {{ pbs_offsite_verify_job_id }}
+        --store {{ pbs_offsite_store_name }}
+        --schedule '{{ pbs_offsite_verify_schedule }}' --ignore-verified true
+        --outdated-after {{ pbs_verify_outdated_after_days }}
+      when: (pbs_verify_jobs_after.stdout | from_json | selectattr('id', 'equalto', pbs_offsite_verify_job_id) | list | length) == 0
+      changed_when: true
+
+    - name: Report the off-site configuration
+      ansible.builtin.debug:
+        msg:
+          - "off-site store: {{ pbs_offsite_store_name }} (S3: {{ pbs_offsite_endpoint_id }}/{{ pbs_offsite_bucket }})"
+          - "cache: {{ pbs_offsite_cache_mount }} ({{ pbs_offsite_cache_quota }} quota)"
+          - "sync job: {{ pbs_offsite_sync_job_id }}, '{{ pbs_offsite_sync_schedule }}', {{ pbs_datastore_name }} -> {{ pbs_offsite_store_name }}"

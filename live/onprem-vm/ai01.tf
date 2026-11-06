@@ -26,20 +26,29 @@ variable "ai01_vm_name" {
 }
 
 variable "ai01_cores" {
-  type        = number
+  type = number
+  # 8 vCPU (VLSI rollout, 2026-11-06): inference burst is short and the GPU does the work; the
+  # 4 vCPUs go to vlsi-01, where every RTL build and simulation runs. The three VMs total
+  # 48 vCPUs (28 + 8 + 12) on 32 host threads; vCPUs are time-sliced, so this is
+  # oversubscription, not a hard limit.
   default     = 8
-  description = "vCPUs. The host has 28 assigned to k3s-01 and the card needs a fast feed, not all the cores; the split is 28 + 8 on a 32-thread CPU, leaving headroom for the hypervisor."
+  description = "vCPUs. VLSI rollout: 8 (k3s-01 28, vlsi-01 12)."
 
   validation {
     condition     = var.ai01_cores >= 4 && var.ai01_cores <= 12
-    error_message = "ai01_cores must be within 4-12: k3s-01 keeps 28 and the host needs headroom."
+    error_message = "ai01_cores must be within 4-12 (the validated 12-vCPU ceiling)."
   }
 }
 
 variable "ai01_memory_mb" {
-  type        = number
+  type = number
+  # 12 GiB (12288 MiB). The measured peak over 7 days is 4.0 GB, and the e5 and reranker
+  # models live in VRAM, not RAM; GPU passthrough pins the whole allocation (floating = 0),
+  # so 12 GiB is 3x the peak. 24 (k3s-01) + 12 (ai-01) + 16 (vlsi-01) = 52 GiB of the host's
+  # 60.5, leaving ~8.5 GiB for the host and the ZFS ARC — the same total as before the
+  # VLSI node, so no new pressure on the host.
   default     = 12288
-  description = "12 GiB (12288 MiB; was 20 GiB before Phase 3). Ballooning OFF is required for passthrough (the provider sets floating = 0). An in-place change that needs the guest restarted: docs/runbooks/phase3-window.md."
+  description = "12 GiB (the measured peak is 4.0 GB; models sit in VRAM). Ballooning OFF is required for passthrough (the provider sets floating = 0); a stop/start applies it."
 }
 
 variable "ai01_data_disk_gb" {

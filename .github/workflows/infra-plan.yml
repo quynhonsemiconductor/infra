@@ -23,7 +23,7 @@ permissions:
   contents: read
 
 env:
-  TOFU_VERSION: "1.9.1"
+  TOFU_VERSION: "1.13.2"
 
 jobs:
   # ───────────────────────────────────────────────────────────────────────
@@ -162,6 +162,8 @@ jobs:
           # realm qnsc, scope adaptive-metrics-config:read+write) and repo variable
           # AM_METRICS_URL. It is planned here and applied by the apply-adaptive-metrics job.
           # identity stays here on purpose: owner-only plan/apply (public repo; plan output would expose break-glass UPNs and the Entra role layout).
+          # onprem-oidc joins for a different reason: its only input CI does not have is the JWKS, readable
+          # only from the running cluster (kubectl get --raw /openid/v1/jwks), so there is no plan to run here.
           # onprem-vm is owner-only too: CI has no Proxmox token, and the endpoint is the admin door.
           # `observability` LEFT this list 2026-11-02: its orphaned grafana_* objects are now forgotten by
           # `removed` blocks behind a read-only `grafana.stack` bridge (live/observability/main.tf).
@@ -169,7 +171,7 @@ jobs:
           # github (live/github) is planned with a short-lived token minted from the READ-ONLY
           # GitHub App `qnsc-iac-read` (IAC_READ_APP_ID / IAC_READ_APP_KEY), see the mint step
           # in the plan job.
-          NOT_PLANNABLE="identity onprem-vm"
+          NOT_PLANNABLE="identity onprem-vm onprem-oidc"
 
           SKIPPED=""
           PLANNABLE=""
@@ -215,7 +217,7 @@ jobs:
 
       # No cloud credentials and no `id-token: write` above: iac-lint installs
       # tofu and runs the formatter, nothing else.
-      - uses: quynhonsemiconductor/ci/actions/iac-lint@ea2c56bd9b03fb4d52e8fb9fe98dca95fd278638 # v1.24.5
+      - uses: quynhonsemiconductor/ci/actions/iac-lint@956804ad4aa2dcf930909553d306d72b3708fd5d # v1.34.1+ci#308
         with:
           tofu-version: ${{ env.TOFU_VERSION }}
           fmt: 'true'
@@ -225,8 +227,45 @@ jobs:
       # auth, no private key material, every Key Vault data-plane role scoped to
       # a vault, no ESO principal for the admin vault. Plan-free — no cloud
       # credentials, exits non-zero on a violation.
+      # The failure printer: the edge apply of 2026-11-06 printed "apply text withheld" and hid the
+      # error itself. This proves, offline, that boxed and plain diagnostics are printed and that
+      # plan/apply text still never is.
+      - name: tofu error printer (offline test)
+        run: bash .github/scripts/tofu-error_test.sh
+
       - name: live/identity static guard
         run: sh live/identity/tests/static.sh
+
+      # live/edge's wirefilter strings are opaque to `tofu validate`; the API rejects a wrong selector
+      # only at apply time (identity.groups.id is an Array(Bytes): "cannot perform this operation on
+      # type Array(Bytes)", 2026-11-06). This greps the array form in, on every PR.
+      - name: live/edge static guard
+        run: sh live/edge/tests/static.sh
+
+      # The observability audit round (2026-11-06) shipped four new rules with
+      # env="production" while the policy matches env="prod" — a critical that
+      # never reaches Teams. Plan-free grep, same pattern as the identity guard.
+      - name: live/observability-alerting static guard
+        run: sh live/observability-alerting/tests/static.sh
+
+      # The owner apply kit builds live/identity's TF_VAR_* from read-only az/op lookups. This runs it against
+      # stub az/op and captured-shape fixtures: no credential, no live call; every broken input must stop it.
+      - name: identity apply kit (offline test)
+        run: bash scripts/owner/identity-env/test_identity_env.sh
+
+      # rotate-signin-secret.sh (owner, credential rotation): stub az output in
+      # the REAL `az ad app credential reset -o json` shape (no keyId) and the
+      # credential-list shape. Proves the /applications/ prefix is stripped, the
+      # vault write happens before any later failure, and a broken reset output
+      # stops without writing the vault.
+      - name: rotate-signin-secret (offline test)
+        run: bash scripts/owner/rotate-signin-secret_test.sh
+
+      # prune-kv-secrets.sh (owner, unreferenced-secret deletion): fake trees and
+      # a stub az. Proves a code reference blocks every deletion, a comment/docs
+      # mention does not, and --apply calls only `secret delete`.
+      - name: prune-kv-secrets (offline test)
+        run: bash scripts/owner/prune-kv-secrets_test.sh
 
   # ───────────────────────────────────────────────────────────────────────
   # tflint — NOT a required check yet, deliberately.
@@ -252,7 +291,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: quynhonsemiconductor/ci/actions/iac-lint@ea2c56bd9b03fb4d52e8fb9fe98dca95fd278638 # v1.24.5
+      - uses: quynhonsemiconductor/ci/actions/iac-lint@956804ad4aa2dcf930909553d306d72b3708fd5d # v1.34.1+ci#308
         with:
           tofu-version: ${{ env.TOFU_VERSION }}
           fmt: 'false'
@@ -295,7 +334,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: quynhonsemiconductor/ci/actions/iac-lint@ea2c56bd9b03fb4d52e8fb9fe98dca95fd278638 # v1.24.5
+      - uses: quynhonsemiconductor/ci/actions/iac-lint@956804ad4aa2dcf930909553d306d72b3708fd5d # v1.34.1+ci#308
         with:
           tofu-version: ${{ env.TOFU_VERSION }}
           fmt: 'false'   # install only — the gates run in the fmt job
@@ -307,6 +346,20 @@ jobs:
           ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID_READ }}
           ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
           ARM_USE_OIDC:        'true'
+
+      # live/edge carries PRIVATE data in state: the SSH target map (addresses, logins). The provider marks
+      # none of those attributes sensitive, so anything that prints this stack's plan prints them too. The
+      # rule for edge is therefore the same as for identity: NO plan text in the log, the step summary, the
+      # PR comment or an artifact — only counts, the fingerprint and changed resource TYPES.
+      - name: SSH targets guard (edge)
+        if: matrix.stack == 'edge'
+        working-directory: live/edge
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/ssh-targets-guard.sh"
+        env:
+          SSH_INFRA_TARGETS: ${{ secrets.SSH_INFRA_TARGETS }}
+          ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID_READ }}
+          ARM_TENANT_ID: ${{ vars.ENTRA_TENANT_ID }}
+          ARM_USE_OIDC: 'true'
 
       - name: tofu validate
         working-directory: live/${{ matrix.stack }}
@@ -361,11 +414,26 @@ jobs:
           if [ "$STACK" = "observability" ] || [ "$STACK" = "github" ]; then REFRESH_ARG="-refresh=false"; fi
           set -o pipefail
           set +e
-          # shellcheck disable=SC2086  # REFRESH_ARG is a fixed flag or empty
-          tofu plan -input=false -lock=false -no-color -detailed-exitcode $REFRESH_ARG -out=tfplan 2>&1 \
-            | sed -E 's/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/<redacted>/g' \
-            | tee plan.txt
-          echo "exitcode=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+          if [ "$STACK" = "edge" ]; then
+            # edge: the plan is NEVER printed. Its for_each keys are SSH target names and its attributes are
+            # addresses and logins. File only; the next step publishes counts, fingerprint and types.
+            # shellcheck disable=SC2086  # REFRESH_ARG is a fixed flag or empty
+            tofu plan -input=false -lock=false -no-color -detailed-exitcode $REFRESH_ARG -out=tfplan > plan.txt 2>&1
+            ec=$?
+            if [ "$ec" = "1" ]; then
+              # Diagnostics only (the `╷ … ╵` boxes, or the plain `Error:` block when OpenTofu wrote no
+              # boxes), then UUIDs redacted. Never the plan body.
+              bash "$GITHUB_WORKSPACE/.github/scripts/tofu-error.sh" plan.txt \
+                | sed -E 's/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/<redacted>/g' >&2
+            fi
+          else
+            # shellcheck disable=SC2086  # REFRESH_ARG is a fixed flag or empty
+            tofu plan -input=false -lock=false -no-color -detailed-exitcode $REFRESH_ARG -out=tfplan 2>&1 \
+              | sed -E 's/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/<redacted>/g' \
+              | tee plan.txt
+            ec=${PIPESTATUS[0]}
+          fi
+          echo "exitcode=$ec" >> "$GITHUB_OUTPUT"
         env:
           STACK: ${{ matrix.stack }}
           # Azure OIDC for the onprem azurerm backend (read identity — this job
@@ -400,6 +468,10 @@ jobs:
           TF_VAR_grp_platform_admins_id: ${{ vars.ENTRA_GRP_PLATFORM_ADMINS_ID }}
           TF_VAR_grp_developers_id:     ${{ vars.ENTRA_GRP_DEVELOPERS_ID }}
           TF_VAR_grp_dev_users_id:    ${{ vars.ENTRA_GRP_DEV_USERS_ID }}
+          TF_VAR_grp_staff_id: ${{ vars.ENTRA_GRP_STAFF_ID }}
+          # VLSI group (live/identity coder.tf output): empty until the owner sets the repo
+          # variable, and empty means no WARP enrollment and no gateway policy (coder.tf).
+          TF_VAR_grp_vlsi_id:           ${{ vars.ENTRA_GRP_VLSI_ID }}
           TF_VAR_entra_tenant_id:       ${{ vars.ENTRA_TENANT_ID }}
           TF_VAR_entra_idp_client_id:   ${{ vars.ENTRA_IDP_CLIENT_ID }}
           TF_VAR_entra_idp_client_secret: ${{ secrets.ENTRA_IDP_CLIENT_SECRET }}
@@ -417,10 +489,38 @@ jobs:
           # variable anymore.
           TF_VAR_admin_private_cidr:     ${{ contains(fromJSON('["onprem","edge"]'), matrix.stack) && secrets.ADMIN_PRIVATE_CIDR || '' }}
           TF_VAR_warp_extra_excludes:    ${{ matrix.stack == 'edge' && secrets.WARP_EXTRA_EXCLUDES || '[]' }}
+          TF_VAR_ssh_infra_targets:      ${{ matrix.stack == 'edge' && secrets.SSH_INFRA_TARGETS || '{}' }}
           # live/github: a short-lived token minted from the READ-ONLY GitHub App by the
           # step above (rulesets, repository settings and environments, no write). The
           # write app exists for the apply job only, behind the `production` reviewer.
           TF_VAR_github_token:           ${{ steps.gh-read.outputs.token }}
+
+      # The check block in coder.tf fires inside the plan text, which edge never prints. Surface the ONE
+      # line it matters for as an annotation: it is our own message, contains no private value.
+      - name: Stale Gateway policy notice (edge)
+        if: matrix.stack == 'edge' && steps.plan.outputs.exitcode == '2'
+        working-directory: live/edge
+        run: |
+          if grep -q 'Default deny for private traffic' plan.txt; then
+            echo "::warning title=stale gateway policy::The hand-made 'Default deny for private traffic' (Block, disabled since 2026-07-09, not in IaC) still exists. Delete it: Gateway -> Firewall policies -> that rule -> Delete. Deleting a disabled rule changes no traffic; it duplicates the per-group block in coder.tf."
+          fi
+
+      # edge publishes counts + fingerprint + changed TYPES, and nothing else. The file is what the PR
+      # comment below posts; nothing from the plan body ever reaches the summary or the comment.
+      - name: Plan summary (edge)
+        if: matrix.stack == 'edge' && steps.plan.outputs.exitcode != '1'
+        working-directory: live/edge
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/plan-fingerprint.sh" plan edge "$EXIT_CODE"
+        env:
+          EXIT_CODE: ${{ steps.plan.outputs.exitcode }}
+          HIDE_ADDRESSES: 'true'
+          PLAN_TITLE: 'Plan: live/edge — counts, fingerprint and changed resource types only (the plan carries private SSH targets)'
+          SUMMARY_FILE: ${{ runner.temp }}/plan-summary-edge.md
+          FP_HMAC_KEY: ${{ secrets.SSH_INFRA_TARGETS }}
+          FP_JSON: ${{ runner.temp }}/fp-edge.json
+          ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID_READ }}
+          ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
+          ARM_USE_OIDC:        'true'
 
       # TASK 0.3 / §17b — refuse a plan that would lose data, before anyone reads
       # it. Runs BEFORE the plan comment on purpose: if the answer is "this deletes
@@ -431,7 +531,7 @@ jobs:
       # which is every plan worth guarding.
       - name: Data-destroy guard
         if: always() && steps.plan.outputs.exitcode != '1'
-        uses: quynhonsemiconductor/ci/actions/plan-guard@ea2c56bd9b03fb4d52e8fb9fe98dca95fd278638 # v1.24.5
+        uses: quynhonsemiconductor/ci/actions/plan-guard@956804ad4aa2dcf930909553d306d72b3708fd5d # v1.34.1+ci#308
         with:
           plan-file: tfplan
           working-directory: live/${{ matrix.stack }}
@@ -469,15 +569,26 @@ jobs:
           script: |
             const fs = require('fs');
             const stack = process.env.STACK;
-            const plan = fs.readFileSync(`live/${stack}/plan.txt`, 'utf8');
-            const truncated = plan.length > 60000
-              ? plan.substring(0, 60000) + '\n\n... (truncated)'
-              : plan;
+            // edge: the plan body is private (SSH targets). Post its summary (counts, fingerprint, types),
+            // never plan.txt. Every other stack posts the plan, as before.
+            const edge = stack === 'edge';
+            const file = edge
+              ? `${process.env.RUNNER_TEMP}/plan-summary-edge.md`
+              : `live/${stack}/plan.txt`;
+            if (!fs.existsSync(file)) {
+              console.log(`no plan summary at ${file} (plan failed): nothing to comment`);
+              return;
+            }
+            let text = fs.readFileSync(file, 'utf8');
+            if (text.length > 60000) text = text.substring(0, 60000) + '\n\n... (truncated)';
+            const body = edge
+              ? `### Infrastructure Plan — \`live/${stack}\`\n\n${text}`
+              : `### Infrastructure Plan — \`live/${stack}\`\n\`\`\`hcl\n${text}\n\`\`\``;
             await github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: `### Infrastructure Plan — \`live/${stack}\`\n\`\`\`hcl\n${truncated}\n\`\`\``,
+              body,
             });
 
       # -detailed-exitcode: 0=no change, 2=changes (both OK for a PR), 1=error.
@@ -488,7 +599,7 @@ jobs:
       # after labelling). 2026-10-09: the plan below was green and showed nine replaced records.
       - name: Refuse destructive DNS / identity changes
         if: always() && steps.plan.outputs.exitcode != '1'
-        uses: quynhonsemiconductor/ci/actions/destructive-guard@ea2c56bd9b03fb4d52e8fb9fe98dca95fd278638 # v1.24.5
+        uses: quynhonsemiconductor/ci/actions/destructive-guard@956804ad4aa2dcf930909553d306d72b3708fd5d # v1.34.1+ci#308
         with:
           working-directory: live/${{ matrix.stack }}
           pr-number: ${{ github.event.pull_request.number }}
@@ -532,7 +643,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: quynhonsemiconductor/ci/actions/assert-jobs-succeeded@ea2c56bd9b03fb4d52e8fb9fe98dca95fd278638 # v1.24.5
+      - uses: quynhonsemiconductor/ci/actions/assert-jobs-succeeded@956804ad4aa2dcf930909553d306d72b3708fd5d # v1.34.1+ci#308
         with:
           results: ${{ join(needs.*.result, ',') }}
           allow-skipped: 'true'

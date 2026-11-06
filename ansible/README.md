@@ -10,8 +10,9 @@ requirements.yml       pinned collections        requirements-dev.txt   pinned a
 inventory/example/     the shape of the local inventory (documentation addresses)
 group_vars/            values that are NOT site values (pins, hardware model ids)
 ping.yml               reach every host and become root
-roles/, *.yml          wave 1: pve-host.yml (pve_base, pve_gpu, pbs), k3s-server.yml, k3s-agent-gpu.yml,
-                       k3s-agent.yml (vlsi); every k3s playbook first runs vm_guest, apparmor_containerd and kernel
+roles/, *.yml          wave 1: pve-host.yml (pve_base, pve_gpu, pbs, pve_monitoring), k3s-server.yml,
+                       k3s-agent-gpu.yml, k3s-agent.yml (vlsi); every k3s playbook first runs vm_guest,
+                       apparmor_containerd and kernel
 ```
 
 ## Set up (once, on the operator's machine)
@@ -37,6 +38,231 @@ ansible-playbook ping.yml
   a variable per role allows the restart (default off).
 - **No disks, no pools.** Ansible never creates or destroys a pool or a partition.
 - **CI never touches a host.** `.github/workflows/ansible-lint.yml` runs ansible-lint and `--syntax-check` only.
+
+## Proxmox host metrics (`pve_monitoring`)
+
+`pve-host.yml --tags pve_monitoring` installs node-exporter (textfile collector only), a 5-minute
+ZFS/NVMe/PBS/apt script, and Grafana Alloy, which pushes the resulting `pve_*` series over OTLP to the
+cluster's `alloy-otlp-host` NodePort. Besides ZFS, NVMe, PBS fill and the heartbeat, the script exports
+`pve_apt_updates_pending`, `pve_apt_security_updates_pending` (`-1` = apt simulation failed, unknown) and
+`pve_apt_reboot_required` (1 = `/run/reboot-required` exists, or the newest installed kernel is not the
+running one). It needs one site value in the git-ignored
+local inventory — the endpoint of a k3s node on that NodePort:
+
+```yaml
+pve:
+  hosts:
+    pve01:
+      ansible_host: 192.0.2.10
+      ansible_user: root
+      pve_monitoring_otlp_endpoint: "http://192.0.2.20:30418"
+```
+
+The role asserts it rather than installing a collector that sends nowhere. Node-exporter binds to loopback; no new
+port is opened on the host.
+
+**The OTLP door is LAN-reachable and unauthenticated.** `alloy-otlp-host` (NodePort 30418) admits RFC1918 sources
+and filters metrics by `service.name`/name; it does not authenticate them. Pinning the source to pve01 would require
+the host's address in the public GitOps repo (NetworkPolicy `ipBlock` cannot read a Secret, and there is no policy
+engine here), so the source restriction is deliberately left out of GitOps. Mitigations in place: RFC1918-only
+NetworkPolicy, the PVE metric-name allowlist, and the host sending only `pve_.*`. If the owner wants a strict source
+pin, add a node-firewall rule allowing only pve01 → 30418; that keeps the address in the site firewall, not in Git.
+
+## Entra OpenID login (`pve_base_entra`, `pbs_entra`)
+
+Both the Proxmox VE realm and the Proxmox Backup Server realm use the ONE "QNSC Proxmox" app from
+`live/identity/proxmox.tf` (one client id, one secret, one direct-assignment list). The realms, the PVE
+group and the PBS per-user ACLs are Ansible's job; the manual sequence and verification are in the
+platform runbook (product-docs, server-setup §3.2.1). `root@pam` is never touched — it is the break-glass
+account (LAN, password + TOTP); the role fails if it is missing or disabled.
+
+The full ordered owner sequence is in `live/identity/README.md`, "Proxmox VE + PBS login": **1** identity
+plan (both redirect URIs, same run as #402) → **2** go/no-go → **3** apply + outputs → **4** client secret
+into `kv-qnsc-admin` → **5** this inventory → **6** `--check` then run. Do not start at step 5: the realms
+need the applied app and the vault secret first.
+
+The four non-secret site values live in the LOCAL inventory (nothing in Git), next to the host. The shared
+`proxmox_entra_admin_emails` is the platform admins' Entra `email` claim values (owner-held; keep them equal
+to the app's direct assignments and `grp-qnsc-platform-admins`). Use the EXACT strings Entra returns — PVE and
+PBS user ids are case-sensitive. `pbs_entra_admin_emails` is still accepted as a compat alias. The group
+object id is `az ad group show --group grp-qnsc-platform-admins --query id -o tsv`:
+
+```yaml
+pve:
+  hosts:
+    pve01:
+      # ...
+      proxmox_oidc_issuer_url: "https://login.microsoftonline.com/<tenant>/v2.0"   # step 3 output
+      proxmox_oidc_client_id: "<application (client) id>"                          # step 3 output
+      proxmox_oidc_admin_group_oid: "<object id of grp-qnsc-platform-admins>"
+      # ONE shared admin list for both realms. PVE pre-creates <email>@entra and makes each one a member
+      # of <oid>-entra; PBS pre-creates the same users and grants Admin on /. Keep it equal to the app's
+      # direct assignments and the platform-admins group.
+      proxmox_entra_admin_emails: ["<admin1>@<domain>", "<admin2>@<domain>"]
+```
+
+**Why my group changed on login (and why the role does not use the claim).** PVE asks the provider's
+`userinfo` endpoint for claim values: `src/PVE/API2/OpenId.pm` passes `query-userinfo` with a default of 1,
+then reads `groups-claim` from the returned info (PVE docs, "Query userinfo endpoint",
+<https://pve.proxmox.com/pve-docs/chapter-pveum.html#pveum_openid>). Microsoft's userinfo response returns
+only the OIDC standard name/subject/email claims and **cannot be customized** — the app's SecurityGroup
+`groups` claim lives in the ID token, not in userinfo (Microsoft Learn, "UserInfo endpoint",
+<https://learn.microsoft.com/en-us/entra/identity-platform/userinfo>). So `pve_base_entra` does not rely on
+the claim: it pre-creates `<email>@<realm>` for every list entry, makes each one a member of
+`<group-oid>-entra`, and removes members no longer listed (offboarding). The realm keeps `autocreate=0`
+(only listed admins may exist) and `groups-overwrite=0` (a login never wipes the membership). On an
+existing realm the role also deletes the legacy `groups-claim` / `groups-autocreate` settings
+(`pveum realm modify <realm> --delete groups-claim,groups-autocreate`) so the configuration converges and
+drift includes them. PBS already works this way: pre-created user + per-user ACL. A `--check` run reports
+each pending create/addition/removal; a second run is `changed=0`.
+
+A **PVE-only** inventory may omit the shared list entirely: the realm, group and ACL are still managed,
+and only the user pre-creation/membership/offboarding tasks are skipped. An **explicitly empty
+`proxmox_entra_admin_emails`** is different: it runs those tasks and prunes every pre-created account from
+the admin group (that is how "remove all admins" is expressed). A leftover legacy
+`pbs_entra_admin_emails` is only a PVE fallback. The PBS role accepts the CANONICAL key only: a
+legacy-only list (empty or not) **fails** with a message to rename it. When the list is present it must
+hold the exact Entra email strings with no duplicates (casing preserved; comparisons are case-insensitive).
+
+**Offboarding, per system.** PVE removes the account from `<oid>-entra` (the PVE user object stays). PBS revokes its `Admin` ACL on `/`
+(`proxmox-backup-manager acl update / Admin --auth-id <id> --delete`); a `--check` run prints
+`would revoke Admin on / from <id>`, and `[]` (canonical key) revokes everyone. Neither system deletes
+the account here.
+
+The client secret comes from the environment of the run (Key Vault `kv-qnsc-admin`,
+`admin-proxmox-oidc-secret`, created in identity step 4 with `scripts/rotate-signin-secret.sh`):
+
+```zsh
+export PROXMOX_OIDC_CLIENT_SECRET="$(az keyvault secret show --vault-name kv-qnsc-admin \
+  --name admin-proxmox-oidc-secret --query value -o tsv --only-show-errors)"
+ansible-playbook pve-host.yml --check --diff --tags pve_base_entra,pbs_entra
+ansible-playbook pve-host.yml --tags pve_base_entra,pbs_entra
+unset PROXMOX_OIDC_CLIENT_SECRET
+```
+
+The `--check` run must be clean before the real run, and the first login on each door must show no
+`AADSTS50011` (redirect URI mismatch). An ordinary run needs no secret once both realms exist (drift
+changes never rewrite the key). A rotation appends a credential, stores it in Key Vault, then runs both
+roles with `-e pve_base_entra_rotate_client_key=true -e pbs_entra_rotate_client_key=true`; the old
+credential is revoked after a green login on both doors. The key is momentarily in
+`pveum`/`proxmox-backup-manager` argv on pve01 (single-admin host); the runbook states the caveat.
+
+## ZFS ARC ceiling (`pve_base_zfs`)
+
+`pve_base` owns `/etc/modprobe.d/zfs.conf` (one `options zfs zfs_arc_max=4294967296` line) and applies
+the live `/sys/module/zfs/parameters/zfs_arc_max`. It refuses a file whose `options zfs` line carries
+other settings instead of overwriting them; merge by hand and re-run. The initramfs handler rebuilds,
+and no reboot is needed. After a run that changed the value:
+
+```sh
+proxmox-boot-tool status                                  # boot entry/initramfs is current
+cat /sys/module/zfs/parameters/zfs_arc_max                # 4294967296
+```
+
+`--check` reports the pending file line and live change; `pve-host.yml --tags pve_base_zfs` converges just this.
+## SSH for people (`ssh_infra`): Cloudflare Access for Infrastructure
+
+No shared passwords and no long-lived personal keys. A platform admin enables
+WARP (`live/edge/warp.tf`), runs `ssh <user>@<node address>`, and Cloudflare's Gateway SSH
+proxy checks Entra + MFA and issues a **short-lived SSH certificate**. The node
+trusts the account's Access SSH CA; the CA public key is the only trust anchor.
+
+**Free-plan check.** Cloudflare's docs list Access for Infrastructure under
+Zero Trust plans **All plans** (<https://developers.cloudflare.com/cloudflare-one/access-controls/applications/non-http/infrastructure-apps/>).
+Confirm it is enabled in the account's Zero Trust dashboard before applying;
+if it is not offered, STOP and report — the fallback is Ansible-managed public
+keys, not a downgrade to passwords.
+
+### 1. Cloudflare (IaC, `live/edge/ssh_infra.tf`)
+
+Targets and usernames come from the `TF_VAR_ssh_infra_targets` JSON (a repo
+secret / owner env file; no address or person name is committed):
+
+```json
+{
+  "<gpu-node>": { "hostname": "<gpu-node>", "ipv4": "<gpu-node address>", "usernames": ["<admin login>"] }
+}
+```
+
+Apply `live/edge`: one `cloudflare_zero_trust_access_infrastructure_target`
+per node and one infrastructure application (SSH/22) per target. Its policy
+allows `grp-qnsc-platform-admins`, requires `amr=mfa`, and restricts the UNIX
+usernames. The provider has no gateway-CA resource, so the account CA is read
+or created once with the owner script:
+
+```sh
+CLOUDFLARE_ACCOUNT_ID=<account-id> CLOUDFLARE_API_TOKEN=<token> \
+  scripts/owner/cloudflare-ssh-ca.sh
+```
+
+The token needs **Access: SSH Auditing — Edit**. The printed public key goes
+into the LOCAL inventory as `node_ssh_ca_public_key` (a public key, not a
+secret; still never committed). The script uses `POST /accounts/<id>/access/gateway_ca`
+only when no CA exists; a per-app `zero_trust_access_short_lived_certificate`
+CA is **not** compatible with the Gateway SSH proxy.
+
+### 2. Nodes (Ansible role `ssh_infra`)
+
+Local inventory (git-ignored; names and addresses stay here):
+
+```yaml
+node_ssh_ca_public_key: "ssh-ed25519 AAAA... "
+node_admin_users:
+  # hosts = VM names in this inventory; sudo = passwordless sudo (identity + MFA happen at Cloudflare)
+  - { name: <admin login>, sudo: true, hosts: ["<gpu-node>"] }
+```
+
+The role (tags `ssh_infra`) is included by the GPU node playbook (`k3s-agent-gpu.yml`) only
+today. A node with no entry and no management history gets no account changes; the sudoers/principal
+sweeps still run wherever those role-owned paths exist. Add the role to another playbook and a target
+in `TF_VAR_ssh_infra_targets` when that node gets users. It writes `/etc/ssh/ca.pub` and a `sshd_config.d` drop-in with
+`TrustedUserCAKeys` plus `AuthorizedPrincipalsFile` (one principal per account,
+`%u`), validates the MERGED config with `sshd -t`, and on failure restores the
+previous drop-in and fails without reloading. For each listed account it creates
+the user with **no password and no authorized_keys**, adds `video,render` on the
+GPU node, writes a `sudoers.d` file when `sudo: true`, and a principal file
+containing exactly the login name. Reserved/operator names (`root`, `qnsc`,
+`ubuntu`, system accounts) are refused, and so is any pre-existing account this
+role did not create. Removed from the list → the account is locked (expiry in
+the past), its active sessions are killed, its sudoers and principal files are
+removed, and the home stays. The marker keeps EVERY name the role owns (desired and offboarded); a
+FAILED lock is retried next run. Creation uses `useradd --password '*'`; re-adding runs `usermod -p '*' -e -1` only
+when the shadow pre-check sees a hash other than `*` or an expiry (the user module strips `!` before
+comparing, so it is not used). `*` means no password login and does not block certificate login under
+UsePAM yes. An undefined `node_ssh_ca_public_key` or `node_admin_users` FAILS the run. Revoking the
+trust requires explicit empty values plus `ssh_infra_revoke: true`; it removes the drop-in,
+`/etc/ssh/ca.pub`, the principal directory and locks every owned account. The break-glass operator
+account is never touched.
+
+```sh
+ansible-playbook k3s-agent-gpu.yml --tags ssh_infra --check --diff   # plan
+ansible-playbook k3s-agent-gpu.yml --tags ssh_infra                  # apply
+```
+
+Re-run the same command: `changed=0`.
+
+**Dry-run a removal** (proves offboarding before it happens): delete one
+`node_admin_users` entry, run `--check --diff`; expect
+`would lock <login> (home kept), kill its sessions and remove its sudo and
+certificate principal`. Re-add the entry to cancel, or run without `--check` to
+complete the offboarding.
+
+### 3. Verify
+
+1. Owner: WARP connected, `warp-cli status`; then `ssh <login>@<gpu-node address>`
+   (no password prompt, no local key prompt).
+2. **Certificate principal:** `ssh -v` shows the offered certificate; run
+   `ssh-keygen -L -f <cert file>` on it and confirm `Principals:` equals the
+   UNIX login exactly (one principal per account, enforced by
+   `AuthorizedPrincipalsFile`). A different name is refused even with a valid
+   Cloudflare signature.
+3. Cloudflare dashboard → Access → Logs shows the SSH session for the user.
+4. On the node: `getent passwd <login>`, `sudo -n true` works for a sudo
+   account, and `nvidia-smi` works on the GPU node. Check the GPU is idle before
+   testing and never start a model just to test access.
+
+`NOPASSWD` sudo is accepted for a certificate-only account: it has no password
+or key, and identity + MFA are checked at Cloudflare before sudo is reachable.
 
 ## PBS API token
 

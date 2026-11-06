@@ -29,6 +29,38 @@ variable "budget_period_end" {
   }
 }
 
+variable "platform_admin_object_ids" {
+  type        = set(string)
+  description = "Object ids of the platform-admin USERS, assigned DIRECTLY to the Proxmox app and to the OpsHub Dev/Prod Admin role. Group-based app-role assignment is an Entra ID P1/P2 feature and this tenant has no P1 (Microsoft Learn, 'Manage access to apps'), so one shared per-user list drives both. Keep in step with grp-qnsc-platform-admins. TF_VAR_platform_admin_object_ids (JSON list), never committed."
+
+  validation {
+    condition = length(var.platform_admin_object_ids) > 0 && alltrue([
+      for id in var.platform_admin_object_ids :
+      can(regex("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", id))
+    ])
+    error_message = "platform_admin_object_ids must be a non-empty set of user object ids (GUIDs)."
+  }
+}
+
+variable "dev_app_extra_owner_object_ids" {
+  type        = map(list(string))
+  default     = {}
+  description = "Extra OWNERS for DEV sign-in apps only, keyed by app (rova_dev, opshub_dev, kb_dev). An app owner can add client credentials and redirect URIs, so prod keys are rejected; the values are user object ids and stay out of Git (TF_VAR_dev_app_extra_owner_object_ids, built by the kit from IDENTITY_DEV_APP_EXTRA_OWNERS)."
+
+  validation {
+    condition = alltrue([
+      for app, ids in var.dev_app_extra_owner_object_ids :
+      contains(["rova_dev", "opshub_dev", "kb_dev"], app) &&
+      length(ids) > 0 &&
+      alltrue([
+        for id in ids :
+        can(regex("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", id))
+      ])
+    ])
+    error_message = "dev_app_extra_owner_object_ids accepts DEV sign-in apps only (rova_dev, opshub_dev, kb_dev), each mapped to a non-empty list of user object ids (GUIDs). A prod key is rejected."
+  }
+}
+
 variable "office_ip" {
   type        = string
   default     = ""

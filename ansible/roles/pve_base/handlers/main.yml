@@ -11,3 +11,14 @@
   ansible.builtin.service:
     name: ssh
     state: reloaded
+
+- name: Rebuild initramfs for the ZFS ARC ceiling
+  ansible.builtin.command: update-initramfs -u -k all
+  changed_when: true
+
+# The schedule lives in the file smartd reads at start; SIGHUP re-reads it in newer
+# smartmontools, restart is the version we can rely on across releases.
+- name: Restart smartd
+  ansible.builtin.service:
+    name: "{{ pve_base_smartd_service }}"
+    state: restarted

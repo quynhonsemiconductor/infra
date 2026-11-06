@@ -10,19 +10,48 @@
 # Gate: local.cutover, same as every rova-dev resource — nothing exists for
 # the host until its move apply.
 #
-# Policy group: `grp-qnsc-developers` — the SAME Entra group the web dev
-# Access app allows (the rova users group). VLSI stays excluded at group
-# membership (MCP-PLAN §5 L1).
+# Policy groups: `grp-qnsc-developers` and `grp-qnsc-dev-users` (PQA, BA), the same
+# two groups the dev web Access app allows. Dev stays engineering + testing; the
+# whole company (grp-qnsc-staff) reaches the PROD server (mcp_rova_prod.tf).
 
 resource "cloudflare_zero_trust_access_application" "rova_dev_mcp" {
   count = contains(local.cutover_live, "rova-dev.qnsc.vn") ? 1 : 0
 
-  account_id       = var.cloudflare_account_id
-  name             = "rova-dev MCP server"
-  domain           = "rova-dev.qnsc.vn/mcp"
-  type             = "self_hosted"
+  account_id = var.cloudflare_account_id
+  name       = "rova-dev MCP server"
+  domain     = "rova-dev.qnsc.vn/mcp"
+  type       = "self_hosted"
+
+  # Access serves the OAuth metadata at <host>/.well-known/oauth-authorization-server (Managed OAuth). That
+  # path must belong to this app, or the SPA Worker / the web app answers it with HTML and an MCP client
+  # (the portal's server registration included) cannot discover the authorization server.
+  destinations = [
+    { type = "public", uri = "rova-dev.qnsc.vn/mcp" },
+    { type = "public", uri = "rova-dev.qnsc.vn/.well-known/oauth-authorization-server" },
+  ]
   session_duration = "24h" # the OAuth GRANT session (MCP-PLAN §5: chosen 24 h)
   allowed_idps     = [cloudflare_zero_trust_access_identity_provider.entra.id]
+
+  # Managed OAuth (was a dashboard click-step): Access is the OAuth server for this app. Redirect URIs a
+  # dynamically registered client may use: claude.ai, the MCP portal's admin authorization (dashboard
+  # callback, per account and server) and the shared Cloudflare callback the portal uses per user
+  # (is_shared_oauth_callback_enabled on the server). Localhost/loopback for Claude Code.
+  oauth_configuration = {
+    enabled = true
+    dynamic_client_registration = {
+      enabled                = true
+      allow_any_on_localhost = true
+      allow_any_on_loopback  = true
+      allowed_uris = [
+        "https://claude.ai/api/mcp/auth_callback",
+        "https://dash.cloudflare.com/${var.cloudflare_account_id}/one/access-controls/ai-controls/mcp-server/oauth-callback/rova-dev",
+        "https://oauth-callbacks.cloudflareaccess.com/cdn-cgi/access/outbound-oauth-callback",
+      ]
+    }
+    grant = {
+      access_token_lifetime = "15m"
+    }
+  }
 
   policies = [{
     id         = cloudflare_zero_trust_access_policy.rova_dev_mcp_allow[0].id
@@ -41,9 +70,11 @@ resource "cloudflare_zero_trust_access_policy" "rova_dev_mcp_allow" {
   decision         = "allow"
   session_duration = "24h"
 
-  include = [{
+  # grp-qnsc-developers plus grp-qnsc-dev-users (PQA, BA): the rova tools act as the signed-in rova user, so rova's
+  # own RBAC still decides what each person can read or change. Include = OR.
+  include = [for g in compact([var.grp_developers_id, var.grp_dev_users_id]) : {
     azure_ad = {
-      id                   = var.grp_developers_id
+      id                   = g
       identity_provider_id = cloudflare_zero_trust_access_identity_provider.entra.id
     }
   }]
@@ -52,17 +83,14 @@ resource "cloudflare_zero_trust_access_policy" "rova_dev_mcp_allow" {
   }]
 }
 
-# ── OWNER CLICK-STEPS (Managed OAuth — queued, not in IaC) ──────────────────
+# ── OWNER CLICK-STEPS (what is left after Managed OAuth moved into IaC, 2026-11-03) ──
 #
-# After this app is applied, in Zero Trust → Access → Applications →
-# "rova-dev MCP server":
-#   1. Managed OAuth: ON.
-#   2. Redirect URIs: the claude.ai callback (https://claude.ai/api/mcp/auth_callback)
-#      and LOOPBACK clients enabled (http://localhost:* — Claude Code).
-#   3. Access token lifetime: 15 minutes.
-#      (The 24 h grant = `session_duration` above, already in IaC.)
-#   4. Confirm IdP = Entra only; policy = the group + MFA policy from this file.
-#
+# Managed OAuth (redirect URIs, localhost/loopback, 15 min tokens) is `oauth_configuration` above.
+# Still manual, once per MCP server after a create (needs an interactive OAuth login):
+#   Zero Trust → Access controls → MCP Portals → <server> → Edit → Server authentication:
+#   Automatic → Authenticate server (Entra, a member of grp-qnsc-developers) → enable the tools → Save.
+#   Status turns Active; until then the portal answers "No allowed servers available".
+
 # ── MCP Server Portal `qnsc` — now IaC: see mcp_portal.tf. The claude.ai
 # connector (portal URL) is added once by the Claude Team Owner (CEO).
 
@@ -77,4 +105,14 @@ resource "cloudflare_zero_trust_access_policy" "rova_dev_mcp_allow" {
 output "rova_dev_mcp_aud" {
   description = "AUD tag of the rova-dev /mcp Access app — the audience the app's Access-JWT verifier pins. Consumed at cutover (agent C)."
   value       = one(cloudflare_zero_trust_access_application.rova_dev_mcp[*].aud)
+}
+
+# /mcp must reach the tunnel (API), not the SPA Worker that owns rova-dev.qnsc.vn/*. Same no-Worker route as
+# rova prod (mcp_rova_prod.tf); the tunnel's /mcp ingress rule is in live/onprem/tunnels.tf.
+resource "cloudflare_workers_route" "rova_dev_mcp" {
+  for_each = contains(local.cutover_live, "rova-dev.qnsc.vn") ? toset(["/mcp", "/mcp/*"]) : toset([])
+
+  zone_id = var.cloudflare_zone_id
+  pattern = "rova-dev.qnsc.vn${each.value}"
+  script  = null
 }

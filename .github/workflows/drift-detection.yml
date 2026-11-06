@@ -53,16 +53,39 @@ on:
     # unmanaged-resources (01:15) and pin-drift (01:00) to spread runner usage.
     - cron: '30 0 * * *'
   workflow_dispatch:
+  # The workflow's own inputs guard (scripts/test_drift_identity_inputs.py) runs
+  # on PRs that touch it. The drift matrix itself is skipped on pull_request.
+  pull_request:
+    paths:
+      - '.github/workflows/drift-detection.yml'
+      - 'scripts/test_drift_identity_inputs.py'
 
 permissions:
   contents: read
 
 env:
-  TOFU_VERSION: "1.9.1"
+  TOFU_VERSION: "1.13.2"
 
 jobs:
+  inputs-guard:
+    name: Identity kit inputs guard
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Unit tests (stdlib only)
+        run: python3 -m unittest scripts/test_drift_identity_inputs.py -v
+
   drift:
     name: Drift ${{ matrix.stack }}
+    # Never on a pull_request: the guard job above is the PR check, and a plan
+    # with the read identity does not belong on an unmerged branch.
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -97,16 +120,76 @@ jobs:
           # github is NOT here: the read app cannot see repository bypass actors or merge settings, so a
           # nightly read-only refresh would be red every night. It has its own monthly job in
           # environment production (.github/workflows/github-drift.yml), planned with the apply app.
+          #
+          # identity: NEVER planned in infra-plan.yml (owner-only, public plan output), but a
+          # REFRESH-ONLY comparison belongs here. It is planned with the same read identity
+          # (Directory Readers reads app/group metadata and credential DATES, never values), through
+          # the owner apply kit so every required TF_VAR_* comes from read-only lookups. Its plan text
+          # is written to a file and NEVER printed, and the destructive-guard classifier is SKIPPED:
+          # drift_report.py prints drifted resource ADDRESSES, and the identity for_each keys are user
+          # and app object ids. This repo is public; exit 2 is red with a "details withheld" line only. Required repo secrets (owner):
+          # IDENTITY_OWNER_OPERATOR_UPN, IDENTITY_SECOND_OWNER_UPN, IDENTITY_PROXMOX_HOST,
+          # IDENTITY_PBS_HOST, IDENTITY_KV_AUDIT_EMAIL (added with the Key Vault alerts:
+          # live/identity now has a required kv_audit_email with no default).
+          - identity
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: quynhonsemiconductor/ci/actions/iac-lint@ea2c56bd9b03fb4d52e8fb9fe98dca95fd278638 # v1.24.5
+      - uses: quynhonsemiconductor/ci/actions/iac-lint@956804ad4aa2dcf930909553d306d72b3708fd5d # v1.34.1+ci#308
         with:
           tofu-version: ${{ env.TOFU_VERSION }}
           fmt: 'false'   # install only
+
+      # The identity kit reads Entra through the `az` CLI, so the CLI needs a login
+      # of its own: the ARM_* OIDC variables below configure the PROVIDERS, not az.
+      # Same one-exchange flow (and the same read identity) as secret-expiry.yml.
+      - name: Azure login for the identity kit (read identity, OIDC)
+        if: matrix.stack == 'identity'
+        env:
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID_READ }}
+          AZURE_TENANT_ID: ${{ vars.ENTRA_TENANT_ID }}
+        run: |
+          set -euo pipefail
+          token="$(curl -fsS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange" | jq -r .value)"
+          if [ -z "$token" ] || [ "$token" = "null" ]; then
+            echo "::error::no federated token"; exit 1
+          fi
+          az login --service-principal --username "$AZURE_CLIENT_ID" --tenant "$AZURE_TENANT_ID" \
+            --federated-token "$token" --allow-no-subscriptions --output none
+
+      # The owner kit stops on the FIRST missing input, with a one-line message
+      # that reads like a kit bug in a nightly run (2026-11-06: every input was
+      # empty and the failure surfaced as "identity — refresh exit 1, plan
+      # exit 1"). Name every missing input at once, before the kit starts.
+      - name: Identity drift inputs present
+        if: matrix.stack == 'identity'
+        env:
+          IN_OWNER_UPN: ${{ secrets.IDENTITY_OWNER_OPERATOR_UPN }}
+          IN_SECOND_UPN: ${{ secrets.IDENTITY_SECOND_OWNER_UPN }}
+          IN_PVE_HOST: ${{ secrets.IDENTITY_PROXMOX_HOST }}
+          IN_PBS_HOST: ${{ secrets.IDENTITY_PBS_HOST }}
+          IN_EXTRA_OWNERS: ${{ secrets.IDENTITY_DEV_APP_EXTRA_OWNERS }}
+          IN_EXTRA_ADMINS: ${{ secrets.IDENTITY_DEV_APP_EXTRA_ADMINS }}
+          IN_KV_AUDIT_EMAIL: ${{ secrets.IDENTITY_KV_AUDIT_EMAIL }}
+        run: |
+          set -euo pipefail
+          missing=""
+          check() { [ -n "$2" ] || missing="$missing $1"; }
+          check IDENTITY_OWNER_OPERATOR_UPN "$IN_OWNER_UPN"
+          check IDENTITY_SECOND_OWNER_UPN "$IN_SECOND_UPN"
+          check IDENTITY_PROXMOX_HOST "$IN_PVE_HOST"
+          check IDENTITY_PBS_HOST "$IN_PBS_HOST"
+          check IDENTITY_DEV_APP_EXTRA_OWNERS "$IN_EXTRA_OWNERS"
+          check IDENTITY_DEV_APP_EXTRA_ADMINS "$IN_EXTRA_ADMINS"
+          check IDENTITY_KV_AUDIT_EMAIL "$IN_KV_AUDIT_EMAIL"
+          if [ -n "$missing" ]; then
+            echo "::error title=Identity drift needs owner inputs::Repository secrets missing or empty:${missing}. Set each with: gh secret set <NAME> -R ${GITHUB_REPOSITORY} (type the value at the prompt, or pipe it from the password manager; never --body). The two EXTRA_* inputs are required because live/identity now owns the hand-added DEV app owners and OpsHub Dev admin-role holders: with them unset the plan proposes removing those live grants, so the job would be red every night even with the four host/UPN inputs set. IDENTITY_KV_AUDIT_EMAIL is required by the Key Vault audit alerts (kv_audit_email has no default). See docs/runbooks/drift-detection.md."
+            exit 1
+          fi
 
       - name: tofu init
         working-directory: live/${{ matrix.stack }}
@@ -119,6 +202,18 @@ jobs:
           ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID_READ }}
           ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
           ARM_USE_OIDC:        'true'
+
+      # edge carries private SSH target values in state: the guard masks them and refuses an empty secret
+      # over a non-empty state. Same script as infra-plan.yml and infra-apply.yml.
+      - name: SSH targets guard (edge)
+        if: matrix.stack == 'edge'
+        working-directory: live/edge
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/ssh-targets-guard.sh"
+        env:
+          SSH_INFRA_TARGETS: ${{ secrets.SSH_INFRA_TARGETS }}
+          ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID_READ }}
+          ARM_TENANT_ID: ${{ vars.ENTRA_TENANT_ID }}
+          ARM_USE_OIDC: 'true'
 
       - name: Require the read-only Cloudflare token
         if: ${{ contains(fromJSON('["edge","storage-dev","storage-prod","onprem"]'), matrix.stack) }}
@@ -135,8 +230,10 @@ jobs:
       # locks via the admin role. PIPESTATUS[0] captures tofu's exit past the `tee`.
       - name: Detect external drift (refresh-only)
         id: refresh
+        if: matrix.stack != 'identity'
         working-directory: live/${{ matrix.stack }}
         env:
+          STACK: ${{ matrix.stack }}
           TF_VAR_cloudflare_zone_id:    ${{ vars.CLOUDFLARE_ZONE_ID }}
           TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           # Read-only token, and only for the stacks that talk to Cloudflare. Empty elsewhere on purpose.
@@ -155,6 +252,8 @@ jobs:
           TF_VAR_grp_platform_admins_id: ${{ matrix.stack == 'edge' && vars.ENTRA_GRP_PLATFORM_ADMINS_ID || '' }}
           TF_VAR_grp_developers_id:      ${{ matrix.stack == 'edge' && vars.ENTRA_GRP_DEVELOPERS_ID || '' }}
           TF_VAR_grp_dev_users_id:     ${{ matrix.stack == 'edge' && vars.ENTRA_GRP_DEV_USERS_ID || '' }}
+          TF_VAR_grp_staff_id: ${{ matrix.stack == 'edge' && vars.ENTRA_GRP_STAFF_ID || '' }}
+          TF_VAR_grp_vlsi_id: ${{ matrix.stack == 'edge' && vars.ENTRA_GRP_VLSI_ID || '' }}
           TF_VAR_entra_tenant_id:        ${{ matrix.stack == 'edge' && vars.ENTRA_TENANT_ID || '' }}
           TF_VAR_entra_idp_client_id:    ${{ matrix.stack == 'edge' && vars.ENTRA_IDP_CLIENT_ID || '' }}
           TF_VAR_entra_idp_client_secret: ${{ matrix.stack == 'edge' && secrets.ENTRA_IDP_CLIENT_SECRET || '' }}
@@ -172,15 +271,27 @@ jobs:
           ARM_USE_OIDC:        'true'
           TF_VAR_admin_private_cidr: ${{ contains(fromJSON('["onprem","edge"]'), matrix.stack) && secrets.ADMIN_PRIVATE_CIDR || '' }}
           TF_VAR_warp_extra_excludes: ${{ matrix.stack == 'edge' && secrets.WARP_EXTRA_EXCLUDES || '[]' }}
+          TF_VAR_ssh_infra_targets:   ${{ matrix.stack == 'edge' && secrets.SSH_INFRA_TARGETS || '{}' }}
         run: |
+          # edge: never printed — its plan text carries the private SSH target map. File only; the
+          # summary below publishes counts, fingerprint and types. Other stacks keep the log stream.
           set +e
-          tofu plan -refresh-only -input=false -lock=false -no-color -detailed-exitcode -out=refresh.tfplan 2>&1 | tee refresh.txt
-          echo "exitcode=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+          if [ "$STACK" = "edge" ]; then
+            tofu plan -refresh-only -input=false -lock=false -no-color -detailed-exitcode -out=refresh.tfplan > refresh.txt 2>&1
+            ec=$?
+            if [ "$ec" = "1" ]; then sed -n '/^╷/,/^╵/p' refresh.txt >&2; fi
+          else
+            tofu plan -refresh-only -input=false -lock=false -no-color -detailed-exitcode -out=refresh.tfplan 2>&1 | tee refresh.txt
+            ec=${PIPESTATUS[0]}
+          fi
+          echo "exitcode=$ec" >> "$GITHUB_OUTPUT"
 
       - name: Detect unapplied config
         id: plan
+        if: matrix.stack != 'identity'
         working-directory: live/${{ matrix.stack }}
         env:
+          STACK: ${{ matrix.stack }}
           TF_VAR_cloudflare_zone_id:    ${{ vars.CLOUDFLARE_ZONE_ID }}
           TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           # Read-only token, and only for the stacks that talk to Cloudflare. Empty elsewhere on purpose.
@@ -199,6 +310,8 @@ jobs:
           TF_VAR_grp_platform_admins_id: ${{ matrix.stack == 'edge' && vars.ENTRA_GRP_PLATFORM_ADMINS_ID || '' }}
           TF_VAR_grp_developers_id:      ${{ matrix.stack == 'edge' && vars.ENTRA_GRP_DEVELOPERS_ID || '' }}
           TF_VAR_grp_dev_users_id:     ${{ matrix.stack == 'edge' && vars.ENTRA_GRP_DEV_USERS_ID || '' }}
+          TF_VAR_grp_staff_id: ${{ matrix.stack == 'edge' && vars.ENTRA_GRP_STAFF_ID || '' }}
+          TF_VAR_grp_vlsi_id: ${{ matrix.stack == 'edge' && vars.ENTRA_GRP_VLSI_ID || '' }}
           TF_VAR_entra_tenant_id:        ${{ matrix.stack == 'edge' && vars.ENTRA_TENANT_ID || '' }}
           TF_VAR_entra_idp_client_id:    ${{ matrix.stack == 'edge' && vars.ENTRA_IDP_CLIENT_ID || '' }}
           TF_VAR_entra_idp_client_secret: ${{ matrix.stack == 'edge' && secrets.ENTRA_IDP_CLIENT_SECRET || '' }}
@@ -214,18 +327,99 @@ jobs:
           ARM_USE_OIDC:        'true'
           TF_VAR_admin_private_cidr: ${{ contains(fromJSON('["onprem","edge"]'), matrix.stack) && secrets.ADMIN_PRIVATE_CIDR || '' }}
           TF_VAR_warp_extra_excludes: ${{ matrix.stack == 'edge' && secrets.WARP_EXTRA_EXCLUDES || '[]' }}
+          TF_VAR_ssh_infra_targets:   ${{ matrix.stack == 'edge' && secrets.SSH_INFRA_TARGETS || '{}' }}
+        run: |
+          # edge: never printed (private SSH target map). The saved plan is what the summary step below
+          # reads; every other stack keeps its log stream and no plan file.
+          set +e
+          if [ "$STACK" = "edge" ]; then
+            tofu plan -input=false -lock=false -no-color -detailed-exitcode -out=tfplan > plan.txt 2>&1
+            ec=$?
+            if [ "$ec" = "1" ]; then sed -n '/^╷/,/^╵/p' plan.txt >&2; fi
+          else
+            tofu plan -input=false -lock=false -no-color -detailed-exitcode 2>&1 | tee plan.txt
+            ec=${PIPESTATUS[0]}
+          fi
+          echo "exitcode=$ec" >> "$GITHUB_OUTPUT"
+
+      # edge publishes counts + fingerprint + changed TYPES and nothing else: its plan text carries the
+      # private SSH target map. Non-edge stacks show the tail of their plan in the Report step instead.
+      - name: Drift summary (edge)
+        if: matrix.stack == 'edge' && steps.plan.outputs.exitcode != '1'
+        working-directory: live/edge
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/plan-fingerprint.sh" plan edge "$EXIT_CODE"
+        env:
+          EXIT_CODE: ${{ steps.plan.outputs.exitcode }}
+          HIDE_ADDRESSES: 'true'
+          PLAN_TITLE: 'Unapplied config: live/edge — counts, fingerprint and changed resource types only (the plan carries private SSH targets)'
+          FP_HMAC_KEY: ${{ secrets.SSH_INFRA_TARGETS }}
+          FP_JSON: ${{ runner.temp }}/fp-edge.json
+          ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID_READ }}
+          ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
+          ARM_USE_OIDC:        'true'
+
+      # ── identity: same two passes, through the owner kit, output FILE ONLY ──
+      # The kit builds every required TF_VAR_* from read-only az lookups, then runs
+      # the command in live/identity. Both passes write to live/identity/<file>
+      # and never to the log or the step summary: the public-repo rule that keeps
+      # identity out of infra-plan.yml applies here too.
+      - name: Detect external drift (refresh-only) — identity via the owner kit
+        id: refresh_identity
+        if: matrix.stack == 'identity'
+        env:
+          ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID_READ }}
+          ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
+          ARM_USE_OIDC:        'true'
+          IDENTITY_OWNER_OPERATOR_UPN: ${{ secrets.IDENTITY_OWNER_OPERATOR_UPN }}
+          IDENTITY_SECOND_OWNER_UPN:   ${{ secrets.IDENTITY_SECOND_OWNER_UPN }}
+          IDENTITY_PROXMOX_HOST:       ${{ secrets.IDENTITY_PROXMOX_HOST }}
+          IDENTITY_PBS_HOST:           ${{ secrets.IDENTITY_PBS_HOST }}
+          # The DEV app owners and OpsHub Dev admin-role holders live in state:
+          # without these the plan proposes removing them (exit 2 every night).
+          IDENTITY_DEV_APP_EXTRA_OWNERS: ${{ secrets.IDENTITY_DEV_APP_EXTRA_OWNERS }}
+          IDENTITY_DEV_APP_EXTRA_ADMINS: ${{ secrets.IDENTITY_DEV_APP_EXTRA_ADMINS }}
+          IDENTITY_KV_AUDIT_EMAIL:     ${{ secrets.IDENTITY_KV_AUDIT_EMAIL }}
         run: |
           set +e
-          tofu plan -input=false -lock=false -no-color -detailed-exitcode 2>&1 | tee plan.txt
-          echo "exitcode=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+          scripts/owner/identity-env/identity-env.sh -- \
+            tofu plan -refresh-only -input=false -lock=false -no-color -detailed-exitcode -out=refresh.tfplan \
+            >"$GITHUB_WORKSPACE/live/identity/refresh.txt" 2>&1
+          rc=$?
+          # The kit's OWN failures (a missing input, an ambiguous app) must not
+          # masquerade as a clean plan: the kit exits non-zero AND the plan file is
+          # absent, which the classifier reports as class=1.
+          echo "exitcode=$rc" >> "$GITHUB_OUTPUT"
+
+      - name: Detect unapplied config — identity via the owner kit
+        id: plan_identity
+        if: matrix.stack == 'identity'
+        env:
+          ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID_READ }}
+          ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
+          ARM_USE_OIDC:        'true'
+          IDENTITY_OWNER_OPERATOR_UPN: ${{ secrets.IDENTITY_OWNER_OPERATOR_UPN }}
+          IDENTITY_SECOND_OWNER_UPN:   ${{ secrets.IDENTITY_SECOND_OWNER_UPN }}
+          IDENTITY_PROXMOX_HOST:       ${{ secrets.IDENTITY_PROXMOX_HOST }}
+          IDENTITY_PBS_HOST:           ${{ secrets.IDENTITY_PBS_HOST }}
+          # The DEV app owners and OpsHub Dev admin-role holders live in state:
+          # without these the plan proposes removing them (exit 2 every night).
+          IDENTITY_DEV_APP_EXTRA_OWNERS: ${{ secrets.IDENTITY_DEV_APP_EXTRA_OWNERS }}
+          IDENTITY_DEV_APP_EXTRA_ADMINS: ${{ secrets.IDENTITY_DEV_APP_EXTRA_ADMINS }}
+          IDENTITY_KV_AUDIT_EMAIL:     ${{ secrets.IDENTITY_KV_AUDIT_EMAIL }}
+        run: |
+          set +e
+          scripts/owner/identity-env/identity-env.sh -- \
+            tofu plan -input=false -lock=false -no-color -detailed-exitcode \
+            >"$GITHUB_WORKSPACE/live/identity/plan.txt" 2>&1
+          echo "exitcode=$?" >> "$GITHUB_OUTPUT"
 
       # Only when the refresh-only pass found something: classify it. The classifier and the list of protected types live in
       # quynhonsemiconductor/ci/actions/destructive-guard (mode: drift), the same list the plan guard uses.
       # Output `class`: 2 matters, 3 informational, 0 none, 1 could not classify.
       - name: Classify external drift
         id: classify
-        if: ${{ steps.refresh.outputs.exitcode == '2' }}
-        uses: quynhonsemiconductor/ci/actions/destructive-guard@ea2c56bd9b03fb4d52e8fb9fe98dca95fd278638 # v1.24.5
+        if: ${{ matrix.stack != 'identity' && steps.refresh.outputs.exitcode == '2' }}
+        uses: quynhonsemiconductor/ci/actions/destructive-guard@956804ad4aa2dcf930909553d306d72b3708fd5d # v1.34.1+ci#308
         with:
           mode: drift
           plan-file: refresh.tfplan
@@ -234,37 +428,69 @@ jobs:
       # Exit codes: 0 = no changes, 1 = error, 2 = changes present.
       - name: Report
         working-directory: live/${{ matrix.stack }}
+        env:
+          # Passed through the environment, never interpolated: the identity step
+          # ids are the only outputs not already handled this way in this file, and
+          # ${{ }} inside `run` is the template-injection shape zizmor flags.
+          REFRESH_IDENTITY: ${{ steps.refresh_identity.outputs.exitcode }}
+          PLAN_IDENTITY: ${{ steps.plan_identity.outputs.exitcode }}
+          STACK_NAME: ${{ matrix.stack }}
         run: |
           refresh="${{ steps.refresh.outputs.exitcode }}"
           plan="${{ steps.plan.outputs.exitcode }}"
+          stack="$STACK_NAME"
+          if [ "$stack" = "identity" ]; then
+            refresh="$REFRESH_IDENTITY"
+            plan="$PLAN_IDENTITY"
+          fi
           class="${{ steps.classify.outputs.class }}"   # 2 matters, 3 informational, 0 none, 1 could not classify
-          stack="${{ matrix.stack }}"
 
           {
             echo "## \`$stack\`"
             echo ""
-            case "$refresh" in
-              0) echo "- External drift: **none**" ;;
-              2) case "$class" in
-                   3) echo "- External drift: informational only (provider-computed attributes), listed above" ;;
-                   *) echo "- External drift: **DETECTED** — reality diverged from state" ;;
-                 esac ;;
-              *) echo "- External drift: :warning: refresh-only errored (exit $refresh)" ;;
-            esac
-            case "$plan" in
-              0) echo "- Unapplied config: **none** — main matches reality" ;;
-              2) echo "- Unapplied config: **DETECTED** — main has changes never applied" ;;
-              *) echo "- Unapplied config: :warning: plan errored (exit $plan)" ;;
-            esac
-            if [ "$refresh" = "2" ] || [ "$plan" = "2" ]; then
-              echo ""
-              echo "<details><summary>plan output</summary>"
-              echo ""
-              echo '```'
-              tail -c 8000 plan.txt 2>/dev/null || true
-              echo '```'
-              echo ""
-              echo "</details>"
+            if [ "$stack" = "identity" ]; then
+              # NEVER print a drifted ADDRESS for identity: the destructive-guard
+              # classifier (drift_report.py) prints them, and the identity
+              # for_each keys are user/app OBJECT IDS. The step is excluded above.
+              # Exit 2 is red with this one line; the owner runs the kit locally.
+              if [ "$refresh" = "2" ] || [ "$plan" = "2" ]; then
+                echo "- Drift: **detected** — details withheld, this repository is public. Run \`scripts/owner/identity-env/identity-env.sh -- tofu plan\` locally."
+              fi
+              # An errored pass is not drift and names nothing secret; keep it visible.
+              if [ "$refresh" != "0" ] && [ "$refresh" != "2" ]; then
+                echo "- External drift: :warning: refresh-only errored (exit $refresh)"
+              fi
+              if [ "$plan" != "0" ] && [ "$plan" != "2" ]; then
+                echo "- Unapplied config: :warning: plan errored (exit $plan)"
+              fi
+            else
+              case "$refresh" in
+                0) echo "- External drift: **none**" ;;
+                2) case "$class" in
+                     3) echo "- External drift: informational only (provider-computed attributes), listed above" ;;
+                     *) echo "- External drift: **DETECTED** — reality diverged from state" ;;
+                   esac ;;
+                *) echo "- External drift: :warning: refresh-only errored (exit $refresh)" ;;
+              esac
+              case "$plan" in
+                0) echo "- Unapplied config: **none** — main matches reality" ;;
+                2) echo "- Unapplied config: **DETECTED** — main has changes never applied" ;;
+                *) echo "- Unapplied config: :warning: plan errored (exit $plan)" ;;
+              esac
+              if [ "$refresh" = "2" ] || [ "$plan" = "2" ]; then
+                # edge: NO plan text, ever. Its plan carries the private SSH target map; the
+                # summary step above already published counts, fingerprint and types.
+                if [ "$stack" != "edge" ]; then
+                  echo ""
+                  echo "<details><summary>plan output</summary>"
+                  echo ""
+                  echo '```'
+                  tail -c 8000 plan.txt 2>/dev/null || true
+                  echo '```'
+                  echo ""
+                  echo "</details>"
+                fi
+              fi
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -279,11 +505,44 @@ jobs:
             exit 1
           fi
 
+  # The Worker in live/onprem-oidc is a trust root for Key Vault (whoever changes its JWKS can mint tokens Entra
+  # accepts for the ESO apps). This compares what is SERVED with the stack's non-secret outputs recorded in
+  # live/onprem-oidc/jwks-expected.txt. Public fetch only: no credential.
+  oidc-served:
+    name: Drift onprem-oidc-served
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Served JWKS equals the expected key set
+        run: |
+          set -euo pipefail
+          exp=live/onprem-oidc/jwks-expected.txt
+          want_kids=$(sed -n 's/^kids=//p' "$exp"); want_sha=$(sed -n 's/^sha256=//p' "$exp")
+          if [ "$want_kids" = "unset" ] || [ "$want_sha" = "unset" ]; then
+            echo "::notice::jwks-expected.txt is not set yet (stack not applied): skipping"; exit 0
+          fi
+          host=$(sed -n '/^variable "oidc_hostname"/,/^}/s/^[[:space:]]*default[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' live/onprem-oidc/variables.tf)
+          path=$(sed -n '/^variable "oidc_path"/,/^}/s/^[[:space:]]*default[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' live/onprem-oidc/variables.tf)
+          issuer="https://$host/$path"
+          disc=$(curl -fsS --max-time 20 "$issuer/.well-known/openid-configuration")
+          [ "$(jq -r .issuer <<<"$disc")" = "$issuer" ] || { echo "::error::served issuer differs from $issuer"; exit 1; }
+          jwks=$(curl -fsS --max-time 20 "$(jq -r .jwks_uri <<<"$disc")")
+          kids=$(jq -r '[.keys[].kid]|sort|join(",")' <<<"$jwks")
+          sha=$(jq -S -c . <<<"$jwks" | tr -d '\n' | sha256sum | cut -d' ' -f1)
+          [ "$kids" = "$want_kids" ] || { echo "::error::served kid set differs from the expected one"; exit 1; }
+          [ "$sha" = "$want_sha" ] || { echo "::error::served JWKS hash differs from the expected one"; exit 1; }
+          echo "served JWKS matches (${kids})"
+
   # Any stack that is not green, including "could not run", raises an alert that does not depend on someone watching Actions.
   alert:
     name: Alert on drift failure
-    needs: drift
-    if: ${{ always() && needs.drift.result != 'success' && needs.drift.result != 'skipped' }}
+    needs: [drift, oidc-served]
+    if: ${{ always() && ((needs.drift.result != 'success' && needs.drift.result != 'skipped') || needs.oidc-served.result == 'failure') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -357,8 +616,8 @@ jobs:
   # A green run closes the issue, so an open drift-detection issue always means "failing now".
   resolve:
     name: Close the drift issue
-    needs: drift
-    if: ${{ always() && needs.drift.result == 'success' }}
+    needs: [drift, oidc-served]
+    if: ${{ always() && needs.drift.result == 'success' && needs.oidc-served.result != 'failure' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

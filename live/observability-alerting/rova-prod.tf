@@ -58,7 +58,7 @@
 # NOTE ON THE SM ALERT ROUTE: alert_sensitivity creates no rules by itself and
 # SM check labels do not become alert labels — the real alert is the
 # flag-gated grafana_rule_group below (probe_success == 0 on every probe for 2m, rule labels
-# env=production + product=rova), routed by grafana_notification_policy.root
+# env=prod + product=rova), routed by grafana_notification_policy.root
 # (Teams for prod, devops@ always) — §12's routing.
 # =============================================================================
 
@@ -115,7 +115,7 @@ resource "grafana_synthetic_monitoring_check" "rova_prod_readyz" {
 
   labels = {
     product = "rova"
-    env     = "production" # matches notification policy matcher, NOT "prod"
+    env     = "prod" # matches notification policy matcher, NOT "prod"
   }
 
   settings {
@@ -132,11 +132,11 @@ resource "grafana_synthetic_monitoring_check" "rova_prod_readyz" {
 # §12's prod routing as code: fires when EVERY probe reports failure
 # (max over probes of probe_success == 0) for 2 minutes. `max by (job,
 # instance)` also drops `config_version`, which changes on every check update
-# and would otherwise restart the pending timer. Rule labels env=production + product=rova
+# and would otherwise restart the pending timer. Rule labels env=prod + product=rova
 # route it through grafana_notification_policy.root — Teams for prod, devops@
 # always — the same policy every other rule in this stack uses. Same datasource
 # (the stack's managed Prometheus, where SM publishes probe_success) as
-# series_near_cap in main.tf.
+# the billable-series cap rules in billable-alert.tf.
 resource "grafana_rule_group" "rova_prod_readyz_down" {
   count            = local.uptime_live ? 1 : 0
   name             = "rova (prod readyz)"
@@ -200,7 +200,7 @@ resource "grafana_rule_group" "rova_prod_readyz_down" {
 
     labels = {
       product  = "rova"
-      env      = "production" # matches the notification policy matcher, NOT "prod"
+      env      = "prod"
       severity = "critical"
     }
 

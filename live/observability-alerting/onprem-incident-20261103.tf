@@ -16,34 +16,39 @@
 # the same change, and the rova prod readyz check (rova-prod.tf) moved to 60s
 # from two probes.
 #
-# Labels route through the notification policy: env=production pages Teams +
-# email; env=development is email (plus Teams only with paging=teams).
+# Labels route through the notification policy: env=prod pages Teams +
+# email; env=dev is email (plus Teams only with paging=teams).
 # =============================================================================
 locals {
   onprem_incident_rules = {
+    # CNPG series carry `cluster` = the POSTGRES cluster name (pg-rova,
+    # pg-opshub, pg-dev), not the Alloy `qnsc-onprem` cluster. Filtering
+    # cluster="qnsc-onprem" on cnpg_* matched nothing (silent rules, fixed
+    # 2026-11-04); scope by namespace + cnpg_cluster instead.
     pg_connections_prod = {
       name = "k3s-pg-connections-over-80-percent-prod"
       # Client backends (every state, idle included: an idle session still holds
       # a slot) over max_connections, per instance pod.
-      expr      = "sum by (namespace, cnpg_cluster, pod) (cnpg_backends_total{cluster=\"qnsc-onprem\", namespace=\"data-prod\"}) / on (namespace, cnpg_cluster, pod) max by (namespace, cnpg_cluster, pod) (cnpg_pg_settings_setting{cluster=\"qnsc-onprem\", namespace=\"data-prod\", name=\"max_connections\"})"
+      expr      = "sum by (namespace, cnpg_cluster, pod) (cnpg_backends_total{namespace=\"data-prod\"}) / on (namespace, cnpg_cluster, pod) max by (namespace, cnpg_cluster, pod) (cnpg_pg_settings_setting{namespace=\"data-prod\", name=\"max_connections\"})"
       op        = "gt"
       threshold = 0.8
       for       = "5m"
       no_data   = "OK"
-      product   = "rova"
-      env       = "production"
-      severity  = "critical"
-      summary   = "Postgres {{ $labels.cnpg_cluster }} ({{ $labels.pod }}) is using over 80% of max_connections for 5 minutes. New connections will soon be refused; check pool sizes and long-held sessions."
+      # platform: covers every prod cluster (pg-rova, pg-opshub, pg-kb).
+      product  = "platform"
+      env      = "prod"
+      severity = "critical"
+      summary  = "Postgres {{ $labels.cnpg_cluster }} ({{ $labels.pod }}) is using over 80% of max_connections for 5 minutes. New connections will soon be refused; check pool sizes and long-held sessions."
     }
     pg_connections_dev = {
       name      = "k3s-pg-connections-over-80-percent-dev"
-      expr      = "sum by (namespace, cnpg_cluster, pod) (cnpg_backends_total{cluster=\"qnsc-onprem\", namespace=\"data-dev\"}) / on (namespace, cnpg_cluster, pod) max by (namespace, cnpg_cluster, pod) (cnpg_pg_settings_setting{cluster=\"qnsc-onprem\", namespace=\"data-dev\", name=\"max_connections\"})"
+      expr      = "sum by (namespace, cnpg_cluster, pod) (cnpg_backends_total{namespace=\"data-dev\"}) / on (namespace, cnpg_cluster, pod) max by (namespace, cnpg_cluster, pod) (cnpg_pg_settings_setting{namespace=\"data-dev\", name=\"max_connections\"})"
       op        = "gt"
       threshold = 0.8
       for       = "5m"
       no_data   = "OK"
       product   = "platform"
-      env       = "development"
+      env       = "dev"
       severity  = "warning"
       summary   = "Dev Postgres {{ $labels.cnpg_cluster }} ({{ $labels.pod }}) is using over 80% of max_connections for 5 minutes."
     }
@@ -51,13 +56,13 @@ locals {
       name = "k3s-deployment-unavailable-prod"
       # Missing replicas per Deployment. A normal rolling update closes the gap
       # well inside 5 minutes; a stuck rollout or a crash loop does not.
-      expr      = "max by (namespace, deployment) (kube_deployment_spec_replicas{cluster=\"qnsc-onprem\", namespace=~\"rova-prod|opshub-prod|data-prod\"} - kube_deployment_status_replicas_available{cluster=\"qnsc-onprem\", namespace=~\"rova-prod|opshub-prod|data-prod\"})"
+      expr      = "max by (namespace, deployment) (kube_deployment_spec_replicas{cluster=\"qnsc-onprem\", namespace=~\"rova-prod|opshub-prod|kb-prod|ai|data-prod\"} - kube_deployment_status_replicas_available{cluster=\"qnsc-onprem\", namespace=~\"rova-prod|opshub-prod|kb-prod|ai|data-prod\"})"
       op        = "gt"
       threshold = 0
       for       = "5m"
       no_data   = "OK"
       product   = "platform"
-      env       = "production"
+      env       = "prod"
       severity  = "critical"
       summary   = "Deployment {{ $labels.namespace }}/{{ $labels.deployment }} has had fewer available replicas than desired for 5 minutes."
     }
@@ -145,6 +150,24 @@ resource "grafana_rule_group" "onprem_incident_20261103" {
 # The collector ships ONLY kernel/audit journal lines matching
 # apparmor="DENIED" (gitops#141), so any line here is a denial. Beyla
 # (comm="beyla") is excluded: its denials are known and get their own fix.
+#
+# HOST COREUTILS NOISE IS EXCLUDED BY PROFILE **AND PATH** (triaged
+# 2026-11-04). The firing rule was 100% these, measured on k3s-01 over 24 h:
+#   profile="who"      357  open /etc/passwd and /etc/nsswitch.conf (who
+#                            cannot resolve names; it still prints sessions)
+#   profile="hostname"  19  file_inherit /tmp/mat-debug-1.log (a test writing
+#                            its output through `hostname`)
+# Both are Ubuntu's apparmor-profiles coreutils profiles, loaded by
+# apparmor.service. The exclusion names the DENIED PATH as well as the profile,
+# deliberately: excluding on `profile="who"` alone would also hide a same-named
+# profile doing something else. Any other path under either profile still
+# pages. This is not a cri-containerd profile gap and is not actionable by the
+# k3s/containerd override.
+#
+# The `hostname` line is still not a containment failure, but note its fsuid
+# 1001 / temp path: the process may be inside a container. The exclusion is
+# path-exact so that only this known benign write is silenced.
+#
 # for = 0m: count_over_time over 10m already is the window; one denial is the
 # signal. Absence is normal (no_data OK).
 resource "grafana_rule_group" "onprem_apparmor" {
@@ -173,7 +196,7 @@ resource "grafana_rule_group" "onprem_apparmor" {
       model = jsonencode({
         refId      = "A"
         datasource = { type = "loki", uid = data.grafana_data_source.logs.uid }
-        expr       = "sum by (instance) (count_over_time({cluster=\"qnsc-onprem\", job=\"integrations/kubernetes/journal\"} |= `apparmor=\"DENIED\"` != `comm=\"beyla\"` [10m]))"
+        expr       = "sum by (instance) (count_over_time({cluster=\"qnsc-onprem\", job=\"integrations/kubernetes/journal\"} |= `apparmor=\"DENIED\"` != `comm=\"beyla\"` != `profile=\"who\" name=\"/etc/passwd\"` != `profile=\"who\" name=\"/etc/nsswitch.conf\"` != `profile=\"hostname\" name=\"/tmp/mat-debug-1.log\"` [10m]))"
         queryType  = "instant"
         instant    = true
         intervalMs = 1000
@@ -227,12 +250,12 @@ resource "grafana_rule_group" "onprem_apparmor" {
 
     labels = {
       product  = "platform"
-      env      = "production"
+      env      = "prod"
       severity = "critical"
     }
 
     annotations = {
-      summary = "AppArmor denied {{ $values.B }} operation(s) on node {{ $labels.instance }} in the last 10 minutes (Beyla excluded). Explore: {cluster=\"qnsc-onprem\", job=\"integrations/kubernetes/journal\"}."
+      summary = "AppArmor denied {{ $values.B }} operation(s) on node {{ $labels.instance }} in the last 10 minutes (Beyla and three profile+path pairs — who reading passwd/nsswitch, hostname writing /tmp/mat-debug-1.log — excluded; see the rule comment). Explore: {cluster=\"qnsc-onprem\", job=\"integrations/kubernetes/journal\"}."
     }
   }
 }

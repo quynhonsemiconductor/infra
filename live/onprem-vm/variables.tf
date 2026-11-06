@@ -62,19 +62,21 @@ variable "datastore_id" {
 }
 
 variable "vm_cores" {
-  type        = number
+  type = number
+  # UNCHANGED 28 vCPU: k3s-01 is the control plane and runs every product; it is not
+  # resized in the VLSI window (no reboot of the control plane).
   default     = 28
-  description = "vCPU cores (one socket, CPU type host). The host keeps ~8 GB of RAM; do not oversubscribe cores."
+  description = "vCPU cores (one socket, CPU type host). Unchanged: 28."
 }
 
 variable "vm_memory_mb" {
   type = number
-  # 24 GiB (24576 MiB), down from 36 GiB (36864): Phase 3 gives vlsi-01 20 GiB and ai-01 keeps
-  # 12 GiB, and the host has ~60 GB usable. This is an IN-PLACE change that needs the guest
-  # restarted to take effect; the stack keeps reboot_after_update = false, so nothing power-cycles
-  # VM 100 behind your back. Do it in the window (docs/runbooks/phase3-window.md).
+  # UNCHANGED 24 GiB (24576 MiB). k3s-01's memory requests are ~16.4 GiB with kb prod plus
+  # the 2 GiB systemReserved, so shrinking it is not safe. Since the VLSI rollout (2026-11-06)
+  # ai-01 is 12 GiB and vlsi-01 16 GiB; the three VMs total 52 GiB of the host's 60.5 GiB,
+  # leaving ~8.5 GiB for the host and the ZFS ARC.
   default     = 24576
-  description = "Dedicated memory in MiB (24 GiB after Phase 3; was 36 GiB). Ballooning stays off (floating = 0)."
+  description = "Dedicated memory in MiB (24 GiB, unchanged). Ballooning stays off (floating = 0)."
 }
 
 variable "os_disk_gb" {
@@ -128,4 +130,52 @@ variable "k3s01_ipv4_address" {
 variable "proxmox_ssh_address" {
   type        = string
   description = "Address the provider SSHes to (as root, via the owner's ssh-agent) to upload snippets. Site value, git-ignored tfvars only."
+}
+
+# ── Proxmox API objects (proxmox_iam.tf, proxmox_host.tf) ───────────────────
+
+variable "proxmox_token_privilege_separation" {
+  type        = bool
+  default     = true
+  description = "privsep of the `tofu` API token (`pveum user token list terraform@pve`). true = the token has its own ACLs (pve_acls entries with token_id); false = it inherits the user's."
+}
+
+variable "pve_acls" {
+  type = map(object({
+    path      = string
+    role_id   = string
+    user_id   = optional(string)
+    token_id  = optional(string)
+    propagate = optional(bool, true)
+  }))
+  default     = {}
+  description = "ACL entries of terraform@pve / its token, keyed by any stable label. Exactly one of user_id (`terraform@pve`) or token_id (`terraform@pve!tofu`) per entry. Copy them from `pveum acl list` into the git-ignored site.tfvars."
+
+  validation {
+    condition     = alltrue([for k, a in var.pve_acls : (a.user_id == null) != (a.token_id == null)])
+    error_message = "each pve_acls entry needs exactly one of user_id or token_id."
+  }
+}
+
+variable "gpu_pci_mapping" {
+  type = object({
+    name    = string
+    comment = optional(string)
+    map = list(object({
+      id           = string
+      node         = string
+      path         = string
+      iommu_group  = optional(number)
+      subsystem_id = optional(string)
+      comment      = optional(string)
+    }))
+  })
+  default     = null
+  description = "The cluster PCI mapping ai-01 passes through (null = this site has none). Site values (PCI paths, IOMMU groups, subsystem ids): git-ignored site.tfvars; `scripts/owner/pve-gpu-passthrough.sh --check` prints the snippet."
+}
+
+variable "zfs_pool" {
+  type        = string
+  default     = "rpool/data"
+  description = "ZFS dataset behind the `local-zfs` storage (the Proxmox installer's default)."
 }

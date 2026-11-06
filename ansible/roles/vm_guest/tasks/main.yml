@@ -28,3 +28,23 @@
     state: started
   # in check mode a package that is not installed yet has no unit to start
   when: not (ansible_check_mode and vm_guest_package is changed)
+
+- name: Kernel settings for k3s
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    sysctl_file: /etc/sysctl.d/90-qnsc-k3s.conf
+    sysctl_set: true
+    state: present
+    reload: true
+  loop: "{{ vm_guest_sysctl | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  tags: [vm_guest_sysctl]
+
+- name: Remove hand-written sysctl files that Ansible now owns
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: "{{ vm_guest_sysctl_legacy_files }}"
+  tags: [vm_guest_sysctl]

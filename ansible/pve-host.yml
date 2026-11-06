@@ -1,9 +1,12 @@
 ---
-# The Proxmox host OS layer: base (repos, updates, time, ssh, ZFS properties), GPU passthrough host config,
-# PBS co-located. Run with --check --diff first; a host built by hand should show (almost) no change for the
-# GPU/ZFS parts. Tags select a part: pve_base, pve_gpu, pbs (and the finer pve_gpu_verify, pbs_config, ...).
+# The Proxmox host OS layer: base (repos, updates, time, ssh, ZFS properties, Entra OpenID realm), GPU
+# passthrough host config, PBS co-located (datastore, jobs, Entra OpenID realm). Run with --check --diff
+# first; a host built by hand should show (almost) no change for the GPU/ZFS parts. Tags select a part:
+# pve_base, pve_gpu, pbs, pve_monitoring (finer: pve_base_notify, pve_base_entra, pbs_entra,
+# pve_gpu_verify, pbs_config, ...).
 #   ansible-playbook pve-host.yml --check --diff
 #   ansible-playbook pve-host.yml --tags pbs
+#   op run --env-file=<local template> -- ansible-playbook pve-host.yml --tags pve_base_notify
 - name: Proxmox host
   hosts: pve
   become: true
@@ -15,3 +18,9 @@
       tags: [pve_gpu]
     - role: pbs
       tags: [pbs]
+    # Host metrics: node-exporter (textfile only) + Alloy, pushing ZFS/NVMe/PBS
+    # gauges to the cluster's OTLP door. Needs pve_monitoring_otlp_endpoint in
+    # the local inventory; disabled with -e pve_monitoring_enabled=false.
+    - role: pve_monitoring
+      tags: [pve_monitoring]
+      when: pve_monitoring_enabled | default(true) | bool

@@ -86,7 +86,7 @@ resource "grafana_rule_group" "onprem_memory" {
 
     labels = {
       product  = "platform"
-      env      = "production"
+      env      = "prod"
       severity = "warning"
     }
 
@@ -160,7 +160,7 @@ resource "grafana_rule_group" "onprem_eso_sync" {
 
     labels = {
       product  = "platform"
-      env      = "production"
+      env      = "prod"
       severity = "critical"
     }
 
@@ -234,7 +234,7 @@ resource "grafana_rule_group" "onprem_argocd_apps" {
 
     labels = {
       product  = "platform"
-      env      = "production"
+      env      = "prod"
       severity = "warning"
     }
 
@@ -242,22 +242,15 @@ resource "grafana_rule_group" "onprem_argocd_apps" {
       summary = "ArgoCD Application {{ $labels.name }} in namespace {{ $labels.namespace }} has been Degraded for 15 minutes (§12)."
     }
   }
-}
 
-# ── Certificates expiring within 14 days ───────────────────────────────────
-# cert-manager renews ~30 d before expiry, so 14 d left means renewal has been
-# failing for two weeks — not "a cert is about to expire", but "renewal is
-# broken".
-resource "grafana_rule_group" "onprem_cert_expiry" {
-  count            = local.onprem_live ? 1 : 0
-  name             = "onprem (cert-manager)"
-  folder_uid       = grafana_folder.alerts.uid
-  interval_seconds = 300
-
+  # OutOfSync is not "broken" the way Degraded is, but 30 minutes out of sync
+  # means a merge to git has not reached the cluster — the failure mode that
+  # left prod running stale code silently. Warning -> email after the severity
+  # split (audit 2026-11-06 §2).
   rule {
-    name           = "k3s-certificate-expires-within-14-days"
+    name           = "k3s-argocd-app-out-of-sync"
     condition      = "B"
-    for            = "1h"
+    for            = "30m"
     no_data_state  = "OK"
     exec_err_state = "KeepLast"
 
@@ -267,14 +260,16 @@ resource "grafana_rule_group" "onprem_cert_expiry" {
       datasource_uid = data.grafana_data_source.prometheus.uid
 
       relative_time_range {
-        from = 300
+        from = 900
         to   = 0
       }
 
       model = jsonencode({
-        refId         = "A"
-        datasource    = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
-        expr          = "(certmanager_certificate_expiration_timestamp_seconds - time()) < 14 * 24 * 3600"
+        refId      = "A"
+        datasource = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
+        # Raw gauge; the comparison is B's threshold (same reason as the
+        # 2026-11-06 no-data hygiene pass).
+        expr          = "max by (name, namespace) (argocd_app_info{sync_status=\"OutOfSync\"})"
         instant       = true
         range         = false
         intervalMs    = 1000
@@ -311,7 +306,87 @@ resource "grafana_rule_group" "onprem_cert_expiry" {
 
     labels = {
       product  = "platform"
-      env      = "production"
+      env      = "prod"
+      severity = "warning"
+    }
+
+    annotations = {
+      summary = "ArgoCD Application {{ $labels.name }} ({{ $labels.namespace }}) has been OutOfSync for 30 minutes — a git change has not reached the cluster."
+    }
+  }
+}
+
+# ── Certificates expiring within 14 days ───────────────────────────────────
+# cert-manager renews ~30 d before expiry, so 14 d left means renewal has been
+# failing for two weeks — not "a cert is about to expire", but "renewal is
+# broken".
+resource "grafana_rule_group" "onprem_cert_expiry" {
+  count            = local.onprem_live ? 1 : 0
+  name             = "onprem (cert-manager)"
+  folder_uid       = grafana_folder.alerts.uid
+  interval_seconds = 300
+
+  rule {
+    name           = "k3s-certificate-expires-within-14-days"
+    condition      = "B"
+    for            = "1h"
+    no_data_state  = "OK"
+    exec_err_state = "KeepLast"
+
+    data {
+      ref_id         = "A"
+      query_type     = "instant"
+      datasource_uid = data.grafana_data_source.prometheus.uid
+
+      relative_time_range {
+        from = 300
+        to   = 0
+      }
+
+      model = jsonencode({
+        refId      = "A"
+        datasource = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
+        # Seconds until expiry, not a pre-filtered boolean: the 7-day data
+        # guard reads A, and `< 14d` in A empties the vector while every
+        # certificate is healthy. B carries the 14-day threshold below.
+        expr          = "(certmanager_certificate_expiration_timestamp_seconds - time())"
+        instant       = true
+        range         = false
+        intervalMs    = 1000
+        maxDataPoints = 43200
+      })
+    }
+
+    data {
+      ref_id         = "B"
+      datasource_uid = "__expr__"
+
+      relative_time_range {
+        from = 0
+        to   = 0
+      }
+
+      model = jsonencode({
+        refId      = "B"
+        type       = "threshold"
+        datasource = { type = "__expr__", uid = "__expr__" }
+        expression = "A"
+        conditions = [
+          {
+            evaluator = {
+              type   = "lt"
+              params = [14 * 24 * 3600]
+            }
+          }
+        ]
+        intervalMs    = 1000
+        maxDataPoints = 43200
+      })
+    }
+
+    labels = {
+      product  = "platform"
+      env      = "prod"
       severity = "warning"
     }
 
@@ -389,7 +464,7 @@ resource "grafana_rule_group" "onprem_tunnel" {
 
     labels = {
       product  = "platform"
-      env      = "production"
+      env      = "prod"
       severity = "critical"
     }
 

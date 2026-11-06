@@ -31,6 +31,16 @@ resource "cloudflare_zero_trust_access_ai_controls_mcp_server" "rova_dev" {
   description = "rova dev MCP server (per-user OAuth)"
   hostname    = "https://rova-dev.qnsc.vn/mcp"
   auth_type   = "oauth"
+  # Per-user OAuth redirects through the one Cloudflare-owned callback (allowed on the upstream app).
+  is_shared_oauth_callback_enabled = true
+  # Cloudflare provider 5.28.1 bug: every plan shows this server "updated in-place" from computed fields only (tools,
+  # last_synced, authentication_status), and the apply then PUTs `updated_tools: null`, which the API refuses
+  # (400 "Expected array, received null", infra-apply run 41639588672). Nothing here is meant to drift, so the
+  # resource is frozen after create. To change hostname/auth on purpose: remove this block in the same PR (or
+  # `-replace`), and put it back once the provider is fixed.
+  lifecycle {
+    ignore_changes = all
+  }
 }
 
 # Access app that secures the server when it is reached THROUGH the portal
@@ -86,6 +96,13 @@ resource "cloudflare_zero_trust_access_ai_controls_mcp_portal" "qnsc" {
       on_behalf = true
     }],
   )
+
+  # Same provider bug on the portal: Cloudflare fills servers[].updated_tools after each sync, the config never
+  # sets it, and the PUT sends null, which the API refuses. Membership changes (adding/removing a server) therefore
+  # need this line removed in that PR; the hub servers join that way when mcp_hub_enabled flips.
+  lifecycle {
+    ignore_changes = [servers]
+  }
 }
 
 # Portal login policy (owner decision 2026-10-24): company Entra identity,

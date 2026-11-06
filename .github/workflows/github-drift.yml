@@ -34,7 +34,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  TOFU_VERSION: "1.9.1"
+  TOFU_VERSION: "1.13.2"
 
 jobs:
   drift:
@@ -52,7 +52,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: quynhonsemiconductor/ci/actions/iac-lint@ea2c56bd9b03fb4d52e8fb9fe98dca95fd278638 # v1.24.5
+      - uses: quynhonsemiconductor/ci/actions/iac-lint@956804ad4aa2dcf930909553d306d72b3708fd5d # v1.34.1+ci#308
         with:
           tofu-version: ${{ env.TOFU_VERSION }}
           fmt: 'false'   # install only
@@ -66,6 +66,9 @@ jobs:
           owner: quynhonsemiconductor
           permission-administration: write
           permission-environments: write
+          # Refresh the qnsc-eda team grants in the drift plan (repo admin +
+          # seeing the team); the same minimum as the apply.
+          permission-members: read
 
       - name: tofu init
         working-directory: live/github

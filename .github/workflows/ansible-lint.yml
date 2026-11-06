@@ -50,3 +50,50 @@ jobs:
             ansible-playbook -i inventory/example/hosts.yml --syntax-check "$pb"
             echo "::endgroup::"
           done
+
+      # Offline unit check of the PVE Entra offboarding selectors (match vs
+      # search: a realm user must actually be selected). No host, no cloud.
+      - name: PVE Entra membership selector unit check
+        run: >-
+          ansible-playbook -i localhost, -c local
+          tests/pve_base_entra_membership.yml tests/pve_base_entra_gate.yml tests/pbs_entra_gate.yml
+      # A tag must run on its own. `--tags pbs_offsite` died on "pbs_cli is undefined" because the
+      # stat task registering it was tagged [pbs_install] only (owner run 2026-11-06). The role is
+      # included normally here; the tag filter is on the command line, exactly as the owner runs it.
+      - name: pbs role tags run on their own (--check)
+        run: |
+          set -euo pipefail
+          for tag in pbs_offsite pbs_identity pbs_fingerprint; do
+            echo "::group::--tags $tag"
+            ansible-playbook -i localhost, -c local --check tests/pbs_tagged_run.yml --tags "$tag"
+            echo "::endgroup::"
+          done
+
+      # The LAST listed account being removed must still be offboarded. Uses a
+      # throwaway account (never a system account) and --check only.
+
+      - name: SSH offboarding survives an empty admin list (--check)
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'sudo userdel -r qnsc-last-account 2>/dev/null || true; sudo rm -rf /tmp/qnsc-ssh-last' EXIT
+          sudo useradd -m qnsc-last-account
+          sudo mkdir -p /tmp/qnsc-ssh-last
+          printf 'qnsc-last-account\n' | sudo tee /tmp/qnsc-ssh-last/marker >/dev/null
+          out=$(ansible-playbook -i localhost, -c local --check tests/ssh_infra_last_account.yml 2>&1)
+          printf '%s\n' "$out"
+          grep -q "would lock qnsc-last-account" <<<"$out"
+
+
+
+      # Real lifecycle: create -> offboard -> re-add, all through the role.
+      - name: SSH lifecycle (create -> offboard -> re-add; real)
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'sudo userdel -r qnsc-test-admin 2>/dev/null || true; sudo rm -rf /tmp/qnsc-ssh-cycle' EXIT
+          sudo rm -rf /tmp/qnsc-ssh-cycle
+          if ! out=$(ansible-playbook -i localhost, -c local tests/ssh_infra_cycle.yml 2>&1); then
+            printf '%s\n' "$out"; exit 1
+          fi
+          printf '%s\n' "$out"

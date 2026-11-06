@@ -1,16 +1,13 @@
 ---
-# The kernel settings k3s needs. The owner confirms the live values: a first --check may show a diff here.
-k3s_server_sysctl:
-  net.ipv4.ip_forward: 1
-  fs.inotify.max_user_watches: 524288
-  fs.inotify.max_user_instances: 8192
-
 # ESO workload identity (infra#252): k3s signs service-account tokens with the FIRST issuer, the old default is
 # listed second so tokens minted before the change stay valid. OFF until the rollout of live/identity step 4.
 k3s_server_oidc_issuer_enabled: false
 # Site value (public repo: no hostnames here): set it in the git-ignored local inventory/host_vars.
 k3s_server_oidc_issuer: ""
 k3s_server_oidc_issuer_old: "https://kubernetes.default.svc.cluster.local"
+
+# kube-controller-manager: keep at most this many terminated pods cluster-wide (upstream default 12500).
+k3s_server_terminated_pod_gc_threshold: 100
 
 # A config change needs a k3s restart, which interrupts every workload on the node. Default: report only.
 k3s_server_allow_restart: false

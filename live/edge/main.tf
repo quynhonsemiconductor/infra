@@ -43,17 +43,43 @@ module "edge" {
 
   zone_id = var.cloudflare_zone_id
 
-  # Conservative per-IP rate limit on the product API surface. The free plan's
-  # single included rate-limiting rule only permits a 10s counting period, a 10s
-  # mitigation timeout, and simple expression operators (no `matches` regex —
-  # that needs Advanced Rate Limiting). Raise/split once on Pro+.
+  # Per-IP limit on the AUTH paths only (audit N-M7), in LOG mode for the
+  # first 7 days (review 2026-11-04): the office has one NAT address, so a
+  # block threshold that is right per-client is wrong per-office. Log mode
+  # counts and emits Security Events without dropping a sign-in; after a week
+  # of real numbers, switch action to "block" with a threshold chosen from them.
+  #
+  # The free plan allows one rate rule with a 10s counting period, a 10s
+  # mitigation timeout and simple expression operators (no `matches` regex —
+  # that needs Advanced Rate Limiting), so the one rule covers the explicit
+  # auth surface of all three products:
+  #   rova, opshub   /api/auth/*        (tunnel rules: ^/api/auth/)
+  #   kb             /api/v1/auth/*     (incl. /api/v1/auth/entra/callback)
+  #
+  # Everything else is deliberately NOT rate-limited at the edge any more. The
+  # old rule (300 req/10s per IP across all /v1/ and /api/) is REMOVED: it was
+  # too loose to stop credential stuffing, wide enough to throttle a busy
+  # dashboard, and it keyed on the office NAT rather than on an identity. The
+  # apps limit the API themselves, in Valkey:
+  #   rova     libs/platform/src/rate-limit/rate-limit.constants.ts
+  #            PRE_AUTH 1200/60s per IP, DEFAULT 100/60s per user; the
+  #            /api/auth/* routes are further limited in identity (redirects
+  #            120/60s, callbacks 100/10s)
+  #   opshub   libs/platform/src/rate-limit/rate-limit.constants.ts
+  #            PRE_AUTH_IP_BUCKET 1000/60s per IP, DEFAULT 200/60s per user,
+  #            STRICT 60/60s, AI 10/60s, UPLOAD 30/60s
   rate_limit_rules = [{
-    ref                 = "api_default"
-    description         = "Rate-limit product API endpoints per client IP"
-    expression          = "(starts_with(http.request.uri.path, \"/v1/\") or starts_with(http.request.uri.path, \"/api/\"))"
+    ref = "auth_default"
+    # Only the PUBLIC sign-in of rova prod: every other host is behind Cloudflare Access (an unauthenticated
+    # client never reaches its /api/auth), and the apps rate-limit per IP and per user themselves (Valkey).
+    # Only the real sign-in endpoints — never get-session — so normal staff traffic (whole office behind one
+    # NAT IP) cannot trip it, while a credential-stuffing burst does. `log` is not on the zone plan.
+    description         = "Block an IP that sends more than 100 rova prod sign-in requests in 10 seconds"
+    expression          = "(http.host eq \"rova.qnsc.vn\" and (starts_with(http.request.uri.path, \"/api/auth/sign-in\") or starts_with(http.request.uri.path, \"/api/auth/callback\")))"
     period              = 10
-    requests_per_period = 300
+    requests_per_period = 100
     mitigation_timeout  = 10
+    action              = "block"
   }]
 
   # Managed + OWASP rulesets — requires Pro+. Keep false until the zone plan is
@@ -130,7 +156,13 @@ resource "cloudflare_dns_record" "dmarc" {
   # Exactly what is live (read from the CI plan of the import): TTL 1 = Cloudflare "automatic", no comment, content as typed. Matching it
   # is what makes the first apply a pure IMPORT. Quote the content and set a comment in a follow-up in-place update (as for the SPF record),
   # not in the same change as the import.
-  content = "v=DMARC1; p=none; rua=mailto:devops@qnsc.vn"
+  # 2026-11-05: p=none -> p=quarantine. Aggregate reports 2026-10-27..11-04 (Microsoft + Google, ~25 messages):
+  # every legitimate message came from Microsoft 365 (2a01:111:f403::/48) and passed DMARC through aligned SPF;
+  # the only failure was one message forwarded through a third-party Google Workspace (SPF aligned to the
+  # forwarder, no DKIM yet). Microsoft 365 DKIM for qnsc.vn is Valid since 2026-11-05, so forwarded mail now
+  # carries an aligned signature too. Products send through Graph (Microsoft 365), not SES. Next step, p=reject,
+  # after ~2 clean weeks of reports showing DKIM pass.
+  content = "v=DMARC1; p=quarantine; rua=mailto:devops@qnsc.vn"
   ttl     = 1
 
   lifecycle {
@@ -162,8 +194,38 @@ resource "cloudflare_pages_project" "landing" {
   name              = "qnsc-landing"
   production_branch = "main"
 
+  # Codified, not ignored: the provider has no state-preserving plan modifier on build_config /
+  # build_image_auto_upgrade (cloudflare/terraform-provider-cloudflare#7288, #7262), so on a direct-upload
+  # project — where the API's build_config is empty — every plan re-marked the omitted members
+  # "(known after apply)" and edge never converged. `ignore_changes` cannot help: it retains the value
+  # *originally configured*, and build_image_auto_upgrade is provider-computed (OpenTofu warns, no effect).
+  # Naming every member keeps the whole object known; empty strings are what the API returns for a
+  # direct-upload project, so the values are the real config, not a suppression.
+  build_config = {
+    build_caching       = false
+    build_command       = ""
+    destination_dir     = ""
+    root_dir            = ""
+    web_analytics_tag   = ""
+    web_analytics_token = ""
+  }
+
   lifecycle {
     prevent_destroy = true # destroying the Pages project deletes its deployments and detaches its custom domains: the landing site goes down
+    # PERPETUAL DIFF, 2026-11-06. Every plan, including the one right after an apply, showed
+    #   ~ resource "cloudflare_pages_project" "landing" { + build_image_auto_upgrade = (known after apply) }
+    # Provider 5.27+ added build_image_auto_upgrade as Computed-only. When a change in
+    # deployment_configs is detected (config omits it, core proposes null, state holds the defaults),
+    # the framework marks every computed-null attribute unknown; Pages' ModifyPlan restores the
+    # others from state but has no clause for this one, and state itself holds null
+    # (cloudflare/terraform-provider-cloudflare#7449; related #7308/#7288/#7262).
+    #
+    # Naming it is impossible (Computed-only: tofu validate warns and has no effect), and a named
+    # ignore_changes is the same warning. `all` is the only lever the resource has left: this project's
+    # configuration is static (name, production branch, build_config above — the build_config values are
+    # already the API's own), so nothing else here is expected to change. Remove `all` and keep only
+    # prevent_destroy when the provider restores this attribute from state (follow #7449).
+    ignore_changes = all
   }
 }
 

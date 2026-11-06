@@ -15,16 +15,21 @@
 locals {
   app_hosts = {
     "rova.qnsc.vn"       = { product = "rova", env = "prod" }
-    "rova-dev.qnsc.vn"   = { product = "rova", env = "dev" }
-    "opshub-dev.qnsc.vn" = { product = "opshub", env = "dev" }
-    "kb-dev.qnsc.vn"     = { product = "kb", env = "dev" }
+    "rova-dev.qnsc.vn"   = { product = "rova", env = "dev", web = "cluster" }
+    "opshub-dev.qnsc.vn" = { product = "opshub", env = "dev", web = "cluster" }
+    "kb-dev.qnsc.vn"     = { product = "kb", env = "dev", web = "cluster" }
+    # P3 prod hosts (owner decisions 2026-11-04): staff + MFA Access app on the whole host (`access = "staff"`), SPA
+    # from the cluster. Nothing is created for a host until it is in `cutover` below.
+    "opshub.qnsc.vn" = { product = "opshub", env = "prod", access = "staff", web = "cluster" }
+    "kb.qnsc.vn"     = { product = "kb", env = "prod", access = "staff", web = "cluster" }
   }
 
-  # The ONLY Access bypasses (plan §8.2): /readyz per dev host + the rova-dev
-  # GitHub webhook. NEVER the whole /api or /v1.
+  # The ONLY Access bypasses (plan §8.2): /readyz per Access-protected host (dev hosts, and staff prod hosts once
+  # live — Synthetic Monitoring probes it) + the rova-dev GitHub webhook. NEVER the whole /api or /v1.
   bypass_paths = {
-    for h in compact([for h, v in local.app_hosts : v.env == "dev" ? h : null]) :
-    "${h}/readyz" => h
+    for h in compact([for h, v in local.app_hosts :
+      (v.env == "dev" || (try(v.access, "") == "staff" && contains(local.cutover, h))) ? h : null
+    ]) : "${h}/readyz" => h
   }
   webhook_bypass = "rova-dev.qnsc.vn/v1/scm/webhook/*"
 
@@ -45,10 +50,17 @@ locals {
   # api on k3s (gitops#75/#76), SPA Worker opshub-dev-web (opshub#521).
   # 2026-11-01 rova prod (owner fast track): rova.qnsc.vn moves off AWS on the
   # move night. Merge ONLY on the night of the move — this line is the switch.
-  cutover = ["rova-dev.qnsc.vn", "opshub-dev.qnsc.vn", "rova.qnsc.vn"]
+  # 2026-11-04 opshub.qnsc.vn (P3): opshub-prod live in the cluster (gitops#205/#264), tunnel rules (infra#356).
+  # 2026-11-05 kb.qnsc.vn (P3): DRAFT — merge only once the kb-prod data layer is live (gitops#255). Tunnel rules
+  # live in live/onprem/tunnels.tf; this entry is the switch that publishes DNS and creates the staff Access app.
+  cutover = ["rova-dev.qnsc.vn", "opshub-dev.qnsc.vn", "rova.qnsc.vn", "kb-dev.qnsc.vn", "opshub.qnsc.vn", "kb.qnsc.vn"]
 
   # Nothing goes live before the tunnels exist (DNS targets them).
   cutover_live = var.tunnels_exist ? local.cutover : []
+
+  # Hosts whose SPA is the product's in-cluster web component (chart 0.18+), not a Workers script: the tunnel
+  # sends every path to the cluster, so they get no Workers routes at all.
+  worker_web_live = [for h in local.cutover_live : h if try(local.app_hosts[h].web, "worker") == "worker"]
 }
 
 # A typo in local.cutover must fail the plan, not silently create nothing.
@@ -81,6 +93,9 @@ data "cloudflare_zero_trust_tunnel_cloudflared" "qnsc_admin" {
 # ttl = 1 (automatic): required in v5 and the only valid value while proxied.
 resource "cloudflare_dns_record" "app_hosts" {
   for_each = { for h, v in local.app_hosts : h => v if contains(local.cutover_live, h) }
+
+  # A staff prod host must never resolve before its Access app exists (P3 plan C7: Access first, then DNS).
+  depends_on = [cloudflare_zero_trust_access_application.prod_staff]
 
   zone_id = var.cloudflare_zone_id
   name    = each.key
@@ -228,8 +243,8 @@ resource "cloudflare_zero_trust_access_policy" "dev_allow" {
   decision         = "allow"
   session_duration = "12h"
 
-  # grp-qnsc-developers, plus grp-qnsc-dev-users (PQA, BA: the dev web hosts and nothing else; the MCP, hub and
-  # ArgoCD policies name grp-qnsc-developers only). Include = OR.
+  # grp-qnsc-developers, plus grp-qnsc-dev-users (PQA, BA: the dev web hosts and the two rova MCP servers; the MCP
+  # hub and ArgoCD policies name grp-qnsc-developers only). Include = OR.
   include = [for g in compact([var.grp_developers_id, var.grp_dev_users_id]) : {
     azure_ad = {
       id                   = g
@@ -282,7 +297,7 @@ resource "cloudflare_zero_trust_access_policy" "dev_bypass" {
 # omitted — the route exists with no script, so the traffic falls through to
 # the tunnel). v5 renamed `script_name` to `script`.
 resource "cloudflare_workers_route" "spa" {
-  for_each = { for h, v in local.app_hosts : h => v if contains(local.cutover_live, h) }
+  for_each = { for h, v in local.app_hosts : h => v if contains(local.worker_web_live, h) }
 
   zone_id = var.cloudflare_zone_id
   pattern = "${each.key}/*"
@@ -292,7 +307,7 @@ resource "cloudflare_workers_route" "spa" {
 resource "cloudflare_workers_route" "api_no_worker" {
   for_each = {
     for pair in flatten([
-      for h in local.cutover_live : [
+      for h in local.worker_web_live : [
         for p in local.api_paths : { host = h, path = p }
       ]
     ]) : "${pair.host}${pair.path}" => pair
@@ -301,4 +316,76 @@ resource "cloudflare_workers_route" "api_no_worker" {
   zone_id = var.cloudflare_zone_id
   pattern = "${each.value.host}${each.value.path}"
   script  = null
+}
+
+# ── Staff prod hosts (P3): the whole host behind Entra staff groups + MFA ───────────────────────────────────────
+# opshub.qnsc.vn / kb.qnsc.vn are internal tools: unlike rova prod they sit behind Access. /readyz is bypassed via
+# local.bypass_paths for Synthetic Monitoring. The origin checks this app's JWT (live/onprem access_jwt_hosts,
+# added in the follow-up once this app exists).
+resource "cloudflare_zero_trust_access_application" "prod_staff" {
+  for_each = { for h, v in local.app_hosts : h => v if v.env == "prod" && try(v.access, "") == "staff" && contains(local.cutover_live, h) }
+
+  account_id       = var.cloudflare_account_id
+  type             = "self_hosted"
+  name             = each.key
+  domain           = "${each.key}/*"
+  session_duration = "12h"
+  allowed_idps     = [cloudflare_zero_trust_access_identity_provider.entra.id]
+
+  policies = [{
+    id         = cloudflare_zero_trust_access_policy.prod_staff[each.key].id
+    precedence = 1
+  }]
+}
+
+resource "cloudflare_zero_trust_access_policy" "prod_staff" {
+  for_each = { for h, v in local.app_hosts : h => h if v.env == "prod" && try(v.access, "") == "staff" && contains(local.cutover_live, h) }
+
+  account_id       = var.cloudflare_account_id
+  name             = "staff"
+  decision         = "allow"
+  session_duration = "12h"
+
+  include = [for g in compact([var.grp_staff_id, var.grp_developers_id, var.grp_dev_users_id]) : {
+    azure_ad = {
+      id                   = g
+      identity_provider_id = cloudflare_zero_trust_access_identity_provider.entra.id
+    }
+  }]
+  require = [{
+    auth_method = { auth_method = "mfa" }
+  }]
+}
+
+# ── ArgoCD GitHub webhook (audit M4): Access bypass for ONE path ───────────────────────────────────────────────
+# GitHub cannot present an Access session, so POST <argocd>/api/webhook would be challenged forever. The bypass
+# is scoped to that exact path (the most specific Access app wins over the admin app's `<host>/*`), and the
+# endpoint is not open: ArgoCD verifies the `webhook.github.secret` shared secret on every delivery. The matching
+# no-JWT tunnel rule is in live/onprem/tunnels.tf. Gated on the `argocd` admin-door label like that rule.
+locals {
+  argocd_enabled = contains(nonsensitive(keys(var.admin_hostnames)), "argocd")
+}
+
+resource "cloudflare_zero_trust_access_application" "argocd_webhook_bypass" {
+  for_each = local.argocd_enabled ? toset(["argocd"]) : toset([])
+
+  account_id = var.cloudflare_account_id
+  type       = "self_hosted"
+  name       = "bypass ${var.admin_hostnames[each.key]}/api/webhook"
+  domain     = "${var.admin_hostnames[each.key]}/api/webhook"
+
+  policies = [{
+    id         = cloudflare_zero_trust_access_policy.argocd_webhook_bypass[each.key].id
+    precedence = 1
+  }]
+}
+
+resource "cloudflare_zero_trust_access_policy" "argocd_webhook_bypass" {
+  for_each = local.argocd_enabled ? toset(["argocd"]) : toset([])
+
+  account_id = var.cloudflare_account_id
+  name       = "everyone-bypass"
+  decision   = "bypass"
+
+  include = [{ everyone = {} }]
 }

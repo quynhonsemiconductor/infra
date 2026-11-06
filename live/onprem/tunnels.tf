@@ -6,7 +6,8 @@
 # less than Node's 65 s / uvicorn's 65 s, so no request lands on a socket the
 # origin is closing.
 #
-# The one host per app (§8.2): a Worker serves the SPA at the edge; the API
+# The one host per app (§8.2): the SPA is either a Worker at the edge or (P3, chart 0.18+) the in-cluster web
+# component behind a host catch-all rule (`path = null`, LAST for its host: first match wins). Where it is a Worker, the API
 # paths BELOW are "no-Worker routes" — Workers routes in live/edge negate them,
 # and they fall through to this Tunnel and straight to the Service. The browser
 # sees one origin: no CORS, no cross-site cookies, CF-Connecting-IP is
@@ -32,6 +33,25 @@ locals {
     { hostname = "rova.qnsc.vn", path = "^/api/auth/", service = "http://api.rova-prod.svc:3000" },
     { hostname = "rova.qnsc.vn", path = "^/v1/", service = "http://api.rova-prod.svc:3000" },
     { hostname = "rova.qnsc.vn", path = "^/readyz$", service = "http://api.rova-prod.svc:3000" },
+    # /mcp: the rova-prod MCP Access app (Managed OAuth) is in front; cloudflared checks ITS JWT.
+    { hostname = "rova.qnsc.vn", path = "^/mcp(/|$)", service = "http://api.rova-prod.svc:3000", access_app = "rova-prod MCP server" },
+
+    # opshub prod (P3, owner decisions 2026-11-04): staff + MFA Access app on the host (live/edge, infra#343), SPA
+    # from the cluster, no door terminal route at launch. Inert until edge publishes DNS for the host. The host
+    # joins access_jwt_hosts in a follow-up, once its Access app exists (the data lookup needs it).
+    { hostname = "opshub.qnsc.vn", path = "^/api/auth/", service = "http://api.opshub-prod.svc:3000" },
+    { hostname = "opshub.qnsc.vn", path = "^/v1/", service = "http://api.opshub-prod.svc:3000" },
+    { hostname = "opshub.qnsc.vn", path = "^/readyz$", service = "http://api.opshub-prod.svc:3000", bypass = true },
+    { hostname = "opshub.qnsc.vn", path = null, service = "http://web.opshub-prod.svc:8080" },
+
+    # kb prod (P3, owner decision 2026-11-05): staff + MFA Access app on the host (live/edge, same `access = "staff"`
+    # model as opshub.qnsc.vn), SPA from the cluster. Everything under /api (incl. the Entra callback) and /readyz,
+    # the alias of /health/ready that Synthetic Monitoring probes. Inert until edge publishes DNS for the host (its
+    # cutover entry is in this PR; the data layer comes first, gitops#255). The host joins access_jwt_hosts in a
+    # follow-up, once its Access app exists (the data lookup needs it).
+    { hostname = "kb.qnsc.vn", path = "^/api/", service = "http://api.kb-prod.svc:8000" },
+    { hostname = "kb.qnsc.vn", path = "^/readyz$", service = "http://api.kb-prod.svc:8000", bypass = true },
+    { hostname = "kb.qnsc.vn", path = null, service = "http://web.kb-prod.svc:8080" },
 
     # rova dev — one Access app on the host (live/edge); the webhook bypass
     # lives in live/edge too, this file only routes what reaches the origin
@@ -41,6 +61,11 @@ locals {
     { hostname = "rova-dev.qnsc.vn", path = "^/v1/scm/webhook/", service = "http://api.rova-dev.svc:3000", bypass = true },
     { hostname = "rova-dev.qnsc.vn", path = "^/v1/", service = "http://api.rova-dev.svc:3000" },
     { hostname = "rova-dev.qnsc.vn", path = "^/readyz$", service = "http://api.rova-dev.svc:3000", bypass = true },
+    { hostname = "rova-dev.qnsc.vn", path = "^/mcp(/|$)", service = "http://api.rova-dev.svc:3000", access_app = "rova-dev MCP server" },
+    # Everything else on the host is the SPA, served by the chart's web component (chart 0.19.1+, gitops#204/#218).
+    # Inert while the host's Workers SPA route exists (live/edge, web = "worker"): the Worker answers first. The
+    # edge PR that sets web = "cluster" removes that route; THIS rule must be applied before it.
+    { hostname = "rova-dev.qnsc.vn", path = null, service = "http://web.rova-dev.svc:8080" },
 
     # opshub dev
     # The door terminal rule is before ^/v1/ for the same reason (bearer token
@@ -49,11 +74,14 @@ locals {
     { hostname = "opshub-dev.qnsc.vn", path = "^/v1/door/terminal/", service = "http://api.opshub-dev.svc:3000", bypass = true },
     { hostname = "opshub-dev.qnsc.vn", path = "^/v1/", service = "http://api.opshub-dev.svc:3000" },
     { hostname = "opshub-dev.qnsc.vn", path = "^/readyz$", service = "http://api.opshub-dev.svc:3000", bypass = true },
+    { hostname = "opshub-dev.qnsc.vn", path = null, service = "http://web.opshub-dev.svc:8080" },
 
     # kb dev — everything under /api (incl. /api/v1/auth/entra/callback) plus
     # /readyz, the alias of /health/ready that Synthetic Monitoring probes
     { hostname = "kb-dev.qnsc.vn", path = "^/api/", service = "http://api.kb-dev.svc:8000" },
-    { hostname = "kb-dev.qnsc.vn", path = "^/readyz$", service = "http://api.kb-dev.svc:8000" },
+    { hostname = "kb-dev.qnsc.vn", path = "^/readyz$", service = "http://api.kb-dev.svc:8000", bypass = true },
+    # The SPA: the chart's in-cluster web component (kb has no Workers SPA; live/edge web = "cluster").
+    { hostname = "kb-dev.qnsc.vn", path = null, service = "http://web.kb-dev.svc:8080" },
   ]
 }
 
@@ -75,7 +103,12 @@ locals {
 # lookup fails the plan if an app is missing, so a host is never left
 # unchecked silently.
 locals {
-  access_jwt_hosts = toset(["rova-dev.qnsc.vn", "opshub-dev.qnsc.vn"])
+  # opshub.qnsc.vn: its staff Access app exists since infra#343 (same name = hostname).
+  # kb.qnsc.vn: its staff Access app exists since infra#395 (edge applied 2026-11-05).
+  access_jwt_hosts = toset(["rova-dev.qnsc.vn", "opshub-dev.qnsc.vn", "kb-dev.qnsc.vn", "opshub.qnsc.vn", "kb.qnsc.vn"])
+  # A rule may name a different Access app than its host's (`access_app`): /mcp is behind the MCP server
+  # apps (live/edge mcp.tf, mcp_rova_prod.tf), whose JWT carries THEIR aud, not the host web app's.
+  access_jwt_apps = setunion(local.access_jwt_hosts, toset(compact([for r in local.qnsc_apps_ingress : try(r.access_app, "")])))
 }
 
 data "cloudflare_zero_trust_organization" "this" {
@@ -83,7 +116,7 @@ data "cloudflare_zero_trust_organization" "this" {
 }
 
 data "cloudflare_zero_trust_access_application" "dev" {
-  for_each = local.access_jwt_hosts
+  for_each = local.access_jwt_apps
 
   account_id = var.cloudflare_account_id
   filter = {
@@ -119,6 +152,19 @@ data "cloudflare_zero_trust_access_application" "argocd" {
   }
 }
 
+# The pve and pbs doors (qnsc-admin tunnel). Same lookup, same reason: the rules
+# below refuse a request that did not come through the host's Access app. The
+# two keys are REQUIRED by the variable validation, so the lookup always exists.
+data "cloudflare_zero_trust_access_application" "admin_doors" {
+  for_each = toset(["pve", "pbs"])
+
+  account_id = var.cloudflare_account_id
+  filter = {
+    name  = var.admin_hostnames[each.key]
+    exact = true
+  }
+}
+
 resource "cloudflare_zero_trust_tunnel_cloudflared" "qnsc_apps" {
   account_id = var.cloudflare_account_id
   name       = "qnsc-apps"
@@ -143,12 +189,23 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "qnsc_apps" {
         path     = r.path
         service  = r.service
         origin_request = {
-          access = contains(local.access_jwt_hosts, r.hostname) && !try(r.bypass, false) ? {
+          access = (contains(local.access_jwt_hosts, r.hostname) || try(r.access_app, "") != "") && !try(r.bypass, false) ? {
             required  = true
             team_name = local.access_team_name
-            aud_tag   = [data.cloudflare_zero_trust_access_application.dev[r.hostname].aud]
+            aud_tag   = [data.cloudflare_zero_trust_access_application.dev[try(r.access_app, r.hostname)].aud]
           } : null
         }
+      }],
+      # ArgoCD's GitHub webhook (audit M4) — BEFORE the host catch-all: first match wins, and GitHub cannot
+      # present an Access session. The request authenticates with the shared webhook secret ArgoCD verifies
+      # (`webhook.github.secret` in argocd-secret, ESO-synced in platform/argocd), so this rule carries no JWT
+      # check, exactly like the rova-dev SCM webhook. The live/edge bypass app for the same path is the other
+      # half: Access must not challenge the POST, and this file must not demand the JWT it never gets.
+      [for h in data.cloudflare_zero_trust_access_application.argocd : {
+        hostname       = var.admin_hostnames["argocd"]
+        path           = "^/api/webhook$"
+        service        = "http://argocd-server.argocd.svc:80"
+        origin_request = {}
       }],
       [for h in data.cloudflare_zero_trust_access_application.argocd : {
         hostname = var.admin_hostnames["argocd"]
@@ -200,15 +257,23 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "qnsc_admin" {
   config = {
     ingress = [
       # §12.1 (runbook): the operator doors. Access apps on BOTH hosts are
-      # owned by live/edge (Allow grp-qnsc-platform-admins, Require amr=mfa);
-      # these rules only decide where an authenticated request lands. Order
-      # matters: host rules BEFORE the catch-all.
+      # owned by live/edge (Allow grp-qnsc-platform-admins, Require amr=mfa).
+      # cloudflared ALSO checks each host's Cf-Access-Jwt-Assertion here
+      # (audit N-M4), exactly as the qnsc-apps rules and the argocd rule do:
+      # if the Access app is detached or mis-edited at the edge, the Proxmox
+      # or PBS login is not reachable from the internet. Order matters: host
+      # rules BEFORE the catch-all.
       {
         hostname = var.admin_hostnames["pve"]
         path     = null
         service  = "https://localhost:8006"
         origin_request = {
           no_tls_verify = true # Proxmox pveproxy ships a self-signed cert
+          access = {
+            required  = true
+            team_name = local.access_team_name
+            aud_tag   = [data.cloudflare_zero_trust_access_application.admin_doors["pve"].aud]
+          }
         }
       },
       {
@@ -217,6 +282,11 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "qnsc_admin" {
         service  = "https://localhost:8007"
         origin_request = {
           no_tls_verify = true # PBS ships a self-signed cert
+          access = {
+            required  = true
+            team_name = local.access_team_name
+            aud_tag   = [data.cloudflare_zero_trust_access_application.admin_doors["pbs"].aud]
+          }
         }
       },
       {

@@ -1,0 +1,4 @@
+# Expected served JWKS, from `tofu output` of live/onprem-oidc after each apply (non-secret).
+# Read by the drift-detection job "Drift onprem-oidc-served". While both say `unset` the check is skipped.
+kids=mA1Xe5hXRUG45beer6W7imCwdne6LpSFqN_q_VoOSnU
+sha256=4b5bd29d7d11c21a0c999b7e6b64dea3445b8e69da9a1fc4f3044862b14dd2ac

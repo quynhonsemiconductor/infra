@@ -3,8 +3,11 @@ terraform {
 
   required_providers {
     proxmox = {
-      source  = "bpg/proxmox"
-      version = "~> 0.119"
+      source = "bpg/proxmox"
+      # Exact pin: 0.120.0 is the version whose `proxmox_storage_pbs` schema was read when the encryption
+      # precondition was written (encryption_key_fingerprint read-only; encryption_key sensitive but NOT
+      # write-only — `tofu providers schema -json`). A Renovate bump re-reads that before it lands.
+      version = "0.120.0"
     }
   }
 

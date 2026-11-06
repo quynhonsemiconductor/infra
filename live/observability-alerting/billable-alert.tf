@@ -1,19 +1,24 @@
 # =============================================================================
 # Billable-series alerts — the guard for the meter the Free cap actually
-# enforces (infra#214). `series_near_cap` (main.tf) watches the ACTIVE-series
+# enforces (infra#214). This file now owns the ONLY series-cap rules: active-
 # meter via a 5-min Mimir count; this stack's org BILLABLE meter is a
-# different measurement with its own ceiling, and it is the one whose breach
-# drops series at ingestion. Two tiers:
+# series copies in main.tf were removed (S-H3); the billable meter is the one
+# whose breach drops series at ingestion. Two tiers:
 #
-#   WARNING (> 8,000, email only): no `env` label on purpose — the same
-#   pattern as `series_near_cap` — so the notification policy's root
-#   (devops@) handles it and the Teams child (env=production) never matches.
+#   WARNING (> 8,000 sustained 6 h, email only): no `env` label on purpose — the same
+#   pattern as every other platform rule — so the notification policy's root
+#   (devops@) handles it and the Teams child (env=prod) never matches. The
+#   threshold stays 8,000 — but the rule now needs 6 h ABOVE it. The meter sits
+#   at 7.5-8.2k in steady state, so the old instant/15m check fired chronically;
+#   a 6-hour `for` keeps the same early warning line (no lead-time lost: the
+#   critical still fires at 10,000 with `for` 1 h) while ending the chronic page.
 #
-#   CRITICAL (> 10,000, Teams + devops@, `for` 1 h): gated behind
-#   `billable_critical_enabled` (default false). It arms only after the
-#   Adaptive Metrics rules (infra#213) have applied AND the 48-h
-#   post-reduction re-measure shows billable under the allowance — until
-#   then the warning tier carries the signal.
+#   CRITICAL (> 10,000, Teams + devops@, `for` 1 h): ALWAYS ARMED since
+#   2026-11-04. The former `billable_critical_enabled` gate was dropped with
+#   the S-H3 series cuts: at the cap, series are being dropped at ingestion,
+#   which is exactly a page. This is the ONE series-cap critical; the active-
+#   series group in main.tf and the 70% tier were removed (five rules used to
+#   fire on the same condition).
 #
 # NO-DATA POLICY (measured 2026-10-25): the usage series samples every 5 min
 # with zero gaps over a 24-h window, so a 300-s evaluation with
@@ -40,7 +45,7 @@ resource "grafana_rule_group" "billable_series" {
   rule {
     name           = "org-billable-series-warning"
     condition      = "B"
-    for            = "15m"
+    for            = "6h"
     no_data_state  = "Alerting"
     exec_err_state = "Error"
 
@@ -98,92 +103,18 @@ resource "grafana_rule_group" "billable_series" {
     }
 
     annotations = {
-      summary = "Org billable series is above the Free tier's included allowance (warning line). Series are at risk of being dropped at ingestion; the recorded reductions (Adaptive Metrics rules, infra#213) bring this back down — re-measure 48 h after they apply."
+      summary = "Org billable series has stayed above 8,000 for 6 hours, closing on the Free tier's 10,000 cap. Series are at risk of being dropped at ingestion; the recorded reductions (Adaptive Metrics rules, infra#213) bring this back down — re-measure 48 h after they apply."
     }
   }
 
-  # EARLY tier (70% of the 10k allowance), added with OBI phase 1 (gitops: eBPF RED metrics
-  # add a few hundred series). Same usage datasource and metric as the warning rule above,
-  # whose name was verified live on 2026-10-25 (the series samples every 5 min). Email only,
-  # no `env` label (notification-policy root), same no-data stance as the warning tier.
-  rule {
-    name           = "org-billable-series-70pct"
-    condition      = "B"
-    for            = "30m"
-    no_data_state  = "Alerting"
-    exec_err_state = "Error"
-
-    data {
-      ref_id         = "A"
-      query_type     = "instant"
-      datasource_uid = data.grafana_data_source.usage.uid
-
-      relative_time_range {
-        from = 600
-        to   = 0
-      }
-
-      model = jsonencode({
-        refId         = "A"
-        datasource    = { type = "prometheus", uid = data.grafana_data_source.usage.uid }
-        expr          = "grafanacloud_org_metrics_billable_series"
-        instant       = true
-        range         = false
-        intervalMs    = 1000
-        maxDataPoints = 43200
-      })
-    }
-
-    data {
-      ref_id         = "B"
-      datasource_uid = "__expr__"
-
-      relative_time_range {
-        from = 0
-        to   = 0
-      }
-
-      model = jsonencode({
-        refId      = "B"
-        type       = "threshold"
-        datasource = { type = "__expr__", uid = "__expr__" }
-        expression = "A"
-        conditions = [
-          {
-            evaluator = {
-              type   = "gt"
-              params = [7000]
-            }
-          }
-        ]
-        intervalMs    = 1000
-        maxDataPoints = 43200
-      })
-    }
-
-    labels = {
-      product  = "platform"
-      severity = "warning"
-    }
-
-    annotations = {
-      summary = "Org billable series is above 7000 (70% of the 10k Free-tier allowance). Check what was added recently (OBI/Beyla series, new scrape jobs) before it reaches the 8000 warning line."
-    }
-  }
 }
 
-variable "billable_critical_enabled" {
-  description = "Arms the critical (> 10,000, Teams) billable rule. Flip via a PR AFTER infra#213's rules have applied and the 48-h re-measure shows billable under the allowance. false = the critical rule is culled; the warning tier stays active."
-  type        = bool
-  default     = false
-}
-
-# CRITICAL tier — gated: arms only via `billable_critical_enabled` (flip PR
-# after infra#213's rules apply + the 48-h re-measure is under the allowance).
-# env=production label routes it to Teams as well; `for` 1 h keeps a single
-# ingest spike from paging.
+# CRITICAL tier — ALWAYS ARMED (2026-11-04). It used to sit behind
+# `billable_critical_enabled` until a re-measure; the S-H3 series cuts give it
+# headroom, and a breach is exactly the state where series are being dropped
+# at ingestion. env=prod routes it to Teams as well; `for` 1 h keeps a
+# single ingest spike from paging.
 resource "grafana_rule_group" "billable_series_critical" {
-  count            = var.billable_critical_enabled ? 1 : 0
   name             = "platform (usage — breach)"
   folder_uid       = grafana_folder.alerts.uid
   interval_seconds = 300
@@ -247,7 +178,7 @@ resource "grafana_rule_group" "billable_series_critical" {
 
     labels = {
       product  = "platform"
-      env      = "production"
+      env      = "prod"
       severity = "critical"
     }
 

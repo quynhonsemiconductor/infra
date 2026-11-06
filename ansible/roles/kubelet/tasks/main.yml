@@ -1,0 +1,54 @@
+---
+# One drop-in for every k3s node. The values per profile live in defaults/main.yml, so the server
+# and the agents cannot drift into different reservation or shutdown settings.
+- name: The container log limits are set
+  ansible.builtin.assert:
+    that:
+      - kubelet_container_log_max_size | length > 0
+      - kubelet_container_log_max_files | int >= 1
+    fail_msg: "containerLogMaxSize/containerLogMaxFiles must be set: an unbounded pod log fills the node's root disk."
+    quiet: true
+
+- name: The image GC watermarks are valid
+  ansible.builtin.assert:
+    that: kubelet_image_gc_valid | bool
+    fail_msg: >-
+      kubelet_image_gc_high_percent ({{ kubelet_image_gc_high_percent }}) and kubelet_image_gc_low_percent
+      ({{ kubelet_image_gc_low_percent }}) must both be within 0-100 with low < high — KubeletConfiguration
+      rejects the pair and k3s would not start with an invalid drop-in.
+    quiet: true
+
+- name: The kubelet profile is known
+  ansible.builtin.assert:
+    that: kubelet_profile in kubelet_profiles
+    fail_msg: "kubelet_profile must be one of {{ kubelet_profiles.keys() | list | join(', ') }}, got '{{ kubelet_profile }}'"
+    quiet: true
+
+- name: Directory for the kubelet configuration drop-in
+  ansible.builtin.file:
+    path: "{{ kubelet_config_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# Do not leave a latent change that the next UNPLANNED restart would pick up. The drop-in is
+# written only in the same run that permits the restart, so a change in behaviour is always
+# attributable to a window the operator chose.
+- name: Write the kubelet configuration drop-in (only with the restart allowed)
+  ansible.builtin.template:
+    src: 90-qnsc.conf.j2
+    dest: "{{ kubelet_config_file }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when: kubelet_allow_restart | bool
+  notify:
+    - Restart k3s for the kubelet configuration
+
+- name: Report that the kubelet drop-in was withheld
+  ansible.builtin.debug:
+    msg: >-
+      The kubelet drop-in was NOT written: a change here must not take effect at an unplanned
+      restart. Re-run in a window with -e kubelet_allow_restart=true to write and restart together.
+  when: not (kubelet_allow_restart | bool)

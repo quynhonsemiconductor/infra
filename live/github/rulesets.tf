@@ -1,11 +1,13 @@
 # =============================================================================
-# Repository rulesets — every ruleset that exists in the org today, imported
-# exactly (42 across 17 repos on 2026-11-02). The data is the live API output,
-# reduced to the fields the provider can manage; see README.md "Not managed by
-# the provider" for the two ruleset fields it cannot express.
+# Repository rulesets — every ruleset that exists in the org today. The 42 that
+# existed on 2026-11-02 were imported exactly (17 repos). The 4 for code-review
+# and opc (2026-11-06, IaC drift audit §GitHub) carry no `id` and are CREATED by
+# this stack: the import block skips any entry without one. The data is the live
+# API output, reduced to the fields the provider can manage; see README.md "Not
+# managed by the provider" for the two ruleset fields it cannot express.
 #
-# Adding a ruleset = one entry here (id omitted until it exists, then the import
-# block is not needed; create it through this file, not the UI).
+# Adding a ruleset = one entry here. With an `id`, it is imported; without one,
+# it is created. Either way it goes through this file, not the UI.
 # =============================================================================
 locals {
   # Org team / app ids (public numbers shown by the GitHub API).
@@ -175,6 +177,45 @@ locals {
     "chipgraph/tag-protection" = {
       repo    = "chipgraph"
       id      = 24852357
+      name    = "tag-protection"
+      target  = "tag"
+      include = ["~ALL"]
+      bypass  = [{ id = local.team_merge_bypass, type = "Team", mode = "always" }]
+      rules   = ["deletion", "update"]
+    }
+
+    # ── code-review ─────────────────────────────────────────────────
+    # Created 2026-11-06 (no `id`): the repo had no ruleset and no branch
+    # protection. Checks are the three languages in the repo's own CodeQL
+    # workflow (`.github/workflows/codeql.yml`); the repo's other product
+    # workflows live only on feature branches, so they are not required here.
+    "code-review/main-protection" = {
+      repo    = "code-review"
+      name    = "main-protection"
+      target  = "branch"
+      include = ["~DEFAULT_BRANCH"]
+      bypass  = [{ id = local.team_merge_bypass, type = "Team", mode = "pull_request" }]
+      rules   = ["deletion", "non_fast_forward"]
+      pull_request = {
+        approvals          = 1
+        dismiss_stale      = true
+        code_owner_review  = true
+        last_push_approval = true
+        thread_resolution  = true
+        merge_methods      = ["squash"]
+      }
+      status_checks = {
+        strict                   = true
+        do_not_enforce_on_create = true
+        checks = [
+          { context = "Analyze (actions)", integration_id = local.app_github_actions_id },
+          { context = "Analyze (go)", integration_id = local.app_github_actions_id },
+          { context = "Analyze (javascript-typescript)", integration_id = local.app_github_actions_id },
+        ]
+      }
+    }
+    "code-review/tag-protection" = {
+      repo    = "code-review"
       name    = "tag-protection"
       target  = "tag"
       include = ["~ALL"]
@@ -363,10 +404,15 @@ locals {
       rules   = ["deletion", "update"]
     }
 
-    # ── mcp-tools ───────────────────────────────────────────────────
-    "mcp-tools/main-protection" = {
-      repo    = "mcp-tools"
-      id      = 22875978
+    # ── opc ─────────────────────────────────────────────────────────
+    # Created 2026-11-06 (no `id`): the repo had no ruleset and no branch
+    # protection. NO required status checks yet: opc has no workflow files, and
+    # the CodeQL default-setup analyses have reported only on `main`, never on a
+    # pull request. Requiring them would block every opc PR forever. Add them
+    # (strict, both `Analyze (...)` contexts) once a throwaway PR has shown them
+    # reporting on a PR.
+    "opc/main-protection" = {
+      repo    = "opc"
       name    = "main-protection"
       target  = "branch"
       include = ["~DEFAULT_BRANCH"]
@@ -380,33 +426,9 @@ locals {
         thread_resolution  = true
         merge_methods      = ["squash"]
       }
-      status_checks = {
-        strict                   = true
-        do_not_enforce_on_create = true
-        checks = [
-          { context = "typecheck" },
-          { context = "lint" },
-          { context = "PR title (conventional commits)" },
-          { context = "Analyze (javascript-typescript)" },
-          { context = "test" },
-          { context = "build" },
-          { context = "security / Security scans (Gitleaks, osv-scanner, Semgrep)", integration_id = local.app_github_actions_id },
-          { context = "actions-security / Workflow security (actionlint, zizmor)", integration_id = local.app_github_actions_id },
-        ]
-      }
     }
-    "mcp-tools/tag-creation-release-only" = {
-      repo    = "mcp-tools"
-      id      = 22876000
-      name    = "tag-creation-release-only"
-      target  = "tag"
-      include = ["refs/tags/v*"]
-      bypass  = [{ id = local.app_qnsc_automation, type = "Integration", mode = "always" }, { id = local.team_merge_bypass, type = "Team", mode = "always" }]
-      rules   = ["creation"]
-    }
-    "mcp-tools/tag-protection" = {
-      repo    = "mcp-tools"
-      id      = 22875998
+    "opc/tag-protection" = {
+      repo    = "opc"
       name    = "tag-protection"
       target  = "tag"
       include = ["~ALL"]
@@ -508,6 +530,42 @@ locals {
       include = ["~ALL"]
       bypass  = [{ id = local.team_merge_bypass, type = "Team", mode = "always" }]
       rules   = ["deletion"]
+    }
+
+    # ── qnsc-eda ────────────────────────────────────────────────────
+    # Created by this stack (no `id`): the repository does not exist yet.
+    "qnsc-eda/main-protection" = {
+      repo    = "qnsc-eda"
+      name    = "main-protection"
+      target  = "branch"
+      include = ["~DEFAULT_BRANCH"]
+      bypass  = [{ id = local.team_merge_bypass, type = "Team", mode = "pull_request" }]
+      rules   = ["deletion", "non_fast_forward"]
+      pull_request = {
+        approvals          = 1
+        dismiss_stale      = true
+        code_owner_review  = true
+        last_push_approval = true
+        thread_resolution  = true
+        merge_methods      = ["squash"]
+      }
+      status_checks = {
+        strict                   = true
+        do_not_enforce_on_create = true
+        checks = [
+          { context = "Image build (pull request)" },
+          { context = "PR title (conventional commits)" },
+          { context = "actions-security / Workflow security (actionlint, zizmor)", integration_id = local.app_github_actions_id },
+        ]
+      }
+    }
+    "qnsc-eda/tag-protection" = {
+      repo    = "qnsc-eda"
+      name    = "tag-protection"
+      target  = "tag"
+      include = ["~ALL"]
+      bypass  = [{ id = local.team_merge_bypass, type = "Team", mode = "always" }]
+      rules   = ["deletion", "update"]
     }
 
     # ── qnsc-kb-backend ─────────────────────────────────────────────
@@ -800,10 +858,15 @@ locals {
 resource "github_repository_ruleset" "this" {
   for_each = local.rulesets
 
+  # All repositories exist first, including the one this stack creates
+  # (qnsc-eda). A per-index reference cannot be used: `infra-template` has a
+  # ruleset but intentionally no entry in local.repos.
   repository  = each.value.repo
   name        = each.value.name
   target      = each.value.target
   enforcement = "active"
+
+  depends_on = [github_repository.this]
 
   conditions {
     ref_name {
@@ -862,11 +925,51 @@ resource "github_repository_ruleset" "this" {
   }
 }
 
+# mcp-tools retirement (owner decision 2026-11-06). The three rulesets left
+# `local.rulesets`; the `moved` blocks below hand their state to this empty
+# resource, which has NO prevent_destroy, so the plan destroys them while the
+# guard above stays in place. The placeholders are never created (`for_each`
+# is empty); once applied, the resource and the three `moved` blocks are inert
+# and can be deleted in a cleanup.
+resource "github_repository_ruleset" "retired" {
+  for_each = {}
+
+  repository  = "mcp-tools"
+  name        = "retired"
+  target      = "branch"
+  enforcement = "active"
+
+  conditions {
+    ref_name {
+      include = ["~ALL"]
+      exclude = []
+    }
+  }
+
+  rules {
+    deletion = true
+  }
+}
+
+moved {
+  from = github_repository_ruleset.this["mcp-tools/main-protection"]
+  to   = github_repository_ruleset.retired["mcp-tools/main-protection"]
+}
+moved {
+  from = github_repository_ruleset.this["mcp-tools/tag-creation-release-only"]
+  to   = github_repository_ruleset.retired["mcp-tools/tag-creation-release-only"]
+}
+moved {
+  from = github_repository_ruleset.this["mcp-tools/tag-protection"]
+  to   = github_repository_ruleset.retired["mcp-tools/tag-protection"]
+}
+
 # Imports: the live rulesets are adopted, never recreated. `repository:id` is the
 # provider's import id. Safe to leave in place after the first apply (OpenTofu
-# ignores an import block whose resource is already in state).
+# ignores an import block whose resource is already in state). Entries without
+# an `id` are the rulesets this stack creates, so they are skipped here.
 import {
-  for_each = local.rulesets
+  for_each = { for key, ruleset in local.rulesets : key => ruleset if try(ruleset.id, null) != null }
   to       = github_repository_ruleset.this[each.key]
   id       = "${each.value.repo}:${each.value.id}"
 }

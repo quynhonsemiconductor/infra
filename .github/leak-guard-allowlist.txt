@@ -21,6 +21,19 @@
 ^opshub-api-dev\.qnsc\.vn$
 ^kb-dev\.qnsc\.vn$
 ^kb-api-dev\.qnsc\.vn$
+# KB PROD hostname: live/observability-alerting/kb-prod.tf is the Synthetic
+# Monitoring target for the prod readyz check (public DNS by design, same as
+# rova/opshub prod above).
+^kb\.qnsc\.vn$
+# The cluster's public OIDC issuer (live/onprem-oidc): Entra fetches the
+# discovery document and JWKS from it, so the hostname is public by design.
+^oidc\.qnsc\.vn$
+# Coder (VLSI platform): live/edge coder.tf configures the WARP-only private
+# hostname routes and live/identity coder.tf registers its OIDC callback. The
+# names are published deliberately (no public DNS record, but the hostname itself
+# is not a secret — the door is WARP + Entra), same as the product hosts above.
+^coder\.qnsc\.vn$
+^\*\.coder\.qnsc\.vn$
 # Dead pre-rename name, kept in the EKS teardown record:
 ^rally-api-dev\.qnsc\.vn$
 # Dead EKS hostname, teardown record only:
@@ -45,6 +58,11 @@ scripts/owner/test_bootstrap_state.sh
 # WARP split tunnel (live/edge): Cloudflare's published default exclude list and the RFC 1918 validation
 # ranges are well-known public constants, not internal addresses; the admin range itself is a secret.
 live/edge/warp.tf
+# Coder (live/edge/coder.tf): the L4 block's destination scope is the four ranges the Gateway
+# policy language takes as literals (RFC 1918 + CGNAT). They are Cloudflare's documented
+# network boundaries, not this company's addresses — the same reason live/edge/warp.tf is
+# listed above. The VLSI group id and every company address remain out of this repo.
+live/edge/coder.tf
 live/edge/variables.onprem.tf
 live/onprem/variables.tf
 
@@ -79,3 +97,8 @@ key:ROLE_FIXTURE_ID
 key:SP_FIXTURE_ID
 key:TENANT_FIXTURE_ID
 key:FIXED_CREDENTIAL_ID
+# live/identity/mail.tf pins the EXISTING service-app certificate credentials by
+# keyId (public identifiers; the file is the reviewed source of truth for which
+# credential the stack manages). Only a GUID written as a pinned_key_id value is
+# suppressed — nothing else.
+key:pinned_key_id

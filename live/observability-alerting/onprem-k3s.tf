@@ -9,7 +9,7 @@
 #
 # DORMANT-SHAPE: rules whose SIGNAL is absence (node down) use no_data_state
 # = "Alerting" (a vanished series IS the alert); presence rules use
-# no_data_state = "OK". All carry env=production (Teams child) +
+# no_data_state = "OK". All carry env=prod (Teams child) +
 # product=platform, and exec_err_state = KeepLast (a Loki/pipeline fault
 # must not page — same decision as the fail-open rules).
 #
@@ -20,12 +20,11 @@
 # cutover rehearsal (Stage D2 checklist).
 #
 # NOT here, deliberately: backup failed/missed (Healthchecks.io owns the
-# batch-job pings), cert expiry (weekly expiry-check Action; CNPG server
+# batch-job pings), cert expiry (weekly `.github/workflows/secret-expiry.yml`; CNPG server
 # certs auto-renew ~90 d), /readyz failing and tunnel down (Synthetic
-# Monitoring's readyz check + the node-down rule), ZFS pool capacity/health
-# (the pools live on the pve01 HOST, not in the k3s VM this scrapes — the
-# host-metrics design is in the server-setup runbook, with the 80/90 tiers
-# documented there for the host textfile collector).
+# Monitoring's readyz check + the node-down rule). ZFS/NVMe/PBS signals on
+# the pve01 HOST are not in this file: they come from the host textfile
+# collector and live in onprem-host.tf (job="pve-host").
 # =============================================================================
 
 variable "onprem_alerts_enabled" {
@@ -103,7 +102,7 @@ resource "grafana_rule_group" "onprem_node_down" {
 
     labels = {
       product  = "platform"
-      env      = "production"
+      env      = "prod"
       severity = "critical"
     }
 
@@ -179,8 +178,11 @@ resource "grafana_rule_group" "onprem_fs" {
 
     labels = {
       product  = "platform"
-      env      = "production"
+      env      = "prod"
       severity = "warning"
+      # Real today (/, 82.7%): keep paging even though warnings are email
+      # only after the 2026-11-06 severity split.
+      paging = "teams"
     }
 
     annotations = {
@@ -244,7 +246,7 @@ resource "grafana_rule_group" "onprem_fs" {
 
     labels = {
       product  = "platform"
-      env      = "production"
+      env      = "prod"
       severity = "critical"
     }
 
@@ -319,7 +321,7 @@ resource "grafana_rule_group" "onprem_cnpg" {
 
     labels = {
       product  = "platform"
-      env      = "production"
+      env      = "prod"
       severity = "critical"
     }
 
@@ -386,7 +388,7 @@ resource "grafana_rule_group" "onprem_cnpg" {
 
     labels = {
       product  = "platform"
-      env      = "production"
+      env      = "prod"
       severity = "warning"
     }
 

@@ -1,0 +1,12 @@
+---
+# Kernel settings every k3s node needs (server and agents). Watches: the value k3s-01 ran with since 2026-10-28;
+# instances: 8192 (the agents ran the Ubuntu default 128, too low for Alloy, ArgoCD and file-watching workloads).
+vm_guest_sysctl:
+  net.ipv4.ip_forward: 1
+  fs.inotify.max_user_watches: 1048576
+  fs.inotify.max_user_instances: 8192
+
+# Files written by hand before Ansible owned these settings (server-setup runbook, 2026-10-28). Removed so one file
+# holds the values.
+vm_guest_sysctl_legacy_files:
+  - /etc/sysctl.d/90-k8s.conf

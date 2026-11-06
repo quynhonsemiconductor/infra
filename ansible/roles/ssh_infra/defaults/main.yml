@@ -1,0 +1,51 @@
+---
+# People SSH via Cloudflare Access for Infrastructure (short-lived certificates).
+#
+# The account's Gateway SSH CA public key is the ONLY trust anchor: a node that
+# trusts it accepts any certificate Cloudflare issues after Access has checked
+# Entra + MFA and the UNIX username. No passwords, no per-person keys.
+#
+# Values (LOCAL inventory, git-ignored):
+#   node_ssh_ca_public_key: "ssh-ed25519 AAAA... "   # scripts/owner/cloudflare-ssh-ca.sh
+#   node_admin_users:
+#     - { name: <login>, sudo: true, hosts: ["<gpu-node>"] }
+#
+# The unprefixed inventory names are aliased here so the role keeps its own
+# prefix without making the owner's inventory awkward. An UNDEFINED value is a
+# typo/omission and FAILS the run; only an explicit empty key + empty list with
+# ssh_infra_revoke: true revokes the trust.
+ssh_infra_undefined: "__SSH_INFRA_UNDEFINED__"
+ssh_infra_ca_public_key: "{{ node_ssh_ca_public_key | default('__SSH_INFRA_UNDEFINED__') }}"
+ssh_infra_admin_users: "{{ node_admin_users | default(['__SSH_INFRA_UNDEFINED__']) }}"
+ssh_infra_revoke: false
+ssh_infra_enabled: >-
+  {{ ssh_infra_ca_public_key != ssh_infra_undefined and ssh_infra_ca_public_key | length > 0 }}
+
+# Operator/system accounts this role must never take over. A listed `qnsc`,
+# `ubuntu` or `root` would lose its authorized_keys and be locked on removal.
+ssh_infra_reserved_users:
+  - root
+  - qnsc
+  - ubuntu
+  - daemon
+  - bin
+  - sys
+  - sync
+  - man
+  - lp
+  - mail
+  - news
+  - uucp
+  - proxy
+  - www-data
+  - backup
+  - list
+  - irc
+  - _apt
+  - nobody
+
+ssh_infra_ca_file: /etc/ssh/ca.pub
+ssh_infra_sshd_dropin: /etc/ssh/sshd_config.d/10-qnsc-access-infrastructure.conf
+ssh_infra_principals_dir: /etc/ssh/auth_principals
+ssh_infra_managed_users_file: /var/lib/qnsc/ssh-managed-users
+ssh_infra_sudoers_dir: /etc/sudoers.d

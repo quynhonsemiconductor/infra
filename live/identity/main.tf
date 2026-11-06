@@ -6,22 +6,25 @@
 #                properties, the $10 subscription budget alert, the two CI
 #                identities ("QNSC CI Infra" / "QNSC CI Infra Read", §7.4)
 #
-#   Phase 1      azuread: groups (grp-qnsc-platform-admins, grp-qnsc-developers,
-#                grp-qnsc-rova-vendors, grp-qnsc-kv-dev-officers); the ESO SP
-#                apps x3 (certificate only — public certs committed in infra/),
-#                the Backup Prod app; product sign-in apps' redirect URIs per
-#                §8.2 (loopback on dev only); Key Vault RBAC role assignments
-#                (ESO Secrets User, CI Reader)
+#   Phase 1      azuread: the access groups (grp-qnsc-platform-admins and
+#                grp-qnsc-developers adopted by import; grp-qnsc-staff and
+#                grp-qnsc-dev-users created here); the ESO SP apps x3
+#                (workload identity, no credential); the product sign-in apps
+#                and the Cloudflare Access IdP app with their redirect URIs
+#                per §8.2 (loopback on dev only); Key Vault RBAC role
+#                assignments (ESO Secrets User, platform-admins Secrets
+#                Officer, CI Reader)
 #
 #   imported     rg-qnsc-platform, stqnsctfstate and its `tfstate` container
-#                (blob-service properties live on the account resource) and
-#                the qnsc-platform-monthly budget —
+#                (blob-service properties live on the account resource), the
+#                qnsc-platform-monthly budget and the two access groups
+#                (grp-qnsc-platform-admins, grp-qnsc-developers) —
 #                all created BY HAND (pre-work (e); the state backend and its
 #                resource group must exist before TF can hold any state), then
-#                imported via the blocks in imports.tf. Each block here is an
-#                import target, never a creation path: a plan after import
-#                must show NO change on any imported resource. The RG and the
-#                storage account carry no tags in Azure — code matches.
+#                imported via the blocks in imports.tf / groups.tf. Each block
+#                here is an import target, never a creation path: a plan after
+#                import must show NO change on any imported resource. The RG and
+#                the storage account carry no tags in Azure — code matches.
 #
 # Rules this stack never breaks (§7):
 #   - OpenTofu owns SHAPE and ACCESS, never values. No secret, token, key or

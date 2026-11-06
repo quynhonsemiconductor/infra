@@ -1,0 +1,226 @@
+#!/bin/sh
+# Write the Proxmox host gauges node-exporter's textfile collector reads:
+#   pve_zpool_*           pool health / size / allocated / free
+#   pve_nvme_*            NVMe SMART wear, media errors, critical warning
+#   pve_pbs_*             PBS datastore size / used / avail; per-target
+#                         (worker_id) last usable backup timestamp and last
+#                         backup status; collector_ok
+#   pve_apt_*             pending updates / security updates / reboot required
+# Run by pve-metrics.timer every 5 minutes. Any source that is absent on this
+# host (no PBS, no NVMe) is skipped; it must never abort the whole file.
+set -eu
+
+out_dir="{{ pve_monitoring_textfile_dir }}"
+nvme_glob="{{ pve_monitoring_nvme_glob }}"
+disk_glob="{{ pve_monitoring_disk_glob }}"
+
+umask 022
+mkdir -p "$out_dir"
+tmp="$(mktemp "$out_dir/.pve_metrics.XXXXXX")"
+trap 'rm -f "$tmp"' EXIT
+
+emit() {
+    printf '%s\n' "$*" >> "$tmp"
+}
+
+# ── ZFS pools ──────────────────────────────────────────────────────────────
+# -H: no header, tab separated; -p: exact byte counts. `health` is ONLINE /
+# DEGRADED / FAULTED / OFFLINE / UNAVAIL / REMOVED, so the exported gauge is
+# 1 only for ONLINE and 0 for everything else.
+if command -v zpool >/dev/null 2>&1; then
+    timeout 20 zpool list -Hp -o name,size,alloc,free,health 2>/dev/null |
+    while read -r pool size alloc free health; do
+        if [ "$health" = "ONLINE" ]; then state=1; else state=0; fi
+        emit "pve_zpool_health{pool=\"$pool\"} $state"
+        emit "pve_zpool_size_bytes{pool=\"$pool\"} $size"
+        emit "pve_zpool_allocated_bytes{pool=\"$pool\"} $alloc"
+        emit "pve_zpool_free_bytes{pool=\"$pool\"} $free"
+    done || true
+fi
+
+# ── NVMe SMART ─────────────────────────────────────────────────────────────
+# smartctl -j emits one JSON object. jq runs with an empty input when smartctl
+# fails (e.g. a USB bridge), which is treated as "no values" rather than an
+# error. `percentage_used` is 0-100; media_errors and critical_warning are
+# absolute counts/flags (any non-zero matters).
+for dev in $nvme_glob; do
+    [ -e "$dev" ] || continue
+    json="$(timeout 20 smartctl -j -a "$dev" 2>/dev/null || true)"
+    [ -n "$json" ] || continue
+
+    pct="$(printf '%s' "$json" | jq -r '.nvme_smart_health_information_log.percentage_used // empty' 2>/dev/null || true)"
+    media="$(printf '%s' "$json" | jq -r '.nvme_smart_health_information_log.media_errors // empty' 2>/dev/null || true)"
+    crit="$(printf '%s' "$json" | jq -r '.nvme_smart_health_information_log.critical_warning // empty' 2>/dev/null || true)"
+    passed="$(printf '%s' "$json" | jq -r 'if .smart_status.passed == true then 1 elif .smart_status.passed == false then 0 else empty end' 2>/dev/null || true)"
+
+    [ -n "$pct" ] && emit "pve_nvme_percentage_used{device=\"$dev\"} $pct"
+    [ -n "$media" ] && emit "pve_nvme_media_errors{device=\"$dev\"} $media"
+    [ -n "$crit" ] && emit "pve_nvme_critical_warning{device=\"$dev\"} $crit"
+    [ -n "$passed" ] && emit "pve_nvme_health_ok{device=\"$dev\"} $passed"
+done
+
+# ── disk self-test result (the monthly LONG test smartd schedules) ─────────
+# pve_base installs smartd with `S/../.././01` (short) and `L/../01/./03` (long) on the 1st. A failed
+# test is not a mail (this host has no MTA): it is a gauge here plus an alert in live/observability-alerting.
+#   pve_disk_self_test_failed    1 when the newest test did not pass (0 when it is still running or absent)
+#   pve_disk_self_test_age_hours power-on hours since that test, so a schedule that STOPPED running is
+#                                stale-and-visible instead of silent
+# NVMe and ATA expose the result in different JSON; an entry without a result value emits nothing.
+# -n standby,0: never SPIN UP or wake a sleeping disk for a metric. A disk in standby answers
+# nothing (exit 2, empty output), so its series go stale for that scrape instead of costing a
+# head-load on the HDD mirror every 5 minutes.
+for dev in $disk_glob; do
+    [ -e "$dev" ] || continue
+    json="$(timeout 20 smartctl -n standby,0 -j -a "$dev" 2>/dev/null || true)"
+    [ -n "$json" ] || continue
+
+    # Paths and CODES are the ones smartctl emits (checked against a real `smartctl -j -a` dump from pve01):
+    #   NVMe  nvme_self_test_log.table[].self_test_result.value
+    #         0 = passed; 5,6,7 = FAILED; 1-4,8,9 = ABORTED (by host, reset, removed, format, unknown,
+    #         sanitize) and NOT a disk failure; 15 = unused entry. A test that is RUNNING
+    #         (current_self_test_operation > 0) is not a result at all.
+    #   ATA   ata_smart_self_test_log.standard.table[].status
+    #         passed=false is a failure ONLY for a completed test: value 15 = in progress, 1/2 = aborted or
+    #         interrupted by the host.
+    # Only the NEWEST COMPLETED test counts — a later pass clears an earlier failure, and an aborted attempt
+    # must never page (pve01 showed exactly that on 2026-11-06: an aborted entry on top of a running test).
+    # `// null`, not `// empty`: on a document where the first branch is absent, `empty` short-circuits the
+    # whole `if` and the ATA case would silently emit nothing.
+    failed="$(printf '%s' "$json" | jq -r '
+      def nvme_completed: [ (.nvme_self_test_log.table? // [])[]
+                            | select(.self_test_result.value as $v
+                                     | $v == 0 or $v == 5 or $v == 6 or $v == 7) ] | .[0];
+      def ata_completed: [ (.ata_smart_self_test_log.standard.table? // [])[]
+                           | select(.status.value as $v | $v != 15 and $v != 1 and $v != 2) ] | .[0];
+      if (.nvme_self_test_log.table? // null) != null then
+        (nvme_completed) as $t
+        | if $t == null then empty
+          elif $t.self_test_result.value == 0 then 0 else 1 end
+      elif (.ata_smart_self_test_log.standard.table? // null) != null then
+        (ata_completed) as $t
+        | if $t == null then empty
+          elif $t.status.passed == true then 0 else 1 end
+      else empty end' 2>/dev/null || true)"
+    age="$(printf '%s' "$json" | jq -r '
+      def nvme_completed: [ (.nvme_self_test_log.table? // [])[]
+                            | select(.self_test_result.value as $v
+                                     | $v == 0 or $v == 5 or $v == 6 or $v == 7) ] | .[0];
+      def ata_completed: [ (.ata_smart_self_test_log.standard.table? // [])[]
+                           | select(.status.value as $v | $v != 15 and $v != 1 and $v != 2) ] | .[0];
+      (.power_on_time.hours? // null) as $now
+      | ( (nvme_completed | .power_on_hours? // null)
+          // (ata_completed | .lifetime_hours? // null) ) as $then
+      | if $now != null and $then != null then ($now - $then) else empty end' 2>/dev/null || true)"
+
+    [ -n "$failed" ] && emit "pve_disk_self_test_failed{device=\"$dev\"} $failed"
+    [ -n "$age" ] && emit "pve_disk_self_test_age_hours{device=\"$dev\"} $age"
+done
+
+# ── PBS datastores ─────────────────────────────────────────────────────────
+# `proxmox-backup-manager datastore list --output-format json` returns one
+# object per datastore with total/used/avail in bytes. A datastore that reports
+# no total is emitted as 0; the alert's `size > 0` gate keeps it out of the
+# ratio instead of paging on a divide-by-zero.
+if command -v proxmox-backup-manager >/dev/null 2>&1; then
+    timeout 20 proxmox-backup-manager datastore list --output-format json 2>/dev/null |
+    jq -r '.[] | [.name, (.total // 0), (.used // 0), (.avail // 0)] | @tsv' 2>/dev/null |
+    while IFS="$(printf '\t')" read -r name total used avail; do
+        [ -n "$name" ] || continue
+        emit "pve_pbs_datastore_size_bytes{datastore=\"$name\"} ${total:-0}"
+        emit "pve_pbs_datastore_used_bytes{datastore=\"$name\"} ${used:-0}"
+        emit "pve_pbs_datastore_avail_bytes{datastore=\"$name\"} ${avail:-0}"
+    done || true
+fi
+
+# ── PBS backup jobs ────────────────────────────────────────────────────────
+# The nightly VM backup is the restore source for everything on pve01; before
+# this, a failed or skipped run was visible only in the PBS web UI. PBS records
+# one task per guest, so export PER TARGET (`target` = the task's worker_id)
+# rather than one newest-overall value — otherwise a single VM failing every
+# night is masked by another VM's OK. The exact worker_id shape is PBS's own
+# (owner-run check: `proxmox-backup-manager task list --all --limit 1000
+# --output-format json | jq -r '.[].worker_id' | sort -u | head`); this script
+# copies it verbatim into the label, so the alert text shows the real value.
+#
+# `--limit 1000` is explicit on purpose: `task list` defaults to 50 tasks even
+# with `--all` (the CLI documents 1-1000). 1000 is the documented maximum;
+# `pve_pbs_backup_targets` below turns a target silently leaving that window
+# into an alert.
+#
+# `pve_pbs_collector_ok` makes a failed fetch loud instead of looking like
+# "never ran": it is 1 only after jq parsed the list successfully. A host
+# WITHOUT PBS emits no PBS backup metric at all (the header rule: absent
+# sources are skipped), so `pve-pbs-collector-failed` never pages it.
+#
+# `WARNINGS: n` is a COMPLETED backup with warnings — a usable restore point —
+# so it counts as status 1 (same as OK), not as a failure.
+if command -v proxmox-backup-manager >/dev/null 2>&1; then
+    tasks="$(timeout 30 proxmox-backup-manager task list --all --limit 1000 --output-format json 2>/dev/null || true)"
+    # Capture first, publish the OK flag only if the fetch returned text AND jq
+    # exited 0. A parse failure must never leave collector_ok = 1 with the
+    # per-target series missing; an empty result means the command failed or
+    # timed out (jq treats empty input as a successful no-op), so it is 0 too.
+    if [ -n "$tasks" ] && parsed="$(printf '%s' "$tasks" | jq -r '
+        def usable: ((.status // "") == "OK") or (((.status // "") | startswith("WARNINGS")));
+        if type != "array" then error("task list is not a JSON array")
+        else
+          ([ .[] | select(.worker_type == "backup" and ((.endtime // 0) > 0) and ((.worker_id // "") != "")) ] as $b
+           | "pve_pbs_backup_targets \($b | map(.worker_id) | unique | length)",
+             ( $b | group_by(.worker_id)[]
+               | (sort_by(.endtime)) as $g
+               | ($g | last) as $last
+               | ($g | map(select(usable)) | last) as $ok
+               | "pve_pbs_backup_last_status{target=\"\($last.worker_id)\"} \(if ($last | usable) then 1 else 0 end)",
+                 (if $ok then "pve_pbs_backup_last_success_timestamp_seconds{target=\"\($last.worker_id)\"} \($ok.endtime)" else empty end)
+             ))
+        end
+    ' 2>/dev/null)"; then
+        emit "pve_pbs_collector_ok 1"
+        printf '%s\n' "$parsed" >> "$tmp"
+    else
+        emit "pve_pbs_collector_ok 0"
+    fi
+fi
+
+# ── pending package updates and reboot ─────────────────────────────────────
+# `apt-get -s` only simulates: it reads the lists, downloads nothing and, with
+# NoLocking, takes no dpkg/apt lock, so it is safe next to unattended-upgrades.
+# PVE/PBS packages are deliberately NOT auto-installed (52qnsc-unattended-upgrades
+# limits unattended-upgrades to Debian security and never reboots), so the count
+# here is what a maintenance window would do. -1 means the simulation failed
+# (lists missing, apt error): unknown, never a silent 0.
+if apt_out="$(timeout 20 apt-get -s -o Debug::NoLocking=true dist-upgrade 2>/dev/null)"; then
+    updates="$(printf '%s\n' "$apt_out" | grep -c '^Inst ' || true)"
+    security="$(printf '%s\n' "$apt_out" | grep '^Inst ' | grep -ci 'security' || true)"
+else
+    updates=-1
+    security=-1
+fi
+emit "pve_apt_updates_pending ${updates:-0}"
+emit "pve_apt_security_updates_pending ${security:-0}"
+
+# /run/reboot-required is what update-notifier/apt writes after a kernel or a
+# core library update. The kernel comparison is the fallback for a host without
+# update-notifier-common: PVE keeps the previous kernels in /boot, so a newest
+# vmlinuz that is not the running one means the pending kernel needs a reboot.
+# Nothing reboots this host automatically.
+reboot_required=0
+if [ -e /run/reboot-required ] || [ -e /var/run/reboot-required ]; then
+    reboot_required=1
+fi
+running_kernel="$(uname -r)"
+newest_kernel="$(find /boot -maxdepth 1 -name 'vmlinuz-*' -printf '%f\n' 2>/dev/null | sed 's|^vmlinuz-||' | sort -V | tail -1 || true)"
+if [ -n "$newest_kernel" ] && [ "$newest_kernel" != "$running_kernel" ]; then
+    reboot_required=1
+fi
+emit "pve_apt_reboot_required $reboot_required"
+
+# Heartbeat: the file was rewritten by a COMPLETED run. The alert uses
+# `time() - this > 900` to catch a timer/script that stopped updating the
+# snapshot (a present-but-stale file is otherwise invisible to node-exporter).
+emit "pve_metrics_last_success_timestamp_seconds $(date +%s)"
+
+# Atomic publish: node-exporter ignores a half-written file. The mode must be
+# world-readable because node-exporter runs as the prometheus user.
+chmod 0644 "$tmp"
+mv -f "$tmp" "$out_dir/pve_metrics.prom"

@@ -27,6 +27,14 @@ grep -rnE 'azuread_(application|service_principal)_password|^[[:space:]]*passwor
 grep -rn 'client_secret' --include='*.tf' . >/dev/null &&
 	fail "client_secret found — no secret-based auth in this stack"
 
+# 1b. The ESO certificate credential is gone from EVERY .tf file: no
+#     certificate resource for the ESO apps and no eso_certificates variable.
+#     mail.tf keeps its OWN certificates and is not matched (the names make
+#     the check ESO-specific).
+grep -rnE 'azuread_application_certificate"[[:space:]]*"eso"|variable[[:space:]]*"eso_certificates"' \
+	--include='*.tf' . >/dev/null &&
+	fail "the ESO certificate credential is back — the ESO apps authenticate with workload identity only"
+
 # 2. No private key material committed.
 grep -rn 'BEGIN [A-Z ]*PRIVATE KEY' --include='*.tf' . >/dev/null &&
 	fail "private key material committed"
@@ -94,5 +102,63 @@ grep -vE '^[[:space:]]*#' mail.tf | grep -qE '/applications/[^"]*/certificate/' 
 	fail "mail.tf: a certificate import id has the /applications/ prefix (azuread 3.10 rejects it)"
 grep -vE '^[[:space:]]*#' mail.tf | grep -qE 'azuread_application_certificate\.mail_service\["rova_prod"\]' ||
 	fail "mail.tf: rova_prod certificate is not imported (a create would add a duplicate credential)"
+
+# 6. ESO workload identity (§7.1): the issuer Entra trusts (this stack) and the issuer published as an OIDC
+#    document (live/onprem-oidc) are ONE string; the k3s side (site value in the git-ignored Ansible inventory)
+#    is NOT visible to CI and is verified at rollout (identity README step 4). A mismatch passes every other
+#    gate and fails only at token exchange, silently. Only NON-COMMENT lines count below.
+ESO_CODE=$(grep -vE '^[[:space:]]*#' eso.tf)
+printf '%s\n' "$ESO_CODE" | grep -q 'resource "azuread_application_federated_identity_credential" "eso"' ||
+	fail "no federated identity credential for the ESO apps — the certificate stays the only auth"
+SUBJECT_LINES=$(printf '%s\n' "$ESO_CODE" | grep -E '^[[:space:]]*subject[[:space:]]*=' || true)
+[ "$(printf '%s\n' "$SUBJECT_LINES" | grep -c .)" = "1" ] ||
+	fail "expected exactly one federated credential subject line in eso.tf"
+printf '%s\n' "$SUBJECT_LINES" | grep -qE '^[[:space:]]*subject[[:space:]]*=[[:space:]]*"system:serviceaccount:external-secrets:eso-\$\{each\.key\}"[[:space:]]*$' ||
+	fail "federated credential subject is not exactly system:serviceaccount:external-secrets:eso-<env>"
+printf '%s\n' "$SUBJECT_LINES" | grep -q '\*' && fail "federated credential subject contains a wildcard"
+AUD_LINES=$(printf '%s\n' "$ESO_CODE" | grep -E '^[[:space:]]*audiences[[:space:]]*=' || true)
+[ "$(printf '%s\n' "$AUD_LINES" | grep -c .)" = "1" ] &&
+	printf '%s\n' "$AUD_LINES" | grep -qE '^[[:space:]]*audiences[[:space:]]*=[[:space:]]*\["api://AzureADTokenExchange"\][[:space:]]*$' ||
+	fail 'federated credential audiences must be exactly ["api://AzureADTokenExchange"]'
+grep -vE '^[[:space:]]*#' ../onprem-oidc/variables.tf | grep -q '"qi"' ||
+	fail "onprem-oidc k3s_jwks validation does not reject private key members"
+
+default_of() {
+	sed -n "/^variable \"$2\"/,/^}/s/^[[:space:]]*default[[:space:]]*=[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$1"
+}
+
+IDENTITY_ISSUER=$(default_of eso.tf eso_oidc_issuer)
+[ -n "$IDENTITY_ISSUER" ] || fail "eso_oidc_issuer has no default in eso.tf"
+
+OIDC_DIR=../onprem-oidc
+[ -f "$OIDC_DIR/variables.tf" ] || fail "live/onprem-oidc is missing — the issuer has no published discovery document"
+PUBLISHED_ISSUER="https://$(default_of "$OIDC_DIR/variables.tf" oidc_hostname)/$(default_of "$OIDC_DIR/variables.tf" oidc_path)"
+[ "$PUBLISHED_ISSUER" = "$IDENTITY_ISSUER" ] ||
+	fail "published issuer ($PUBLISHED_ISSUER) != trusted issuer ($IDENTITY_ISSUER)"
+
+# The k3s role's ORDER is checkable (the site issuer value is not): the new issuer is listed FIRST (k3s signs
+# with it), the old default second.
+K3S_TPL=../../ansible/roles/k3s_server/templates/config.yaml.j2
+NEW_LN=$(grep -n 'service-account-issuer={{ k3s_server_oidc_issuer }}' "$K3S_TPL" | head -1 | cut -d: -f1)
+OLD_LN=$(grep -n 'service-account-issuer={{ k3s_server_oidc_issuer_old }}' "$K3S_TPL" | head -1 | cut -d: -f1)
+[ -n "$NEW_LN" ] && [ -n "$OLD_LN" ] && [ "$NEW_LN" -lt "$OLD_LN" ] ||
+	fail "k3s_server template must list the new issuer BEFORE the old default (k3s signs with the first)"
+
+# 7. Prod identity (prod_apps.tf): the prod sign-in callback is the deployed
+#    host only (no loopback, ever) and the prod service app never carries
+#    Mail.Send — prod mail is Exchange RBAC, not an Entra permission.
+PROD_CODE=$(grep -vE '^[[:space:]]*#' prod_apps.tf)
+printf '%s\n' "$PROD_CODE" | grep -q 'https://opshub.qnsc.vn/api/auth/callback/microsoft' ||
+	fail "prod_apps.tf: the OpsHub Prod sign-in callback is missing"
+printf '%s\n' "$PROD_CODE" | grep -qE 'localhost|127\.0\.0\.1' &&
+	fail "prod_apps.tf: a loopback redirect — prod sign-in uses the deployed callback only"
+printf '%s\n' "$PROD_CODE" | grep -qi 'Mail\.Send' &&
+	fail "prod_apps.tf: Mail.Send in Entra — prod mail is Exchange RBAC only"
+
+# 8. Prod identity: the sign-in app refuses to apply without the service
+#    certificate, so a 9-add partial shape cannot be applied.
+grep -A90 'resource "azuread_application" "opshub_prod"' prod_apps.tf |
+	grep -q 'condition[[:space:]]*=[[:space:]]*var\.opshub_prod_service_certificate != null' ||
+	fail "prod_apps.tf: the OpsHub Prod app has no precondition on the service certificate"
 
 echo "PASS: static guard"

@@ -1,0 +1,79 @@
+---
+# Shared membership expressions. The role includes this AFTER reading the realm's users, and the
+# offline unit test (tests/pve_base_entra_membership.yml) includes the SAME file, so the test cannot
+# drift from the role.
+#
+# `search`, not `match`: Jinja's match test anchors at the START, so '@entra$' never matched
+# 'alice@example.com@entra' and offboarding silently removed nobody.
+pve_base_entra_realm_users: >-
+  {{ (pve_base_entra_users.stdout | from_json)
+     | selectattr('userid', 'search', '@' ~ pve_base_entra_realm ~ '$') | list }}
+# Compare lowercased ids (the input list is asserted lowercase): a mixed-case PVE userid must still
+# match the email the owner typed. The original dicts are kept for the CLI update.
+pve_base_entra_desired_userids: >-
+  {{ pve_base_entra_admin_emails | map('regex_replace', '$', '@' ~ pve_base_entra_realm)
+     | map('lower') | list }}
+pve_base_entra_removed_users: >-
+  {{ (pve_base_entra_realm_users
+      | zip(pve_base_entra_realm_users | map(attribute='userid') | map('lower')))
+     | rejectattr('1', 'in', pve_base_entra_desired_userids)
+     | map(attribute='0') | list }}
+
+# ── idempotent add / remove decisions ───────────────────────────────────────
+#
+# Computed ONCE here so the role's tasks and the offline test (tests/pve_base_entra_membership.yml)
+# evaluate the SAME expression — the test cannot drift from the role.
+#
+# The bug these replace: each task compared the group id with the raw `split(',')` list. Group
+# membership was therefore "missing" whenever the local inventory's object id differed in case
+# from what PVE stored (a paste from Entra, or a group renamed by hand), so EVERY run re-issued
+# `pveum user modify --groups ...` for the same users and reported changed=1 each time. The
+# comparison is now trimmed and case-insensitive on both sides, and it is a SET comparison, not
+# an ordered one.
+#
+# JSON strings on purpose: a Jinja list built with a loop is a string under legacy templating and
+# a list under native, so consumers (and the test) apply `| from_json` and get one shape.
+pve_base_entra_membership_json: >-
+  {%- set out = [] -%}
+  {%- for u in pve_base_entra_realm_users -%}
+    {%- set groups = u.groups | default('') | split(',') | map('trim') | reject('equalto', '') | list -%}
+    {%- set _ = out.append({
+          'userid': u.userid,
+          'groups': groups,
+          'wanted': (u.userid | lower) in pve_base_entra_desired_userids,
+          'has_admin': (pve_base_entra_group_id | lower) in (groups | map('lower') | list)
+        }) -%}
+  {%- endfor -%}
+  {{ out | to_json }}
+
+# Users that must join the admin group (the add loop), as JSON (same reason as above).
+#
+# TWO sources, and both are needed in ONE run:
+#   1. realm users in the shared list that do not carry the group;
+#   2. shared-list users the realm read does NOT show yet — the role creates those in the
+#      same run ("Create the Entra admin users", just above this decision), and a list built
+#      only from the pre-creation read would leave a brand-new admin outside the group until
+#      the NEXT run. Deriving them from the email list instead makes one run converge.
+pve_base_entra_group_adds_json: >-
+  {%- set present = pve_base_entra_realm_users | map(attribute='userid') | map('lower') | list -%}
+  {%- set adds = [] -%}
+  {%- for u in (pve_base_entra_membership_json | from_json) -%}
+    {%- if u.wanted and not u.has_admin -%}
+      {%- set _ = adds.append({'userid': u.userid, 'groups': u.groups}) -%}
+    {%- endif -%}
+  {%- endfor -%}
+  {%- for e in pve_base_entra_admin_emails -%}
+    {%- set uid = e ~ '@' ~ pve_base_entra_realm -%}
+    {%- if (uid | lower) not in present -%}
+      {%- set _ = adds.append({'userid': uid, 'groups': []}) -%}
+    {%- endif -%}
+  {%- endfor -%}
+  {{ adds | to_json }}
+
+pve_base_entra_group_adds: >-
+  {{ pve_base_entra_group_adds_json | from_json }}
+
+# Users no longer listed that still carry the admin group (the offboard loop).
+pve_base_entra_group_removals: >-
+  {{ (pve_base_entra_membership_json | from_json)
+     | rejectattr('wanted') | selectattr('has_admin') | list }}

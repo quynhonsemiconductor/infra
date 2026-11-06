@@ -16,6 +16,7 @@
       loop:
         - /etc/apt/sources.list.d/pve-enterprise.sources
         - /etc/apt/sources.list.d/ceph.sources
+        - /etc/apt/sources.list.d/pbs-enterprise.sources
       register: pve_base_enterprise_files
       failed_when: false
 
@@ -154,6 +155,484 @@
       changed_when: false
       check_mode: false
 
+# ── Entra OpenID login ──────────────────────────────────────────────────────
+# The realm is the "QNSC Proxmox" app in live/identity. PVE queries the provider's userinfo endpoint for
+# its claim values (OpenId.pm passes query-userinfo, default 1), and Entra's userinfo carries NO groups
+# claim (the app's SecurityGroup groups claim is in the ID token only). So authorization does NOT rely on
+# the token: the role pre-creates <email>@<realm> for every shared admin email, makes each one a member of
+# "<grp object id>-entra", and removes members no longer listed. groups-overwrite stays OFF, so a login
+# never wipes that membership. autocreate stays OFF: only listed admins may exist.
+# root@pam is NOT touched: it is the break-glass account, LAN only.
+- name: Entra OpenID realm, admin users and group
+  when: pve_base_entra_enabled | bool
+  tags: [pve_base_entra]
+  block:
+    - name: The Entra site values are present (local inventory)
+      ansible.builtin.assert:
+        that:
+          - pve_base_entra_issuer_url is match('^https://login\.microsoftonline\.com/[^/]+/v2\.0$')
+          - pve_base_entra_client_id is match('^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
+          - pve_base_entra_admin_group_oid is match('^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
+          - pve_base_entra_realm is match('^[a-z][a-z0-9]*$')
+        fail_msg: >-
+          Set proxmox_oidc_issuer_url, proxmox_oidc_client_id and proxmox_oidc_admin_group_oid in the
+          LOCAL inventory (ansible/README.md, "Entra OpenID login"), or set pve_base_entra_enabled=false.
+        quiet: true
+
+    # PVE-only inventories have no shared admin list: the realm, group and ACL are still managed,
+    # the user tasks below are skipped. When the list IS present it must be exact and duplicate-free.
+    - name: The shared admin email list is usable
+      ansible.builtin.assert:
+        that:
+          - pve_base_entra_admin_emails | select('match', '^[^@\s]+@[^@\s]+$') | list | length == pve_base_entra_admin_emails | length
+          - pve_base_entra_admin_emails | unique | length == pve_base_entra_admin_emails | length
+        fail_msg: >-
+          proxmox_entra_admin_emails (or the legacy pbs_entra_admin_emails) must hold exact
+          Entra email strings with no duplicates. Leave it unset for a PVE-only inventory.
+        quiet: true
+      when: pve_base_entra_manage_admins | bool
+
+    # The list carries every realm's client key: hide it. Only non-secret fields are compared below.
+    - name: Read the authentication realms (client keys stay hidden)
+      ansible.builtin.command: pvesh get /access/domains --output-format json
+      register: pve_base_entra_realms
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Find the realm among them
+      ansible.builtin.set_fact:
+        pve_base_entra_existing: >-
+          {{ (pve_base_entra_realms.stdout | from_json)
+             | selectattr('realm', 'equalto', pve_base_entra_realm) | list }}
+
+    # The list endpoint carries only realm/type/comment; the settings (and the client key) come from the
+    # single-realm call.
+    - name: Read the realm configuration (the client key stays hidden)
+      ansible.builtin.command: pvesh get /access/domains/{{ pve_base_entra_realm }} --output-format json
+      register: pve_base_entra_config_raw
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when: pve_base_entra_existing | length == 1
+
+    - name: Keep the realm configuration
+      ansible.builtin.set_fact:
+        pve_base_entra_config: "{{ pve_base_entra_config_raw.stdout | from_json }}"
+      when: pve_base_entra_existing | length == 1
+
+    - name: An existing realm must be OpenID with the fixed username claim
+      ansible.builtin.assert:
+        that:
+          - pve_base_entra_config.type | default('') == 'openid'
+          - pve_base_entra_config['username-claim'] | default('') == pve_base_entra_username_claim
+        fail_msg: >-
+          realm "{{ pve_base_entra_realm }}" exists with another type or username claim. The claim is
+          fixed at creation (Auth/OpenId.pm): delete and recreate the realm deliberately
+          (`pveum realm delete {{ pve_base_entra_realm }}`), then re-run this role.
+        quiet: true
+      when: pve_base_entra_existing | length == 1
+
+    - name: Read the scopes the realm reports
+      ansible.builtin.set_fact:
+        pve_base_entra_have_scopes_raw: "{{ pve_base_entra_config['scopes'] | default('') }}"
+      when: pve_base_entra_existing | length == 1
+
+    - name: Work out the drift (the key and the username claim are excluded by design)
+      ansible.builtin.set_fact:
+        pve_base_entra_drift: >-
+          {{ pve_base_entra_config['issuer-url'] | default('') != pve_base_entra_issuer_url
+             or pve_base_entra_config['client-id'] | default('') != pve_base_entra_client_id
+             or (pve_base_entra_config['autocreate'] | default(false) | bool)
+             or (pve_base_entra_config['groups-overwrite'] | default(false) | bool)
+             or (pve_base_entra_config['groups-claim'] | default('')) != ''
+             or (pve_base_entra_config['groups-autocreate'] | default(false) | bool)
+             or not (pve_base_entra_config['default'] | default(false) | bool)
+             or ((pve_base_entra_have_scopes_raw | join(' ') if pve_base_entra_have_scopes_raw is not string
+                  else pve_base_entra_have_scopes_raw) | split | sort | join(' '))
+                != (pve_base_entra_scopes.split() | sort | join(' ')) }}
+      when: pve_base_entra_existing | length == 1
+
+    # The group claim is not used (Entra's userinfo has no groups). Clear it so the realm converges to
+    # the role-managed membership; --delete is pveum's "settings to delete" list.
+    - name: Work out the legacy group-claim settings to delete
+      ansible.builtin.set_fact:
+        pve_base_entra_group_claim_delete: >-
+          {{ ((['groups-claim'] if pve_base_entra_config['groups-claim'] is defined else [])
+             + (['groups-autocreate'] if pve_base_entra_config['groups-autocreate'] is defined else []))
+             | join(',') }}
+      when: pve_base_entra_existing | length == 1
+
+    - name: Refuse to create or rotate the realm without the client secret
+      ansible.builtin.assert:
+        that: pve_base_entra_client_secret | length > 0
+        fail_msg: >-
+          PROXMOX_OIDC_CLIENT_SECRET is empty. Run with it exported from
+          kv-qnsc-admin/admin-proxmox-oidc-secret (ansible/README.md, "Entra OpenID login").
+        quiet: true
+      when: >-
+        pve_base_entra_existing | length == 0
+        or pve_base_entra_rotate_client_key | bool
+
+    - name: Report the realm creation (check mode)
+      ansible.builtin.debug:
+        msg: "would create the {{ pve_base_entra_realm }} OpenID realm"
+      changed_when: true
+      when:
+        - ansible_check_mode
+        - pve_base_entra_existing | length == 0
+
+    # The client key is momentarily in pveum's argv (/proc/<pid>/cmdline). pve01 is a single-admin
+    # host; the runbook and ansible/README.md state the caveat. No groups-claim: authorization is the
+    # role-managed group membership below, never the token (Entra userinfo has no groups).
+    - name: Create the realm (no user autocreate, never overwrite groups, default at login)
+      ansible.builtin.command:
+        argv:
+          - pveum
+          - realm
+          - add
+          - "{{ pve_base_entra_realm }}"
+          - --type
+          - openid
+          - --issuer-url
+          - "{{ pve_base_entra_issuer_url }}"
+          - --client-id
+          - "{{ pve_base_entra_client_id }}"
+          - --client-key
+          - "{{ pve_base_entra_client_secret }}"
+          - --username-claim
+          - "{{ pve_base_entra_username_claim }}"
+          - --autocreate
+          - "0"
+          - --groups-overwrite
+          - "0"
+          - --scopes
+          - "{{ pve_base_entra_scopes }}"
+          - --default
+          - "1"
+      no_log: true
+      changed_when: true
+      when:
+        - not ansible_check_mode
+        - pve_base_entra_existing | length == 0
+
+    - name: Report the realm drift fix (check mode)
+      ansible.builtin.debug:
+        msg: "would align the {{ pve_base_entra_realm }} OpenID realm with the inventory"
+      changed_when: true
+      when:
+        - ansible_check_mode
+        - pve_base_entra_existing | length == 1
+        - pve_base_entra_drift | bool
+
+    # Never includes --client-key or --username-claim: the key is only written on create/rotate, the claim
+    # is immutable. No groups-claim either: membership is role-managed, and a login must not overwrite it.
+    - name: Align the realm settings (no autocreate, never overwrite groups)
+      ansible.builtin.command:
+        argv:
+          - pveum
+          - realm
+          - modify
+          - "{{ pve_base_entra_realm }}"
+          - --issuer-url
+          - "{{ pve_base_entra_issuer_url }}"
+          - --client-id
+          - "{{ pve_base_entra_client_id }}"
+          - --autocreate
+          - "0"
+          - --groups-overwrite
+          - "0"
+          - --scopes
+          - "{{ pve_base_entra_scopes }}"
+          - --default
+          - "1"
+      changed_when: true
+      when:
+        - not ansible_check_mode
+        - pve_base_entra_existing | length == 1
+        - pve_base_entra_drift | bool
+
+    - name: Report clearing the legacy groups claim (check mode)
+      ansible.builtin.debug:
+        msg: "would delete {{ pve_base_entra_group_claim_delete }} from realm {{ pve_base_entra_realm }}"
+      changed_when: true
+      when:
+        - ansible_check_mode
+        - pve_base_entra_existing | length == 1
+        - pve_base_entra_group_claim_delete | length > 0
+
+    - name: Clear the legacy groups claim (membership is role-managed)
+      ansible.builtin.command:
+        argv:
+          - pveum
+          - realm
+          - modify
+          - "{{ pve_base_entra_realm }}"
+          - --delete
+          - "{{ pve_base_entra_group_claim_delete }}"
+      changed_when: true
+      when:
+        - not ansible_check_mode
+        - pve_base_entra_existing | length == 1
+        - pve_base_entra_group_claim_delete | length > 0
+
+    - name: Report the client-key rotation (check mode)
+      ansible.builtin.debug:
+        msg: "would replace the client key of realm {{ pve_base_entra_realm }}"
+      changed_when: true
+      when:
+        - ansible_check_mode
+        - pve_base_entra_existing | length == 1
+        - pve_base_entra_rotate_client_key | bool
+
+    - name: Rotate the client key
+      ansible.builtin.command:
+        argv:
+          - pveum
+          - realm
+          - modify
+          - "{{ pve_base_entra_realm }}"
+          - --client-key
+          - "{{ pve_base_entra_client_secret }}"
+      no_log: true
+      changed_when: true
+      when:
+        - not ansible_check_mode
+        - pve_base_entra_existing | length == 1
+        - pve_base_entra_rotate_client_key | bool
+
+    - name: Read the PVE groups
+      ansible.builtin.command: pvesh get /access/groups --output-format json
+      register: pve_base_entra_groups
+      changed_when: false
+      check_mode: false
+
+    - name: Report the PVE group creation (check mode)
+      ansible.builtin.debug:
+        msg: "would create PVE group {{ pve_base_entra_group_id }}"
+      changed_when: true
+      when:
+        - ansible_check_mode
+        - (pve_base_entra_groups.stdout | from_json
+           | selectattr('groupid', 'equalto', pve_base_entra_group_id) | list | length) == 0
+
+    - name: Create the Entra admins group
+      ansible.builtin.command:
+        argv:
+          - pveum
+          - group
+          - add
+          - "{{ pve_base_entra_group_id }}"
+          - --comment
+          - "Entra grp-qnsc-platform-admins (realm {{ pve_base_entra_realm }})"
+      changed_when: true
+      when:
+        - not ansible_check_mode
+        - (pve_base_entra_groups.stdout | from_json
+           | selectattr('groupid', 'equalto', pve_base_entra_group_id) | list | length) == 0
+
+    - name: Pre-created Entra admins and group membership
+      when: pve_base_entra_manage_admins | bool
+      block:
+        - name: Read the PVE users
+          ansible.builtin.command: pvesh get /access/users --output-format json
+          register: pve_base_entra_users
+          changed_when: false
+          check_mode: false
+
+        - name: The membership decisions (shared with the offline unit test)
+          ansible.builtin.include_vars:
+            file: "{{ role_path }}/vars/entra_membership.yml"
+
+        # Base users are pre-created exactly like PBS's: with autocreate=0 an Entra user who is not on the
+        # shared list cannot sign in even if Entra hands out a token.
+        - name: Report the Entra user creation (check mode)
+          ansible.builtin.debug:
+            msg: "would create PVE user {{ item }}@{{ pve_base_entra_realm }}"
+          changed_when: true
+          loop: "{{ pve_base_entra_admin_emails }}"
+          when:
+            - ansible_check_mode
+            - (pve_base_entra_users.stdout | from_json
+               | selectattr('userid', 'search', '(?i)^' ~ (item | regex_escape) ~ '@' ~ pve_base_entra_realm ~ '$') | list | length) == 0
+
+        - name: Create the Entra admin users (OpenID only, no password)
+          ansible.builtin.command:
+            argv:
+              - pveum
+              - user
+              - add
+              - "{{ item }}@{{ pve_base_entra_realm }}"
+              - --comment
+              - "Entra admin (realm {{ pve_base_entra_realm }})"
+          changed_when: true
+          loop: "{{ pve_base_entra_admin_emails }}"
+          when:
+            - not ansible_check_mode
+            - (pve_base_entra_users.stdout | from_json
+               | selectattr('userid', 'search', '(?i)^' ~ (item | regex_escape) ~ '@' ~ pve_base_entra_realm ~ '$') | list | length) == 0
+
+        # The group claim is NOT used: Entra's userinfo response (PVE's claim source by default) has no
+        # groups. Membership is role-managed; groups-overwrite=0 keeps a login from wiping it.
+        - name: Report the admin group additions (check mode)
+          ansible.builtin.debug:
+            msg: "would add {{ item.userid }} to group {{ pve_base_entra_group_id }}"
+          changed_when: true
+          loop: "{{ pve_base_entra_group_adds }}"
+          loop_control:
+            label: "{{ item.userid }}"
+          when: ansible_check_mode
+
+        - name: Add each listed admin to the Entra admins group
+          ansible.builtin.command:
+            argv:
+              - pveum
+              - user
+              - modify
+              - "{{ item.userid }}"
+              - --groups
+              - "{{ (item.groups | reject('search', '(?i)^' ~ (pve_base_entra_group_id | regex_escape) ~ '$') | list
+                    + [pve_base_entra_group_id]) | unique | join(',') }}"
+          changed_when: true
+          loop: "{{ pve_base_entra_group_adds }}"
+          loop_control:
+            label: "{{ item.userid }}"
+          when: not ansible_check_mode
+
+        # Offboarding: a user dropped from the shared list leaves the admin group on the next run. The user
+        # itself stays (without the Administrator ACL it grants nothing); autocreate=0 keeps new ones out.
+        - name: Report the admin group removals (check mode)
+          ansible.builtin.debug:
+            msg: "would remove {{ item.userid }} from group {{ pve_base_entra_group_id }}"
+          changed_when: true
+          loop: "{{ pve_base_entra_group_removals }}"
+          loop_control:
+            label: "{{ item.userid }}"
+          when: ansible_check_mode
+
+        # Removing the LAST group: PVE::API2::User's update path calls delete_user_group whenever
+        # `groups` is defined (an empty string counts), then split_list("") adds none. pveum user modify
+        # has no --delete option, so --groups "" is the clear.
+        - name: Remove unlisted users from the Entra admins group
+          ansible.builtin.command:
+            argv:
+              - pveum
+              - user
+              - modify
+              - "{{ item.userid }}"
+              - --groups
+              - "{{ item.groups | reject('search', '(?i)^' ~ (pve_base_entra_group_id | regex_escape) ~ '$') | join(',') }}"
+          changed_when: true
+          loop: "{{ pve_base_entra_group_removals }}"
+          loop_control:
+            label: "{{ item.userid }}"
+          when: not ansible_check_mode
+
+    - name: Read the PVE ACLs
+      ansible.builtin.command: pvesh get /access/acl --output-format json
+      register: pve_base_entra_acls
+      changed_when: false
+      check_mode: false
+
+    - name: Report the Administrator ACL (check mode)
+      ansible.builtin.debug:
+        msg: "would grant Administrator on / to group {{ pve_base_entra_group_id }}"
+      changed_when: true
+      when:
+        - ansible_check_mode
+        - (pve_base_entra_acls.stdout | from_json
+           | selectattr('path', 'equalto', '/')
+           | selectattr('type', 'equalto', 'group')
+           | selectattr('ugid', 'equalto', pve_base_entra_group_id)
+           | selectattr('roleid', 'equalto', 'Administrator') | list | length) == 0
+
+    - name: Grant Administrator on / to the Entra admins group
+      ansible.builtin.command:
+        argv:
+          - pveum
+          - acl
+          - modify
+          - /
+          - --groups
+          - "{{ pve_base_entra_group_id }}"
+          - --roles
+          - Administrator
+      changed_when: true
+      when:
+        - not ansible_check_mode
+        - (pve_base_entra_acls.stdout | from_json
+           | selectattr('path', 'equalto', '/')
+           | selectattr('type', 'equalto', 'group')
+           | selectattr('ugid', 'equalto', pve_base_entra_group_id)
+           | selectattr('roleid', 'equalto', 'Administrator') | list | length) == 0
+
+    # The realm must never close the last door: root@pam stays enabled for LAN/TOTP break-glass.
+    - name: Read root@pam
+      ansible.builtin.command: pvesh get /access/users/root@pam --output-format json
+      register: pve_base_entra_root
+      changed_when: false
+      check_mode: false
+      failed_when: false
+
+    - name: The root@pam account stays enabled (break-glass)
+      ansible.builtin.assert:
+        that:
+          - pve_base_entra_root.rc == 0
+          - ((pve_base_entra_root.stdout | from_json)['enable'] | default(true)) | bool
+        fail_msg: >-
+          root@pam is missing or disabled: it is the break-glass account (LAN, password + TOTP). Re-enable
+          it before changing the realm.
+        quiet: true
+
+# ── SMART: monthly LONG self-test ──────────────────────────────────────────
+# Written as the ONLY line in smartd.conf (DEVICESCAN) plus the comment that explains it. A host
+# with a hand-written smartd.conf refuses: merging someone else's disk directives by hand is a
+# deliberate act, not a silent overwrite. The failure RESULT is not read from mail (this host has
+# no working MTA): pve_monitoring exports the last self-test result and its age, and
+# live/observability-alerting alerts on both.
+- name: Read the existing smartd configuration
+  ansible.builtin.slurp:
+    src: "{{ pve_base_smartd_conf }}"
+  register: pve_base_smartd_raw
+  failed_when: false
+  tags: [pve_base_smartd]
+
+- name: The existing smartd.conf carries only a DEVICESCAN directive
+  ansible.builtin.assert:
+    that:
+      - pve_base_smartd_directives | length == 0
+        or (pve_base_smartd_directives | length == 1 and pve_base_smartd_directives[0].startswith('DEVICESCAN'))
+    fail_msg: >-
+      {{ pve_base_smartd_conf }} already carries device or DEFAULT lines this role did not write.
+      Merge the schedule by hand ({{ pve_base_smartd_devicescan_line }}), then re-run.
+    quiet: true
+  vars:
+    pve_base_smartd_directives: >-
+      {{ ((pve_base_smartd_raw.content | default('') | b64decode).splitlines()
+          | reject('match', '^\s*(#|$)') | map('trim') | list) }}
+  tags: [pve_base_smartd]
+
+- name: The monthly SHORT and LONG self-test schedule
+  ansible.builtin.copy:
+    dest: "{{ pve_base_smartd_conf }}"
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # Managed by Ansible (infra, role pve_base). One DEVICESCAN line: whatever disks the host
+      # has. SHORT every day at 01:00; LONG on the 1st at 03:00 (after the VM backups). The
+      # result is exported by pve_monitoring and alerted in live/observability-alerting.
+      {{ pve_base_smartd_devicescan_line }}
+  notify: Restart smartd
+  tags: [pve_base_smartd]
+
+- name: Start smartd and enable it at boot
+  ansible.builtin.service:
+    name: "{{ pve_base_smartd_service }}"
+    state: started
+    enabled: true
+  tags: [pve_base_smartd]
+
 # ── ZFS properties ──────────────────────────────────────────────────────────
 - name: ZFS dataset properties
   community.general.zfs:
@@ -164,3 +643,248 @@
   loop_control:
     label: "{{ item.key }}"
   tags: [pve_base_zfs]
+
+# ── ZFS ARC ceiling ─────────────────────────────────────────────────────────
+# Moved here from pve_gpu: every Proxmox host needs the ceiling, GPU or not.
+- name: Read the current ZFS module options
+  ansible.builtin.slurp:
+    src: /etc/modprobe.d/zfs.conf
+  register: pve_base_zfs_conf_raw
+  failed_when: false
+  tags: [pve_base_zfs]
+
+# The role owns one `options zfs` line. Refuse to overwrite a file that has a
+# DIFFERENT zfs option: merging that by hand is deliberate, not a silent drop.
+- name: The existing zfs.conf may only carry the ARC ceiling
+  ansible.builtin.assert:
+    that:
+      - (pve_base_zfs_conf_lines | length) <= 1
+      - pve_base_zfs_conf_lines | length == 0 or 'zfs_arc_max=' in pve_base_zfs_conf_lines[0]
+    fail_msg: >-
+      /etc/modprobe.d/zfs.conf has an 'options zfs' line with other settings.
+      Merge zfs_arc_max={{ pve_base_zfs_arc_max_bytes }} into it by hand, then re-run.
+    quiet: true
+  vars:
+    pve_base_zfs_conf_lines: >-
+      {{ (pve_base_zfs_conf_raw.content | default('') | b64decode).splitlines()
+         | select('match', '^options\s+zfs(\s|$)') | list }}
+  when: pve_base_zfs_conf_raw.content is defined
+  tags: [pve_base_zfs]
+
+- name: ZFS ARC maximum at boot
+  ansible.builtin.lineinfile:
+    path: /etc/modprobe.d/zfs.conf
+    regexp: '^options\s+zfs(\s|$)'
+    line: "options zfs zfs_arc_max={{ pve_base_zfs_arc_max_bytes }}"
+    create: true
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Rebuild initramfs for the ZFS ARC ceiling
+  tags: [pve_base_zfs]
+
+- name: Read the live ZFS ARC maximum (absent when ZFS is not loaded)
+  ansible.builtin.command: cat /sys/module/zfs/parameters/zfs_arc_max
+  register: pve_base_zfs_arc_live
+  changed_when: false
+  check_mode: false
+  failed_when: false
+  tags: [pve_base_zfs]
+
+- name: Report the live ZFS ARC change (check mode)
+  ansible.builtin.debug:
+    msg: "would set zfs_arc_max to {{ pve_base_zfs_arc_max_bytes }}"
+  changed_when: true
+  when:
+    - ansible_check_mode
+    - pve_base_zfs_arc_live.rc | default(1) == 0
+    - pve_base_zfs_arc_live.stdout | trim != (pve_base_zfs_arc_max_bytes | string)
+  tags: [pve_base_zfs]
+
+- name: Apply the ZFS ARC maximum to the running system
+  ansible.builtin.shell: "echo {{ pve_base_zfs_arc_max_bytes }} > /sys/module/zfs/parameters/zfs_arc_max"
+  when:
+    - not ansible_check_mode
+    - pve_base_zfs_arc_live.rc | default(1) == 0
+    - pve_base_zfs_arc_live.stdout | trim != (pve_base_zfs_arc_max_bytes | string)
+  changed_when: true
+  tags: [pve_base_zfs]
+
+# ── notifications ───────────────────────────────────────────────────────────
+- name: Notifications to Teams
+  when: pve_base_notify_teams | bool
+  tags: [pve_base_notify]
+  vars:
+    # PVE requires the url to be a literal http(s) URL, so the host is plain and the rest (path + query, which holds
+    # the Workflows signature) is the endpoint secret "path". !unsafe keeps Ansible off the Handlebars braces.
+    pve_base_notify_secret_ref: !unsafe "{{ secrets.path }}"
+    # base64 is what the API takes, and it keeps the Handlebars braces away from Jinja.
+    pve_base_notify_body_b64: "{{ lookup('ansible.builtin.file', 'teams-webhook-body.json') | trim | b64encode }}"
+    pve_base_notify_header: "name=Content-Type,value={{ 'application/json' | b64encode }}"
+    pve_base_notify_api: /cluster/notifications/endpoints/webhook/{{ pve_base_notify_teams_endpoint }}
+    pve_base_notify_url_pattern: '^https://([^/?#@\s]+)/\S+$'
+  block:
+    - name: Read the Teams webhook endpoint
+      ansible.builtin.command: pvesh get {{ pve_base_notify_api }} --output-format json
+      register: pve_base_notify_current
+      changed_when: false
+      # Absent is a 404 (pvesh get says "404 endpoint '<name>' not found"); any other error (auth, pveproxy down) must
+      # not look like "absent".
+      failed_when: pve_base_notify_current.rc != 0 and pve_base_notify_current.stderr is not match('^404 ')
+      check_mode: false
+
+    - name: Decide whether the secret is written (create or rotate)
+      ansible.builtin.set_fact:
+        pve_base_notify_exists: "{{ pve_base_notify_current.rc == 0 }}"
+        pve_base_notify_write_secret: "{{ pve_base_notify_current.rc != 0 or pve_base_notify_teams_rotate | bool }}"
+
+    - name: Refuse to store a webhook URL that is missing or not https://<host>/<path>
+      ansible.builtin.assert:
+        that: pve_base_notify_teams_webhook_url is match(pve_base_notify_url_pattern)
+        fail_msg: >-
+          TEAMS_WEBHOOK_URL is missing or not an https://<host>/<path> URL: run under op run (see defaults/main.yml),
+          or set pve_base_notify_teams=false
+        quiet: true
+      # An assert prints its expression and fail_msg, never the values, so no no_log is needed here.
+      when: pve_base_notify_write_secret | bool
+
+    # The host comes from the new URL on create/rotate, otherwise from the stored endpoint (the run needs no secret).
+    - name: Work out the endpoint URL (host plain, path from the secret)
+      ansible.builtin.set_fact:
+        pve_base_notify_url: >-
+          https://{{ (pve_base_notify_teams_webhook_url if pve_base_notify_write_secret | bool
+                      else (pve_base_notify_current.stdout | from_json).url | default(''))
+                     | urlsplit('netloc') }}/{{ pve_base_notify_secret_ref }}
+      no_log: true
+
+    # The host is plain, so a new webhook URL on another host is noticed without reading the stored secret.
+    - name: A webhook URL in the environment on another host needs a rotate
+      ansible.builtin.assert:
+        that: (pve_base_notify_teams_webhook_url | urlsplit('netloc')) == (pve_base_notify_url | trim | urlsplit('netloc'))
+        fail_msg: "TEAMS_WEBHOOK_URL points at another host than the stored endpoint: re-run with -e pve_base_notify_teams_rotate=true"
+        quiet: true
+      when:
+        - not pve_base_notify_write_secret | bool
+        - pve_base_notify_teams_webhook_url | length > 0
+
+    - name: Did the endpoint drift
+      ansible.builtin.set_fact:
+        pve_base_notify_drift: >-
+          {{ pve_base_notify_exists | bool and (
+               (pve_base_notify_current.stdout | from_json).url | default('') != pve_base_notify_url | trim
+            or (pve_base_notify_current.stdout | from_json).method | default('') != 'post'
+            or (pve_base_notify_current.stdout | from_json).body | default('') != pve_base_notify_body_b64
+            or (pve_base_notify_current.stdout | from_json).header | default([]) != [pve_base_notify_header]
+            or (pve_base_notify_current.stdout | from_json).disable | default(0) | bool) }}
+
+    - name: Drift fix of the stored URL needs the secret (rotate)
+      ansible.builtin.assert:
+        that: pve_base_notify_write_secret | bool or
+              (pve_base_notify_current.stdout | from_json).url | default('') is match('^https://[^/?#]+/' ~ (pve_base_notify_secret_ref | regex_escape) ~ '$')
+        fail_msg: "The stored URL is not https://<host>/{{ '{{' }} secrets.path }}: re-run with -e pve_base_notify_teams_rotate=true under op run"
+        quiet: true
+      when: pve_base_notify_exists | bool
+
+    - name: Report the endpoint change (check mode does not run pvesh)
+      ansible.builtin.debug:
+        msg: "would {{ 'update' if pve_base_notify_exists | bool else 'create' }} webhook endpoint {{ pve_base_notify_teams_endpoint }}"
+      changed_when: true
+      when:
+        - ansible_check_mode
+        - pve_base_notify_write_secret | bool or pve_base_notify_drift | bool
+
+    # The secret goes in through stdin, so it is not in this task's command line (it is in the module arguments Ansible
+    # copies to the host's remote temp dir for the task, removed afterwards). pvesh only takes it as an argument, so it is
+    # in the host's process list (/proc/<pid>/cmdline) for the moment the call runs; pve01 has no other local users.
+    - name: Create the Teams webhook endpoint, or update it (and the secret only on create/rotate)
+      ansible.builtin.command:
+        argv:
+          - sh
+          - -c
+          - >-
+            set -e; IFS= read -r u || u=;
+            set -- --url "$URL" --method post --header "$HEADER" --body "$BODY"
+            --comment "$COMMENT" --disable 0;
+            if [ -n "$u" ]; then p=${u#https://*/};
+            set -- "$@" --secret "name=path,value=$(printf %s "$p" | base64 -w0)"; fi;
+            if [ "$MODE" = create ]; then exec pvesh create /cluster/notifications/endpoints/webhook --name "$NAME" "$@";
+            else exec pvesh set "$API" "$@"; fi
+        stdin: "{{ pve_base_notify_teams_webhook_url if pve_base_notify_write_secret | bool else '' }}"
+      environment:
+        MODE: "{{ 'set' if pve_base_notify_exists | bool else 'create' }}"
+        NAME: "{{ pve_base_notify_teams_endpoint }}"
+        API: "{{ pve_base_notify_api }}"
+        URL: "{{ pve_base_notify_url | trim }}"
+        HEADER: "{{ pve_base_notify_header }}"
+        BODY: "{{ pve_base_notify_body_b64 }}"
+        COMMENT: "{{ pve_base_managed_comment }}"
+      register: pve_base_notify_write
+      no_log: true
+      changed_when: true
+      failed_when: false
+      when: pve_base_notify_write_secret | bool or pve_base_notify_drift | bool
+
+    # The result above is hidden (no_log); show pvesh's error with any base64 value cut out.
+    - name: Fail with the pvesh error (secret values redacted)
+      ansible.builtin.fail:
+        msg: "pvesh failed (rc {{ pve_base_notify_write.rc }}): {{ pve_base_notify_error }}"
+      vars:
+        pve_base_notify_error: >-
+          {{ pve_base_notify_write.stderr | default('')
+             | regex_replace('value=[A-Za-z0-9+/=]+', 'value=<redacted>')
+             | regex_replace('https?(://|%3A%2F%2F)[^\s"]+', 'https://<redacted>')
+             | regex_replace('\?[^\s"]*', '?<redacted>')
+             | regex_replace('(sig|sp|sv|se|api-version)=[^&\s"]+', '\1=<redacted>') }}
+      when:
+        - pve_base_notify_write is not skipped
+        - pve_base_notify_write.rc | default(0) != 0
+
+    - name: Read the Teams matcher
+      ansible.builtin.command: pvesh get /cluster/notifications/matchers/{{ pve_base_notify_teams_matcher }} --output-format json
+      register: pve_base_notify_matcher
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Create or update the matcher (warnings and errors to Teams)
+      ansible.builtin.command:
+        argv: "{{ (pve_base_notify_matcher_set if pve_base_notify_matcher.rc == 0 else pve_base_notify_matcher_create) + pve_base_notify_matcher_args }}"
+      vars:
+        pve_base_notify_matcher_set:
+          - pvesh
+          - set
+          - /cluster/notifications/matchers/{{ pve_base_notify_teams_matcher }}
+          - --delete
+          - match-field,match-calendar,invert-match
+        pve_base_notify_matcher_create:
+          - pvesh
+          - create
+          - /cluster/notifications/matchers
+          - --name
+          - "{{ pve_base_notify_teams_matcher }}"
+        pve_base_notify_matcher_args:
+          - --target
+          - "{{ pve_base_notify_teams_endpoint }}"
+          - --match-severity
+          - "{{ pve_base_notify_teams_severities | join(',') }}"
+          - --mode
+          - all
+          - --comment
+          - "{{ pve_base_managed_comment }}"
+          - --disable
+          - "0"
+        # pvesh may print a list option as a list or as a comma string.
+        pve_base_notify_matcher_sev: >-
+          {{ (pve_base_notify_matcher.stdout | from_json)['match-severity'] | default([])
+             if pve_base_notify_matcher.rc == 0 else [] }}
+      changed_when: true
+      when: >-
+        pve_base_notify_matcher.rc != 0 or (
+             (pve_base_notify_matcher.stdout | from_json).target | default([]) != [pve_base_notify_teams_endpoint]
+          or (pve_base_notify_matcher_sev if pve_base_notify_matcher_sev is string else pve_base_notify_matcher_sev | join(','))
+             | split(',') | sort != pve_base_notify_teams_severities | sort
+          or (pve_base_notify_matcher.stdout | from_json)['match-field'] | default([]) != []
+          or (pve_base_notify_matcher.stdout | from_json)['match-calendar'] | default([]) != []
+          or (pve_base_notify_matcher.stdout | from_json).mode | default('all') != 'all'
+          or (pve_base_notify_matcher.stdout | from_json)['invert-match'] | default(0) | bool
+          or (pve_base_notify_matcher.stdout | from_json).disable | default(0) | bool)
