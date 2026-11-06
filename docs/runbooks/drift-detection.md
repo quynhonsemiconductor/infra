@@ -122,6 +122,11 @@ created with empty input lists the same way. The workflow's
 "Identity drift inputs present" step is the real test: it fails with the exact
 list of empty names before the kit runs.
 
+`drift-detection.yml` has a PR guard for exactly this list:
+`scripts/test_drift_identity_inputs.py` parses the workflow and fails if any step
+that runs the kit drops one of the six `IDENTITY_*` vars (or if the preflight
+stops naming one). It runs on PRs that touch the workflow, not nightly.
+
 The kit stops (it never guesses) if one is missing, an app name is ambiguous, a
 credential is unpinned, or a mail certificate differs from the one on the app. A kit stop exits non-zero and
 leaves no plan file, which the workflow reports as `class=1` — not as a clean run.

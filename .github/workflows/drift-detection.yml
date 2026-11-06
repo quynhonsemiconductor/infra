@@ -53,6 +53,12 @@ on:
     # unmanaged-resources (01:15) and pin-drift (01:00) to spread runner usage.
     - cron: '30 0 * * *'
   workflow_dispatch:
+  # The workflow's own inputs guard (scripts/test_drift_identity_inputs.py) runs
+  # on PRs that touch it. The drift matrix itself is skipped on pull_request.
+  pull_request:
+    paths:
+      - '.github/workflows/drift-detection.yml'
+      - 'scripts/test_drift_identity_inputs.py'
 
 permissions:
   contents: read
@@ -61,8 +67,25 @@ env:
   TOFU_VERSION: "1.13.2"
 
 jobs:
+  inputs-guard:
+    name: Identity kit inputs guard
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Unit tests (stdlib only)
+        run: python3 -m unittest scripts/test_drift_identity_inputs.py -v
+
   drift:
     name: Drift ${{ matrix.stack }}
+    # Never on a pull_request: the guard job above is the PR check, and a plan
+    # with the read identity does not belong on an unmerged branch.
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -349,6 +372,10 @@ jobs:
           IDENTITY_SECOND_OWNER_UPN:   ${{ secrets.IDENTITY_SECOND_OWNER_UPN }}
           IDENTITY_PROXMOX_HOST:       ${{ secrets.IDENTITY_PROXMOX_HOST }}
           IDENTITY_PBS_HOST:           ${{ secrets.IDENTITY_PBS_HOST }}
+          # The DEV app owners and OpsHub Dev admin-role holders live in state:
+          # without these the plan proposes removing them (exit 2 every night).
+          IDENTITY_DEV_APP_EXTRA_OWNERS: ${{ secrets.IDENTITY_DEV_APP_EXTRA_OWNERS }}
+          IDENTITY_DEV_APP_EXTRA_ADMINS: ${{ secrets.IDENTITY_DEV_APP_EXTRA_ADMINS }}
           IDENTITY_KV_AUDIT_EMAIL:     ${{ secrets.IDENTITY_KV_AUDIT_EMAIL }}
         run: |
           set +e
@@ -372,6 +399,10 @@ jobs:
           IDENTITY_SECOND_OWNER_UPN:   ${{ secrets.IDENTITY_SECOND_OWNER_UPN }}
           IDENTITY_PROXMOX_HOST:       ${{ secrets.IDENTITY_PROXMOX_HOST }}
           IDENTITY_PBS_HOST:           ${{ secrets.IDENTITY_PBS_HOST }}
+          # The DEV app owners and OpsHub Dev admin-role holders live in state:
+          # without these the plan proposes removing them (exit 2 every night).
+          IDENTITY_DEV_APP_EXTRA_OWNERS: ${{ secrets.IDENTITY_DEV_APP_EXTRA_OWNERS }}
+          IDENTITY_DEV_APP_EXTRA_ADMINS: ${{ secrets.IDENTITY_DEV_APP_EXTRA_ADMINS }}
           IDENTITY_KV_AUDIT_EMAIL:     ${{ secrets.IDENTITY_KV_AUDIT_EMAIL }}
         run: |
           set +e
