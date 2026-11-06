@@ -302,7 +302,7 @@ jobs:
       # Output `class`: 2 matters, 3 informational, 0 none, 1 could not classify.
       - name: Classify external drift
         id: classify
-        if: ${{ steps.refresh.outputs.exitcode == '2' }}
+        if: ${{ matrix.stack != 'identity' && steps.refresh.outputs.exitcode == '2' }}
         uses: quynhonsemiconductor/ci/actions/destructive-guard@956804ad4aa2dcf930909553d306d72b3708fd5d # v1.34.1+ci#308
         with:
           mode: drift
