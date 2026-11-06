@@ -86,9 +86,14 @@ jq -r '.id + "\t" + .name' "$TMP/tokens.jsonl" > "$TMP/id-name.txt"
 rc=0
 
 for vault in kv-qnsc-prod kv-qnsc-dev kv-qnsc-platform; do
-  names=$(az keyvault secret list --vault-name "$vault" \
-            --query "[?ends_with(name, '-access-key-id')].name" -o tsv 2>/dev/null || true)
-  [ -n "$names" ] || continue
+  if ! names=$(az keyvault secret list --vault-name "$vault" \
+                 --query "[?ends_with(name, '-access-key-id')].name" -o tsv 2>"$TMP/vault.err"); then
+    printf '%s -> ERROR listing secrets (need Key Vault Secrets User on this vault): %s\n' \
+      "$vault" "$(head -1 "$TMP/vault.err")"
+    rc=2
+    continue
+  fi
+  [ -n "$names" ] || { printf '%s -> no *-access-key-id secrets\n' "$vault"; continue; }
   while IFS= read -r secret; do
     [ -n "$secret" ] || continue
     # Read the VALUE into a variable; never print it. `--query value -o tsv`.
