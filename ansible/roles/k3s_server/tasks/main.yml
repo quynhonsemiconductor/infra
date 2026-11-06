@@ -6,6 +6,20 @@
     fail_msg: "k3s_server_oidc_issuer_enabled is true but k3s_server_oidc_issuer is empty: set it in the local inventory."
     quiet: true
 
+- name: The Entra auth inputs are complete when it is enabled
+  ansible.builtin.assert:
+    that:
+      - not (k3s_server_entra_auth_enabled | bool) or (
+          k3s_server_entra_tenant_id is match('^[0-9a-fA-F-]{36}$')
+          and k3s_server_entra_client_id is match('^[0-9a-fA-F-]{36}$')
+          and k3s_server_entra_platform_admins_group_id is match('^[0-9a-fA-F-]{36}$')
+          and k3s_server_entra_developers_group_id is match('^[0-9a-fA-F-]{36}$'))
+    fail_msg: >-
+      k3s_server_entra_auth_enabled is true but an id is missing or not a GUID: tenant, client and the
+      two group OBJECT ids (from the "QNSC k3s" app's apply and from Entra). A display name or an empty
+      value here would either refuse every sign-in or bind cluster-admin to the wrong group.
+    quiet: true
+
 - name: Directory for the k3s configuration
   ansible.builtin.file:
     path: /etc/rancher/k3s
@@ -63,6 +77,31 @@
     - Restart k3s
     - Report that k3s needs a restart
   tags: [k3s_server_config]
+
+# The bindings are Kubernetes objects, so they go through the cluster's own API. Applied AFTER the
+# config write: with a restart pending the tokens are not verifiable yet, but the bindings themselves
+# are plain RBAC objects and applying them early is harmless and idempotent.
+- name: Apply the Entra RBAC (developer ClusterRole + two group bindings)
+  ansible.builtin.command:
+    argv: [k3s, kubectl, apply, -f, -]
+    stdin: "{{ lookup('ansible.builtin.template', 'entra-rbac.yaml.j2') }}"
+  register: k3s_server_entra_rbac
+  changed_when: "'unchanged' not in k3s_server_entra_rbac.stdout"
+  when:
+    - k3s_server_entra_auth_enabled | bool
+    - not ansible_check_mode
+  tags: [k3s_server_rbac]
+
+- name: Report the Entra RBAC (check mode)
+  ansible.builtin.debug:
+    msg: >-
+      would apply the Entra RBAC: ClusterRole qnsc-k8s-developer-readonly, bindings qnsc-k8s-developers
+      (group {{ k3s_server_entra_developers_group_id }}) and qnsc-k8s-platform-admins
+      (group {{ k3s_server_entra_platform_admins_group_id }})
+  when:
+    - k3s_server_entra_auth_enabled | bool
+    - ansible_check_mode
+  tags: [k3s_server_rbac]
 
 - name: Install the pinned k3s server
   ansible.builtin.include_role:

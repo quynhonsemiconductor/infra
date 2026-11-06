@@ -1,0 +1,70 @@
+# RBAC for kubectl-through-Entra (applied by this role; rendered with the group object ids from the
+# local inventory, so the ids never enter the repo).
+#
+# Subjects are GROUP subjects whose name is the `groups` claim value verbatim: the API server was
+# started WITHOUT --oidc-groups-prefix, so the claim's GUID is the group name.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: qnsc-k8s-developer-readonly
+  labels:
+    app.kubernetes.io/managed-by: ansible
+    qnsc.vn/purpose: entra-developers
+rules:
+  # Read-only, and deliberately WITHOUT secrets: a developer reads objects to debug their app, not
+  # the cluster's credentials. `pods/log` is included because that is the first thing anyone needs.
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "services", "endpoints", "configmaps", "events",
+                "namespaces", "nodes", "persistentvolumeclaims", "replicationcontrollers"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets", "replicasets", "controllerrevisions"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses", "networkpolicies", "ingressclasses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods", "nodes"]
+    verbs: ["get", "list"]
+  - apiGroups: ["argoproj.io"]
+    resources: ["applications", "appprojects"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: qnsc-k8s-platform-admins
+  labels:
+    app.kubernetes.io/managed-by: ansible
+    qnsc.vn/purpose: entra-platform-admins
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: Group
+    name: "{{ k3s_server_entra_platform_admins_group_id }}"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: qnsc-k8s-developers
+  labels:
+    app.kubernetes.io/managed-by: ansible
+    qnsc.vn/purpose: entra-developers
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: qnsc-k8s-developer-readonly
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: Group
+    name: "{{ k3s_server_entra_developers_group_id }}"
