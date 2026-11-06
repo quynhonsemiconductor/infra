@@ -620,8 +620,8 @@
     mode: "0644"
     content: |
       # Managed by Ansible (infra, role pve_base). One DEVICESCAN line: whatever disks the host
-      # has. SHORT weekly-ish on the 1st at 01:00; LONG on the 1st at 03:00 (after the VM backups).
-      # The result is exported by pve_monitoring and alerted in live/observability-alerting.
+      # has. SHORT every day at 01:00; LONG on the 1st at 03:00 (after the VM backups). The
+      # result is exported by pve_monitoring and alerted in live/observability-alerting.
       {{ pve_base_smartd_devicescan_line }}
   notify: Restart smartd
   tags: [pve_base_smartd]

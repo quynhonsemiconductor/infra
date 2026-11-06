@@ -66,23 +66,29 @@ done
 #   pve_disk_self_test_age_hours power-on hours since that test, so a schedule that STOPPED running is
 #                                stale-and-visible instead of silent
 # NVMe and ATA expose the result in different JSON; an entry without a result value emits nothing.
+# -n standby,0: never SPIN UP or wake a sleeping disk for a metric. A disk in standby answers
+# nothing (exit 2, empty output), so its series go stale for that scrape instead of costing a
+# head-load on the HDD mirror every 5 minutes.
 for dev in $disk_glob; do
     [ -e "$dev" ] || continue
-    json="$(timeout 20 smartctl -j -a "$dev" 2>/dev/null || true)"
+    json="$(timeout 20 smartctl -n standby,0 -j -a "$dev" 2>/dev/null || true)"
     [ -n "$json" ] || continue
 
-    # `// null`, not `// empty`: on a document where the first branch is absent, `empty` short-circuits
-    # the whole `if` and the ATA case would silently emit nothing.
+    # Paths are the ones smartctl emits (checked against a real `smartctl -j -a` dump):
+    #   NVMe  nvme_self_test_log.table[0].self_test_result.value      (0 = completed without error)
+    #   ATA   ata_smart_self_test_log.standard.table[0].status.passed
+    # `// null`, not `// empty`: on a document where the first branch is absent, `empty`
+    # short-circuits the whole `if` and the ATA case would silently emit nothing.
     failed="$(printf '%s' "$json" | jq -r '
-      if (.nvme_self_test_log[0].result.value? // null) != null then
-        (if .nvme_self_test_log[0].result.value == 0 then 0 else 1 end)
-      elif (.ata_smart_self_test_log.standard[0].status.value? // null) != null then
-        (if .ata_smart_self_test_log.standard[0].status.passed == true then 0 else 1 end)
+      if (.nvme_self_test_log.table[0].self_test_result.value? // null) != null then
+        (if .nvme_self_test_log.table[0].self_test_result.value == 0 then 0 else 1 end)
+      elif (.ata_smart_self_test_log.standard.table[0].status.value? // null) != null then
+        (if .ata_smart_self_test_log.standard.table[0].status.passed == true then 0 else 1 end)
       else empty end' 2>/dev/null || true)"
     age="$(printf '%s' "$json" | jq -r '
       (.power_on_time.hours? // null) as $now
-      | ((.nvme_self_test_log[0].power_on_hours? // null)
-         // (.ata_smart_self_test_log.standard[0].lifetime_hours? // null)) as $then
+      | ((.nvme_self_test_log.table[0].power_on_hours? // null)
+         // (.ata_smart_self_test_log.standard.table[0].lifetime_hours? // null)) as $then
       | if $now != null and $then != null then ($now - $then) else empty end' 2>/dev/null || true)"
 
     [ -n "$failed" ] && emit "pve_disk_self_test_failed{device=\"$dev\"} $failed"

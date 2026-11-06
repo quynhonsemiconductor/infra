@@ -465,10 +465,10 @@ resource "grafana_rule_group" "onprem_pve_risk" {
   # itself runs out, the OOM killer takes the largest QEMU process, which is
   # k3s-01 — all of prod. 2 GiB is the floor where PVE, PBS verify/GC and KSM
   # can still work; the 2026-11-04 measurement was 13.0 GiB available.
-  # The monthly LONG self-test (smartd, Ansible pve_base): `S/../.././01` short, `L/../01/./03` long
-  # on the 1st. A failed test is the earliest signal a drive gives — before the critical-warning flag
-  # the rules above watch. The stale rule catches the other failure: smartd that stopped running
-  # produces no test at all, and silence is not health.
+  # Self-tests (smartd, Ansible pve_base): `S/../.././01` SHORT daily at 01:00, `L/../01/./03` LONG on
+  # the 1st at 03:00. A failed test is the earliest signal a drive gives — before the critical-warning
+  # flag the rules above watch. The stale rule catches the other failure: smartd that stopped running
+  # produces no test at all, and silence is not health — which is why ITS no_data_state is Alerting.
   # Two rules, not one `or`, for the same reason as the NVMe group above: both branches carry the
   # SAME `device` label set, and PromQL `or` returns only the left-hand series when label sets match.
   rule {
@@ -540,10 +540,12 @@ resource "grafana_rule_group" "onprem_pve_risk" {
   # Two rules, not one `or`, for the same reason as the NVMe group above: both branches carry the
   # SAME `device` label set, and PromQL `or` returns only the left-hand series when label sets match.
   rule {
-    name           = "pve-disk-self-test-stale"
-    condition      = "B"
-    for            = "1h"
-    no_data_state  = "OK"
+    name      = "pve-disk-self-test-stale"
+    condition = "B"
+    for       = "1h"
+    # Alerting, not OK: no series means the exporter (or the host) stopped, and that must page —
+    # a missing disk-health signal is the failure this rule exists to make loud.
+    no_data_state  = "Alerting"
     exec_err_state = "KeepLast"
 
     data {
