@@ -199,6 +199,7 @@ jobs:
           TF_VAR_grp_developers_id:      ${{ matrix.stack == 'edge' && vars.ENTRA_GRP_DEVELOPERS_ID || '' }}
           TF_VAR_grp_dev_users_id:     ${{ matrix.stack == 'edge' && vars.ENTRA_GRP_DEV_USERS_ID || '' }}
           TF_VAR_grp_staff_id: ${{ matrix.stack == 'edge' && vars.ENTRA_GRP_STAFF_ID || '' }}
+          TF_VAR_grp_vlsi_id: ${{ matrix.stack == 'edge' && vars.ENTRA_GRP_VLSI_ID || '' }}
           TF_VAR_entra_tenant_id:        ${{ matrix.stack == 'edge' && vars.ENTRA_TENANT_ID || '' }}
           TF_VAR_entra_idp_client_id:    ${{ matrix.stack == 'edge' && vars.ENTRA_IDP_CLIENT_ID || '' }}
           TF_VAR_entra_idp_client_secret: ${{ matrix.stack == 'edge' && secrets.ENTRA_IDP_CLIENT_SECRET || '' }}
@@ -256,6 +257,7 @@ jobs:
           TF_VAR_grp_developers_id:      ${{ matrix.stack == 'edge' && vars.ENTRA_GRP_DEVELOPERS_ID || '' }}
           TF_VAR_grp_dev_users_id:     ${{ matrix.stack == 'edge' && vars.ENTRA_GRP_DEV_USERS_ID || '' }}
           TF_VAR_grp_staff_id: ${{ matrix.stack == 'edge' && vars.ENTRA_GRP_STAFF_ID || '' }}
+          TF_VAR_grp_vlsi_id: ${{ matrix.stack == 'edge' && vars.ENTRA_GRP_VLSI_ID || '' }}
           TF_VAR_entra_tenant_id:        ${{ matrix.stack == 'edge' && vars.ENTRA_TENANT_ID || '' }}
           TF_VAR_entra_idp_client_id:    ${{ matrix.stack == 'edge' && vars.ENTRA_IDP_CLIENT_ID || '' }}
           TF_VAR_entra_idp_client_secret: ${{ matrix.stack == 'edge' && secrets.ENTRA_IDP_CLIENT_SECRET || '' }}
