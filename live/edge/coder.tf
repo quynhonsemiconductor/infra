@@ -131,6 +131,10 @@ resource "cloudflare_zero_trust_network_hostname_route" "coder" {
 # field in a traffic expression with 400 code 2091 "expression contains fields that are not allowed for
 # rule-type traffic" (same day, third failure on this resource). live/edge/tests/static.sh enforces both.
 #
+# THIRD RULE, same family of mistake: whether a selector takes `[*]` depends on ITS type, and the types
+# differ inside one policy — `identity.groups.id` and `net.sni.domains` are Array(Bytes), `net.dst.ip` is
+# a scalar Ip ("cannot access index MapEach for type Ip"). Array form ONLY where the field is an array.
+#
 #   900 allow  platform admins             — today's access, stated explicitly so a
 #                                            later blanket rule cannot take it away
 #   910 allow  grp-qnsc-vlsi → Coder hosts — the only private destination it needs
@@ -177,7 +181,12 @@ locals {
   # The private destinations the tunnels can expose, as a TRAFFIC expression. RFC 1918 + CGNAT; the
   # synthetic IP a private hostname resolves to (172.64.128.0/20) is outside every one of them, which is
   # why the Coder allow below matches on SNI instead.
-  private_l4_traffic = "any(net.dst.ip[*] in {10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10})"
+  #
+  # `net.dst.ip` is a SCALAR (type Ip): the API rejects `net.dst.ip[*]` with
+  #   400 Filter parsing error (1:15): cannot access index MapEach for type Ip
+  # (2026-11-06). Field types are per selector, not per family — identity.groups.id and
+  # net.sni.domains ARE arrays and keep `[*]`; net.dst.ip is not and must not.
+  private_l4_traffic = "net.dst.ip in {10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10}"
 }
 
 # Every L4 policy on the account, read at plan time. Two facts the plan must have before it
