@@ -46,6 +46,14 @@ resource "cloudflare_zero_trust_access_policy" "warp_enroll" {
       identity_provider_id = cloudflare_zero_trust_access_identity_provider.entra.id
     }
   }]
+
+  # The policies come FIRST: if the account cannot create them (plan or permission), the
+  # apply fails before the group can enroll. The reverse order would open the door and then
+  # discover it has no lock. (count = 0 when grp_vlsi_id is empty — then nothing needs the edge.)
+  depends_on = [
+    cloudflare_zero_trust_gateway_policy.vlsi_allow_coder,
+    cloudflare_zero_trust_gateway_policy.vlsi_block_private,
+  ]
   require = [{
     auth_method = { auth_method = "mfa" }
   }]
