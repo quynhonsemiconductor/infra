@@ -8,6 +8,13 @@
 pve_base_entra_realm_users: >-
   {{ (pve_base_entra_users.stdout | from_json)
      | selectattr('userid', 'search', '@' ~ pve_base_entra_realm ~ '$') | list }}
-pve_base_entra_desired_userids: "{{ pve_base_entra_admin_emails | map('regex_replace', '$', '@' ~ pve_base_entra_realm) | list }}"
+# Compare lowercased ids (the input list is asserted lowercase): a mixed-case PVE userid must still
+# match the email the owner typed. The original dicts are kept for the CLI update.
+pve_base_entra_desired_userids: >-
+  {{ pve_base_entra_admin_emails | map('regex_replace', '$', '@' ~ pve_base_entra_realm)
+     | map('lower') | list }}
 pve_base_entra_removed_users: >-
-  {{ pve_base_entra_realm_users | rejectattr('userid', 'in', pve_base_entra_desired_userids) | list }}
+  {{ (pve_base_entra_realm_users
+      | zip(pve_base_entra_realm_users | map(attribute='userid') | map('lower')))
+     | rejectattr('1', 'in', pve_base_entra_desired_userids)
+     | map(attribute='0') | list }}

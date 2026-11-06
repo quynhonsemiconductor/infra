@@ -52,13 +52,24 @@ pbs_entra_client_id: "{{ proxmox_oidc_client_id | default('') }}"
 pbs_entra_client_secret: "{{ lookup('ansible.builtin.env', 'PROXMOX_OIDC_CLIENT_SECRET') }}"
 pbs_entra_username_claim: email
 pbs_entra_scopes: "openid email profile"
-# null = not set (a PVE-only inventory must not look like an explicit empty list). An explicit
-# pbs_entra_admin_emails: [] is honoured and prunes, exactly like proxmox_entra_admin_emails: [].
+# null = not set. Only the canonical proxmox_entra_admin_emails: [] prunes (it revokes the Admin ACL);
+# a leftover legacy pbs_entra_admin_emails: [] is treated as unset, never as a prune request.
 pbs_entra_admin_emails: null
 # Same precedence as the PVE role: the canonical name wins, the old key is only a fallback. Computed
 # separately so an inventory that still sets pbs_entra_admin_emails cannot shadow proxmox_entra_admin_emails.
 pbs_entra_admin_emails_effective: >-
   {{ proxmox_entra_admin_emails if proxmox_entra_admin_emails is defined
-     else (pbs_entra_admin_emails if pbs_entra_admin_emails is not none else []) }}
+     else (pbs_entra_admin_emails if pbs_entra_admin_emails is defined and pbs_entra_admin_emails is not none
+           else []) }}
+# True when a list was SUPPLIED (canonical, or a non-empty legacy list). Unset = the role fails; an
+# explicit canonical [] = manage and prune.
+pbs_entra_manage_admins: >-
+  {{ proxmox_entra_admin_emails is defined
+     or (pbs_entra_admin_emails is defined and pbs_entra_admin_emails is not none
+         and (pbs_entra_admin_emails | length) > 0) }}
+# Lowercased ids for the membership match; the original case is kept for the CLI calls.
+pbs_entra_desired_userids: >-
+  {{ pbs_entra_admin_emails_effective | map('regex_replace', '$', '@' ~ pbs_entra_realm)
+     | map('lower') | list }}
 # The username claim is fixed at realm creation: a different value stops the role.
 pbs_entra_rotate_client_key: false

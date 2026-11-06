@@ -124,6 +124,22 @@ the admin group (that is how "remove all admins" is expressed). A leftover legac
 must hold exact Entra email strings with no duplicates, and the canonical `proxmox_entra_admin_emails`
 wins over the legacy `pbs_entra_admin_emails` in both roles (the legacy key defaults to `null`).
 
+**Offboarding, per system.** PVE removes the account from `<oid>-entra` (the PVE user object stays,
+locked by the roll when it was created by the role). PBS revokes its `Admin` ACL on `/`
+(`proxmox-backup-manager acl update / Admin --auth-id <id> --delete`); a `--check` run prints
+`would revoke Admin on / from <id>`, and `[]` (canonical key) revokes everyone. Neither system deletes
+the account here.
+
+Verify the last-group clear ONCE on pve01 with a scratch user (the role relies on `--groups ""`):
+
+```sh
+pveum user add scratch@entra
+pveum user modify scratch@entra --groups "<group-object-id>-entra"
+pveum user modify scratch@entra --groups ""
+pveum user list | grep scratch        # groups column is empty
+pveum user delete scratch@entra
+```
+
 The client secret comes from the environment of the run (Key Vault `kv-qnsc-admin`,
 `admin-proxmox-oidc-secret`, created in identity step 4 with `scripts/rotate-signin-secret.sh`):
 

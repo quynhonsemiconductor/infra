@@ -184,11 +184,12 @@
     - name: The shared admin email list is usable
       ansible.builtin.assert:
         that:
+          - pve_base_entra_admin_emails | map('lower') | list == pve_base_entra_admin_emails
           - pve_base_entra_admin_emails | select('match', '^[^@\s]+@[^@\s]+$') | list | length == pve_base_entra_admin_emails | length
           - pve_base_entra_admin_emails | unique | length == pve_base_entra_admin_emails | length
         fail_msg: >-
-          proxmox_entra_admin_emails (or the legacy pbs_entra_admin_emails) must hold exact Entra email
-          strings with no duplicates. Leave it unset for a PVE-only inventory.
+          proxmox_entra_admin_emails (or the legacy pbs_entra_admin_emails) must hold exact, LOWERCASE
+          Entra email strings with no duplicates. Leave it unset for a PVE-only inventory.
         quiet: true
       when: pve_base_entra_manage_admins | bool
 
