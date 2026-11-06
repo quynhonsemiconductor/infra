@@ -483,6 +483,16 @@ jobs:
           # write app exists for the apply job only, behind the `production` reviewer.
           TF_VAR_github_token:           ${{ steps.gh-read.outputs.token }}
 
+      # The check block in coder.tf fires inside the plan text, which edge never prints. Surface the ONE
+      # line it matters for as an annotation: it is our own message, contains no private value.
+      - name: Stale Gateway policy notice (edge)
+        if: matrix.stack == 'edge' && steps.plan.outputs.exitcode == '2'
+        working-directory: live/edge
+        run: |
+          if grep -q 'Default deny for private traffic' plan.txt; then
+            echo "::warning title=stale gateway policy::The hand-made 'Default deny for private traffic' (Block, disabled since 2026-07-09, not in IaC) still exists. Delete it: Gateway -> Firewall policies -> that rule -> Delete. Deleting a disabled rule changes no traffic; it duplicates the per-group block in coder.tf."
+          fi
+
       # edge publishes counts + fingerprint + changed TYPES, and nothing else. The file is what the PR
       # comment below posts; nothing from the plan body ever reaches the summary or the comment.
       - name: Plan summary (edge)
