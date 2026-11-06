@@ -106,7 +106,7 @@ resource "grafana_rule_group" "onprem_pve_risk" {
 
     labels = {
       product  = "platform"
-      env      = "production"
+      env      = "prod"
       severity = "critical"
     }
 
@@ -176,7 +176,7 @@ resource "grafana_rule_group" "onprem_pve_risk" {
 
     labels = {
       product  = "platform"
-      env      = "production"
+      env      = "prod"
       severity = "warning"
     }
 
@@ -250,7 +250,7 @@ resource "grafana_rule_group" "onprem_pve_risk" {
 
     labels = {
       product  = "platform"
-      env      = "production"
+      env      = "prod"
       severity = "critical"
     }
 
@@ -322,7 +322,7 @@ resource "grafana_rule_group" "onprem_pve_risk" {
 
     labels = {
       product  = "platform"
-      env      = "production"
+      env      = "prod"
       severity = "warning"
     }
 
@@ -389,7 +389,7 @@ resource "grafana_rule_group" "onprem_pve_risk" {
 
     labels = {
       product  = "platform"
-      env      = "production"
+      env      = "prod"
       severity = "critical"
     }
 
@@ -456,7 +456,7 @@ resource "grafana_rule_group" "onprem_pve_risk" {
 
     labels = {
       product  = "platform"
-      env      = "production"
+      env      = "prod"
       severity = "critical"
     }
 
@@ -535,7 +535,7 @@ resource "grafana_rule_group" "onprem_pve_risk" {
 
     labels = {
       product  = "platform"
-      env      = "production"
+      env      = "prod"
       severity = "warning"
     }
 
@@ -605,7 +605,7 @@ resource "grafana_rule_group" "onprem_pve_risk" {
 
     labels = {
       product  = "platform"
-      env      = "production"
+      env      = "prod"
       severity = "warning"
     }
 
@@ -672,7 +672,7 @@ resource "grafana_rule_group" "onprem_pve_risk" {
 
     labels = {
       product  = "platform"
-      env      = "production"
+      env      = "prod"
       severity = "critical"
     }
 
@@ -741,7 +741,7 @@ resource "grafana_rule_group" "onprem_pve_risk" {
 
     labels = {
       product  = "platform"
-      env      = "production"
+      env      = "prod"
       severity = "warning"
     }
 
@@ -828,7 +828,7 @@ resource "grafana_rule_group" "onprem_pve_risk" {
 
     labels = {
       product  = "platform"
-      env      = "production"
+      env      = "prod"
       severity = "critical"
     }
 
@@ -894,7 +894,7 @@ resource "grafana_rule_group" "onprem_pve_risk" {
 
     labels = {
       product  = "platform"
-      env      = "production"
+      env      = "prod"
       severity = "critical"
     }
 
@@ -963,7 +963,7 @@ resource "grafana_rule_group" "onprem_pve_risk" {
 
     labels = {
       product  = "platform"
-      env      = "production"
+      env      = "prod"
       severity = "critical"
     }
 
@@ -1041,7 +1041,7 @@ resource "grafana_rule_group" "onprem_pve_risk" {
 
     labels = {
       product  = "platform"
-      env      = "production"
+      env      = "prod"
       severity = "critical"
     }
 
@@ -1114,7 +1114,7 @@ resource "grafana_rule_group" "onprem_pve_risk" {
 
     labels = {
       product  = "platform"
-      env      = "production"
+      env      = "prod"
       severity = "critical"
     }
 
@@ -1192,7 +1192,7 @@ resource "grafana_rule_group" "onprem_pve_textfile_absent" {
 
     labels = {
       product  = "platform"
-      env      = "production"
+      env      = "prod"
       severity = "critical"
     }
 
@@ -1263,7 +1263,7 @@ resource "grafana_rule_group" "onprem_pve_textfile_absent" {
 
     labels = {
       product  = "platform"
-      env      = "production"
+      env      = "prod"
       severity = "critical"
     }
 

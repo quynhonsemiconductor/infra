@@ -79,7 +79,7 @@
 # guard below makes that mistake fail loudly instead.
 #
 # ── ROUTING ────────────────────────────────────────────────────────────────
-# env=production → grafana_notification_policy.root (Teams + devops@ email).
+# env=prod → grafana_notification_policy.root (Teams + devops@ email).
 # =============================================================================
 
 variable "kb_prod_live" {
@@ -111,7 +111,7 @@ resource "grafana_synthetic_monitoring_check" "kb_prod_readyz" {
 
   labels = {
     product = "kb"
-    env     = "production" # matches the notification policy matcher, NOT "prod"
+    env     = "prod"
   }
 
   settings {
@@ -211,7 +211,7 @@ resource "grafana_rule_group" "kb_prod_readyz_down" {
 
     labels = {
       product  = "kb"
-      env      = "production" # matches the notification policy matcher, NOT "prod"
+      env      = "prod"
       severity = "critical"
     }
 
