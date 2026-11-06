@@ -64,6 +64,9 @@ build() { # build the fixture set from scratch
   echo "{\"id\":\"$(g 3 2)\"}" >"$FX/user-second@tenant.example"
   echo "{\"id\":\"$(g 3 6)\",\"userType\":\"Member\"}" >"$FX/user-owner@tenant.example"
   echo "{\"id\":\"$(g 3 7)\",\"userType\":\"Guest\"}" >"$FX/user-owner-guest@tenant.example"
+  echo "{\"id\":\"$(g 3 8)\",\"userType\":\"Member\"}" >"$FX/user-admin1@tenant.example"
+  echo "{\"id\":\"$(g 3 9)\",\"userType\":\"Member\"}" >"$FX/user-admin2@tenant.example"
+  echo "{\"id\":\"$(g 3 10)\",\"userType\":\"Guest\"}" >"$FX/user-admin-guest@tenant.example"
   echo "{\"id\":\"$(g 3 3)\",\"userType\":\"Member\"}" >"$FX/user-dev@tenant.example"
   echo "{\"id\":\"$(g 3 4)\",\"userType\":\"Guest\"}" >"$FX/user-guest@tenant.example"
   echo "{\"id\":\"$(g 3 5)\"}" >"$FX/user-nouser@tenant.example"
@@ -116,6 +119,11 @@ build() { # build the fixture set from scratch
   roles='[]'; n=0
   for r in admin it-admin security hr manager helpdesk auditor; do n=$((n+1)); roles=$(jq -c --arg r "$r" --arg id "$(g 30 $n)" '.+[{value:$r,id:$id,isEnabled:true}]' <<<"$roles"); done
   jq --argjson r "$roles" '.appRoles=$r' "$FX/app-OpsHub-Dev" >"$FX/x" && mv "$FX/x" "$FX/app-OpsHub-Dev"
+  # extra OpsHub Dev admin holders: two live assignments of the admin role on its SP
+  jq -n --arg sp "$(g 12 3)" --arg r "$(g 30 1)" --arg a "$(g 31 1)" --arg b "$(g 31 2)" \
+    --arg p1 "$(g 3 8)" --arg p2 "$(g 3 9)" \
+    '{value:[{id:$a,appRoleId:$r,principalId:$p1,resourceId:$sp},{id:$b,appRoleId:$r,principalId:$p2,resourceId:$sp}]}' \
+    >"$FX/assigned-$(g 12 3).json"
   for k in "${KEYS[@]}"; do for f in app-$(signin_name "$k" | tr " " -) app-$(signin_name "$k" | tr " " -)-Service; do jq -c '[.]' "$FX/$f" >"$FX/$f.list"; done; done
   # The live shape on 2026-11-04: KB Dev Service carries a SECOND, pinned credential.
   mkcert extra
@@ -132,6 +140,12 @@ case "$a" in
   "rest --method get --url https://graph.microsoft.com/v1.0/servicePrincipals/"*"/appRoles"*) cat "$FX/graph-roles" ;;
   "rest --method get --url https://graph.microsoft.com/v1.0/servicePrincipals/"*"/oauth2PermissionGrants"*)
     p=${a#*servicePrincipals/}; p=${p%%/*}; cat "$FX/delegated-$p.json" 2>/dev/null || echo '{"value":[]}' ;;
+  "rest --method get --url https://graph.microsoft.com/v1.0/servicePrincipals/"*"/appRoleAssignedTo"*)
+    p=${a#*servicePrincipals/}; p=${p%%/*}
+    case "$a" in
+      *skiptoken=2*) cat "$FX/assigned2-$p.json" 2>/dev/null || echo '{"value":[]}' ;;
+      *) cat "$FX/assigned-$p.json" 2>/dev/null || echo '{"value":[]}' ;;
+    esac ;;
   "rest --method get --url https://graph.microsoft.com/v1.0/servicePrincipals/"*"/appRoleAssignments"*)
     p=${a#*servicePrincipals/}; p=${p%%/*}; cat "$FX/grants-$p.json" 2>/dev/null || echo '{"value":[]}' ;;
   "rest --method get --url https://graph.microsoft.com/v1.0/applications/"*'?$select=keyCredentials'*) o=${a#*applications/}; o=${o%%\?*}
@@ -235,6 +249,59 @@ grep -q 'v1.0/users/owner%40tenant.example' "$FX/calls.log" || fail "owner opera
 build; out="$T/out.ownerguest"
 if run env IDENTITY_OWNER_OPERATOR_UPN="owner-guest@tenant.example" bash "$SCRIPT" >"$out" 2>&1; then fail "owner operator guest accepted"; fi
 grep -q 'STOP: IDENTITY_OWNER_OPERATOR_UPN is a guest or non-Member user' "$out" || fail "owner operator guest reason"
+# 1d. extra OpsHub Dev admins: UPNs -> object ids; live admin assignments -> import ids
+expect_stop_admins() { # expect_stop_admins <label> <expected fragment> <IDENTITY_DEV_APP_EXTRA_ADMINS>
+  local out="$T/out.$RANDOM"
+  if run env IDENTITY_DEV_APP_EXTRA_ADMINS="$3" bash "$SCRIPT" >"$out" 2>&1; then fail "$1: broken input did not stop the run"; fi
+  grep -q "STOP: .*$2" "$out" || { cat "$out"; fail "$1: wrong stop reason (wanted '$2')"; }
+  leak_scan "$out" "$1"
+}
+build
+OUT="$T/out.admins"
+run env IDENTITY_DEV_APP_EXTRA_ADMINS="opshub_dev=admin1@tenant.example,opshub_dev=admin2@tenant.example" \
+  bash "$SCRIPT" >"$OUT" 2>&1 || { cat "$OUT"; fail "extra admins: happy path exited non-zero"; }
+grep -q 'identity env OK: 25 variables' "$OUT" || { cat "$OUT"; fail "extra admins: variable count"; }
+grep -qE 'TF_VAR_dev_app_extra_admin_object_ids +[0-9]+$' "$OUT" || fail "extra admins: object ids not exported"
+grep -qE 'TF_VAR_dev_app_extra_admin_assignment_ids +[0-9]+$' "$OUT" || fail "extra admins: assignment ids not exported"
+leak_scan "$OUT" "extra admins"
+run env IDENTITY_DEV_APP_EXTRA_ADMINS="opshub_dev=admin1@tenant.example,opshub_dev=admin2@tenant.example" \
+  bash "$SCRIPT" -- sh -c 'printf "%s" "$TF_VAR_dev_app_extra_admin_object_ids"' >"$T/admins.json" 2>/dev/null \
+  || fail "extra admins: object-id run mode"
+jq -e --arg a "$(g 3 8)" --arg b "$(g 3 9)" 'keys==["opshub_dev"] and (.opshub_dev|sort)==([$a,$b]|sort)' "$T/admins.json" >/dev/null \
+  || fail "extra admins: wrong object-id map"
+run env IDENTITY_DEV_APP_EXTRA_ADMINS="opshub_dev=admin1@tenant.example,opshub_dev=admin2@tenant.example" \
+  bash "$SCRIPT" -- sh -c 'printf "%s" "$TF_VAR_dev_app_extra_admin_assignment_ids"' >"$T/admassign.json" 2>/dev/null \
+  || fail "extra admins: assignment-id run mode"
+jq -e --arg k1 "opshub_dev/$(g 3 8)" --arg k2 "opshub_dev/$(g 3 9)" --arg v1 "$(g 31 1)" --arg v2 "$(g 31 2)" \
+  '(keys|sort)==([$k1,$k2]|sort) and .[$k1]==$v1 and .[$k2]==$v2' "$T/admassign.json" >/dev/null \
+  || fail "extra admins: wrong assignment-id map"
+grep -q 'servicePrincipals/.*/appRoleAssignedTo' "$FX/calls.log" || fail "extra admins: assignments not read via appRoleAssignedTo"
+# appRoleAssignedTo is paged: a second assignment behind @odata.nextLink is still imported
+build
+jq -n --arg sp "$(g 12 3)" --arg r "$(g 30 1)" --arg a "$(g 31 1)" --arg p1 "$(g 3 8)" \
+  --arg n "https://graph.microsoft.com/v1.0/servicePrincipals/$(g 12 3)/appRoleAssignedTo?\$skiptoken=2" \
+  '{value:[{id:$a,appRoleId:$r,principalId:$p1,resourceId:$sp}],"@odata.nextLink":$n}' \
+  >"$FX/assigned-$(g 12 3).json"
+jq -n --arg sp "$(g 12 3)" --arg r "$(g 30 1)" --arg b "$(g 31 2)" --arg p2 "$(g 3 9)" \
+  '{value:[{id:$b,appRoleId:$r,principalId:$p2,resourceId:$sp}]}' >"$FX/assigned2-$(g 12 3).json"
+run env IDENTITY_DEV_APP_EXTRA_ADMINS="opshub_dev=admin1@tenant.example,opshub_dev=admin2@tenant.example" \
+  bash "$SCRIPT" -- sh -c 'printf "%s" "$TF_VAR_dev_app_extra_admin_assignment_ids"' >"$T/admassign-page.json" 2>/dev/null \
+  || fail "extra admins: paged assignments run mode"
+jq -e --arg k1 "opshub_dev/$(g 3 8)" --arg k2 "opshub_dev/$(g 3 9)" '(keys|sort)==([$k1,$k2]|sort)' "$T/admassign-page.json" >/dev/null \
+  || fail "extra admins: @odata.nextLink page not imported"
+grep -q 'skiptoken=2' "$FX/calls.log" || fail "extra admins: no second page requested"
+
+expect_stop_admins "extra admin guest" "has a guest or non-Member user" "opshub_dev=admin-guest@tenant.example"
+expect_stop_admins "extra admin prod key" "is not a dev app with admin extras" "rova_prod=admin1@tenant.example"
+expect_stop_admins "extra admin malformed" "expected app=upn" "opshub_dev"
+expect_stop_admins "extra admin empty upn" "has an empty UPN" "opshub_dev="
+expect_stop_admins "extra admin unknown" "az lookup failed: dev-extra-admin" "opshub_dev=nobody@tenant.example"
+# a listed user with NO live assignment stays a CREATE (not an import): the map simply omits the key
+build; jq -c '.value=[.value[1]]' "$FX/assigned-$(g 12 3).json" >"$FX/x" && mv "$FX/x" "$FX/assigned-$(g 12 3).json"
+run env IDENTITY_DEV_APP_EXTRA_ADMINS="opshub_dev=admin1@tenant.example,opshub_dev=admin2@tenant.example" \
+  bash "$SCRIPT" -- sh -c 'printf "%s" "$TF_VAR_dev_app_extra_admin_assignment_ids"' >"$T/admassign2.json" 2>/dev/null \
+  || fail "extra admins: partial assignments run mode"
+jq -e --arg k "opshub_dev/$(g 3 9)" 'keys==[$k]' "$T/admassign2.json" >/dev/null || fail "extra admins: partial assignment map"
 
 # 2. run mode: the child sees the values (checked by shape, nothing printed), cwd is the stack dir
 CH="$T/child.out"

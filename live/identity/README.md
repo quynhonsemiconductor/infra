@@ -1126,6 +1126,29 @@ The other six roles stay per-user: no role-specific Entra group exists (owner
 decision 2026-11-05). Per-user assignments are additive and never remove the
 live user grants of the other roles.
 
+### Extra OpsHub Dev admin holders (`dev_extra_admins.tf`)
+
+Two tester grants were added by hand on 2026-08-31 (drift audit 2026-11-06):
+people who hold the OpsHub Dev `admin` role but are neither platform admins nor
+members of `grp-qnsc-platform-admins`. `dev_extra_admins.tf` ADOPTS those
+assignments so the next apply does not remove them. DEV only; a prod key fails
+the plan.
+
+No name, UPN or object id is committed. The owner lists the people as
+`opshub_dev=<upn>` pairs; the kit resolves each to a **Member** user and reads
+the app's live `appRoleAssignedTo`, so the assignments that already exist are
+IMPORTED (a re-create would be an HTTP 409):
+
+```sh
+export IDENTITY_DEV_APP_EXTRA_ADMINS='opshub_dev=<tester UPN>,opshub_dev=<tester UPN>'
+scripts/owner/identity-env/identity-env.sh -- tofu plan -out=tfplan
+```
+
+Go/no-go: the plan shows **1 import per existing tester assignment** and no
+change on them; any tester without a live assignment is a new add. Nothing to
+destroy or replace. Removing a UPN from the list removes that assignment on
+the next apply — review first.
+
 ## Prod identity: OpsHub (`prod_apps.tf`)
 
 Unlike the dev pair, the prod pair does not exist: this stack CREATES it.
