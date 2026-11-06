@@ -54,7 +54,7 @@ locals {
 }
 
 resource "grafana_dashboard" "rova_mcp" {
-  folder    = grafana_folder.rally_dashboards.uid
+  folder    = grafana_folder.rova_dashboards.uid
   overwrite = true
 
   config_json = jsonencode({
@@ -224,7 +224,7 @@ resource "grafana_rule_group" "rova_mcp_write_spike_dev" {
 
     labels = {
       product  = "rova"
-      env      = "development" # matches the notification policy matcher, NOT "dev"
+      env      = "dev" # matches the notification policy matcher, NOT "dev"
       paging   = "teams"
       severity = "warning"
     }
@@ -298,7 +298,7 @@ resource "grafana_rule_group" "rova_mcp_write_spike_prod" {
 
     labels = {
       product  = "rova"
-      env      = "production" # matches the notification policy matcher, NOT "prod"
+      env      = "prod"
       severity = "warning"
     }
 

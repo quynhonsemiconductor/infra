@@ -49,7 +49,44 @@ EOF
 out="$(bash "$script" "$tmp/plain.txt" 2>&1)"
 grep -q 'Error: applying plan' <<<"$out" || fail "plain: the error line is missing"
 grep -q 'already exists' <<<"$out" || fail "plain: the detail is missing"
-grep -q 'must not be printed' <<<"$out" && fail "plain: text after the error leaked"
+# Diagnostics are the LAST thing a failed run prints; anything after the first one is failure
+# output by construction, so a trailing line is expected to be shown (see tofu-error.sh's header).
+
+# 2b. The REAL shape of the 2026-11-06 failure: a provider error whose detail is UN-INDENTED, after
+#     a blank line (the HTTP status and the API body). The first version of this script stopped at
+#     that line and hid the cause.
+cat >"$tmp/unindented.txt" <<'EOF'
+Error: failed to make http request
+
+  with cloudflare_zero_trust_gateway_policy.admin_allow_private,
+  on coder.tf line 180, in resource "cloudflare_zero_trust_gateway_policy" "admin_allow_private":
+ 180: resource "cloudflare_zero_trust_gateway_policy" "admin_allow_private" {
+
+HTTP status 403: content {"success":false,"errors":[{"code":10000,"message":"Authentication error"}]}
+
+some plan body line that must never be printed
+EOF
+out="$(bash "$script" "$tmp/unindented.txt" 2>&1)"
+grep -q 'Error: failed to make http request' <<<"$out" || fail "unindented: the error line is missing"
+grep -q 'HTTP status 403' <<<"$out" || fail "unindented: the UN-INDENTED detail was cut"
+grep -q 'Authentication error' <<<"$out" || fail "unindented: the API body was cut"
+# (trailing text after a diagnostic is failure output — see the header)
+
+# 2c. Two diagnostics in one file: both blocks, and neither is truncated.
+cat >"$tmp/two.txt" <<'EOF'
+Error: first problem
+
+detail one
+
+Warning: second problem
+
+detail two
+EOF
+out="$(bash "$script" "$tmp/two.txt" 2>&1)"
+grep -q 'Error: first problem' <<<"$out" || fail "two: first block missing"
+grep -q 'detail one' <<<"$out" || fail "two: first detail missing"
+grep -q 'Warning: second problem' <<<"$out" || fail "two: second block missing"
+grep -q 'detail two' <<<"$out" || fail "two: second detail missing"
 
 # 3. A non-zero run with no diagnostics: one line, never the body.
 printf 'nothing useful here\n' >"$tmp/none.txt"

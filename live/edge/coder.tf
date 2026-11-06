@@ -123,7 +123,17 @@ resource "cloudflare_zero_trust_network_hostname_route" "coder" {
 # whole private network the tunnels and the device profile expose: the office LAN,
 # the k8s API, every other route. L4 (network) policies are the firewall for that
 # traffic, evaluated before anything reaches a tunnel. They are IDENTITY policies:
-# `identity.groups.id` is the Entra group object id carried in the WARP identity.
+# `identity.groups.id` is an ARRAY of the Entra group object ids carried in the WARP identity, so it is
+# always tested with `any(...[*] in {...})` — an `==` against it is a wirefilter type error at the API
+# ("cannot perform this operation on type Array(Bytes)", 2026-11-06).
+#
+# AND it goes in the policy's `identity` attribute, never inside `traffic`: the API rejects an identity
+# field in a traffic expression with 400 code 2091 "expression contains fields that are not allowed for
+# rule-type traffic" (same day, third failure on this resource). live/edge/tests/static.sh enforces both.
+#
+# THIRD RULE, same family of mistake: whether a selector takes `[*]` depends on ITS type, and the types
+# differ inside one policy — `identity.groups.id` and `net.sni.domains` are Array(Bytes), `net.dst.ip` is
+# a scalar Ip ("cannot access index MapEach for type Ip"). Array form ONLY where the field is an array.
 #
 #   900 allow  platform admins             — today's access, stated explicitly so a
 #                                            later blanket rule cannot take it away
@@ -138,7 +148,7 @@ resource "cloudflare_zero_trust_network_hostname_route" "coder" {
 #
 # THE BLOCK MUST BE DESTINATION-SCOPED. The device profile is split tunnel in **Exclude**
 # mode: everything NOT in the exclude list — the public internet included — is sent through
-# WARP and therefore evaluated by Gateway. An unscoped `identity.groups.id == vlsi` block
+# WARP and therefore evaluated by Gateway. An unscoped identity-only block for the VLSI group
 # would cut a VLSI engineer off the public internet: no login.microsoftonline.com (Coder's
 # own OIDC sign-in), no cloudflareaccess.com, nothing. So 920 matches the private ranges
 # only, and public traffic falls through to the default (allow, unchanged from today).
@@ -167,6 +177,16 @@ locals {
     "vlsi-block-other-private",
   ]
   gateway_precedences = [900, 910, 920]
+
+  # The private destinations the tunnels can expose, as a TRAFFIC expression. RFC 1918 + CGNAT; the
+  # synthetic IP a private hostname resolves to (172.64.128.0/20) is outside every one of them, which is
+  # why the Coder allow below matches on SNI instead.
+  #
+  # `net.dst.ip` is a SCALAR (type Ip): the API rejects `net.dst.ip[*]` with
+  #   400 Filter parsing error (1:15): cannot access index MapEach for type Ip
+  # (2026-11-06). Field types are per selector, not per family — identity.groups.id and
+  # net.sni.domains ARE arrays and keep `[*]`; net.dst.ip is not and must not.
+  private_l4_traffic = "net.dst.ip in {10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10}"
 }
 
 # Every L4 policy on the account, read at plan time. Two facts the plan must have before it
@@ -185,7 +205,12 @@ resource "cloudflare_zero_trust_gateway_policy" "admin_allow_private" {
   enabled     = true
   action      = "allow"
   filters     = ["l4"]
-  traffic     = "identity.groups.id == \"${var.grp_platform_admins_id}\""
+  # IDENTITY AND TRAFFIC ARE SEPARATE FIELDS (Cloudflare API: `traffic` = traffic matching expression,
+  # `identity` = identity matching expression, `device_posture` = posture). Putting an identity selector
+  # in `traffic` is rejected at the API with
+  #   400 code 2091 "Invalid expression: expression contains fields that are not allowed for rule-type traffic".
+  identity = "any(identity.groups.id[*] in {\"${var.grp_platform_admins_id}\"})"
+  traffic  = local.private_l4_traffic
 
   lifecycle {
     # A rule about the account this file does not own, proven before anything is created: our
@@ -229,7 +254,8 @@ resource "cloudflare_zero_trust_gateway_policy" "vlsi_allow_coder" {
   enabled     = true
   action      = "allow"
   filters     = ["l4"]
-  traffic     = "identity.groups.id == \"${var.grp_vlsi_id}\" and any(net.sni.domains[*] == \"coder.qnsc.vn\")"
+  identity    = "any(identity.groups.id[*] in {\"${var.grp_vlsi_id}\"})"
+  traffic     = "any(net.sni.domains[*] == \"coder.qnsc.vn\")"
 }
 
 resource "cloudflare_zero_trust_gateway_policy" "vlsi_block_private" {
@@ -249,5 +275,6 @@ resource "cloudflare_zero_trust_gateway_policy" "vlsi_block_private" {
   # above already claims the one public-looking destination the group needs (the Coder
   # hostname, matched on SNI before this rule). Only the allow needs to be there: a request
   # that reaches Coder matches 100 first, everything else private matches here.
-  traffic = "identity.groups.id == \"${var.grp_vlsi_id}\" and any(net.dst.ip[*] in {10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10})"
+  identity = "any(identity.groups.id[*] in {\"${var.grp_vlsi_id}\"})"
+  traffic  = local.private_l4_traffic
 }

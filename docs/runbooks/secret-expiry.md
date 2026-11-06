@@ -117,6 +117,26 @@ Several also lack the `owner` tag (`kb-dev-db-*`, the `*-db-readonly`, `r2-backu
 Identifiers that never rotate (`*-mcp-access-aud`, `*-client-id`, the platform-admin roster) stay
 without an expiry on purpose.
 
+## Cloudflare account tokens held outside Key Vault
+
+The weekly watcher reads Key Vault tags. It cannot read a Cloudflare token, and no
+automation identity holds `API Tokens: Read` (by design — see
+`sa-notes/reviews/cf-tokens-2026-11-06.md`). So these dates live here, with a calendar
+reminder 30 days before each, and the R2 tokens' deadlines live on their Key Vault
+secrets as the `expires` tag (`scripts/owner/set-cf-token-expiry-tags.sh`).
+
+| Token | Held in | Expires (owner audit 2026-11-06) |
+| --- | --- | --- |
+| `qnsc-infra-apply` | GitHub environment `production` secret `CLOUDFLARE_API_TOKEN` | **no expiry — roll with one, then record** |
+| `qnsc-infra-drift-readonly` | repo secret `CLOUDFLARE_API_TOKEN_READONLY` | 2027-10-12 |
+| `rova-ci-workers-deploy` | rova + opshub environment secret `CLOUDFLARE_WORKERS_API_TOKEN` | 2027-10-31 |
+| `qnsc-onprem-oidc` | owner-local (1Password; not in GitHub) | 2027-11-03 |
+| `pbs-offsite-sync` | 1Password, `docs/runbooks/pbs-offsite.md` | **no expiry — roll with one** |
+
+Rotation order for these is always: create the new token → update the GitHub secret
+(or 1Password item) → run the consumer once → delete the old token. A token in GitHub
+cannot be expired first; the workflow that reads it fails the moment it is.
+
 ## Rotation
 
 - Sign-in app client secrets: `scripts/rotate-signin-secret.sh` (creates the credential, writes the

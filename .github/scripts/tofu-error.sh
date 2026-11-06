@@ -9,7 +9,11 @@
 # the file. This script prints the diagnostics and nothing else:
 #
 #   * the `╷ … ╵` error boxes, when OpenTofu wrote them (a TTY-less run may not);
-#   * otherwise the plain `Error: …` blocks (summary + indented detail, up to the blank line);
+#   * otherwise every `Error:`/`Warning:` block WHOLE — summary, the source lines AND the
+#     un-indented detail that follows the blank line (that is where the provider puts the HTTP
+#     status and the API body; the first version cut there and hid the cause of the 2026-11-06
+#     failure). A failed run prints its diagnostics at the END of the stream, so everything from
+#     the first diagnostic on is failure output; nothing printed before it is.
 #   * otherwise one line saying no diagnostics were found — never the body, and never silence.
 #
 # Values inside the text are already masked by the step's `::add-mask::` (the guard masks every
@@ -27,16 +31,20 @@ if grep -q '╷' "$file"; then
   exit 0
 fi
 
-if grep -qE '^(│ )?Error: ' "$file"; then
-  # The Error block: the summary, its indented detail and the blank lines inside it. It ends at the
-  # next line that starts at column 0 (the plain form puts nothing else at the left margin except
-  # another Error), so text after the block — plan body, progress lines — is never printed.
+if grep -qE '^(│ )?(Error|Warning): ' "$file"; then
+  # Print EACH diagnostic block WHOLE: from `Error:`/`Warning:` to the next one or EOF, including the
+  # un-indented detail text that follows the blank line (the provider puts the HTTP status and the API
+  # body there — cutting at the first column-0 line hid the cause of the 2026-11-06 apply failure).
+  # Plan/apply body text sits between diagnostics, never inside one, and this file is only produced by
+  # a run that failed.
   awk '
-    /^(│ )?Error: / { p = 1 }
-    p {
-      if ($0 !~ /^[[:space:]]/ && $0 !~ /^(│ )?Error: / && $0 != "") { p = 0; next }
+    /^(│ )?(Error|Warning): / {
+      if (p) print ""
+      p = 1
       print
-    }' "$file"
+      next
+    }
+    p { print }' "$file"
   exit 0
 fi
 

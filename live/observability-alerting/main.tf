@@ -109,8 +109,8 @@ resource "grafana_folder" "slos" {
   title             = "SLOs"
 }
 
-# Rally's own subfolder — created HERE, ONCE, not inside rally's own stack
-# module. A real bug this shipped as: rally's develop and prod environments
+# rova's own subfolder — created HERE, ONCE, not inside rova's own stack
+# module. A real bug this shipped as: rova's develop and prod environments
 # are separate Terraform ROOT MODULES with separate state files, so each
 # one's `grafana_folder.product_dashboards` independently created its OWN
 # "Rally" folder the moment prod applied for the first time — two real,
@@ -118,17 +118,27 @@ resource "grafana_folder" "slos" {
 # only that one environment's dashboards. Centralizing it here is the same
 # fix as `alerts_folder_uid`/`dashboards_folder_uid` already being resolved
 # once and passed DOWN as a plain UID input, not re-derived per environment.
-resource "grafana_folder" "rally_dashboards" {
+#
+# RENAMED 2026-11-06: the product has been rova since long before this
+# folder was created; "Rally" was the old name. The UID is kept by the
+# `moved` block at the end of this file, so dashboards inside never move and
+# the product's own stack keeps working with the same folder UID.
+resource "grafana_folder" "rova_dashboards" {
   parent_folder_uid = grafana_folder.dashboards.uid
-  title             = "Rally"
+  title             = "rova"
 }
 
-# opshub's own subfolder — same centralization as rally_dashboards above, done
-# up front this time instead of discovered via a duplicate-folder incident.
-resource "grafana_folder" "opshub_dashboards" {
-  parent_folder_uid = grafana_folder.dashboards.uid
-  title             = "Opshub"
+moved {
+  from = grafana_folder.rally_dashboards
+  to   = grafana_folder.rova_dashboards
 }
+
+# The empty "Opshub" dashboard subfolder was REMOVED (audit 2026-11-06): it was
+# created up front like rova's, but nothing ever populated it — opshub has no
+# dashboards of its own here. Product RED is covered by the shared
+# "Products (RED)" dashboard in dashboards.tf, so an empty per-product folder
+# is dead structure. If opshub later ships its own detailed dashboard, create
+# the folder in the same PR that fills it.
 
 # Resolved directly, not via a dashboard template variable: a Grafana
 # dashboard template var of type "datasource" needs a populated `current`
@@ -196,8 +206,8 @@ resource "grafana_dashboard" "system_overview" {
         gridPos    = { h = 8, w = 12, x = 0, y = 0 }
         datasource = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
         targets = [{
-          expr         = "sum(rate(http_server_requests_total[5m])) by (service_namespace, deployment_environment_name)"
-          legendFormat = "{{service_namespace}} ({{deployment_environment_name}})"
+          expr         = "sum(rate(http_server_duration_milliseconds_count[5m])) by (job, deployment_environment_name)"
+          legendFormat = "{{job}} ({{deployment_environment_name}})"
           refId        = "A"
         }]
       },
@@ -222,14 +232,14 @@ resource "grafana_dashboard" "system_overview" {
         targets = [{
           expr = join("", [
             "(",
-            "sum(rate(http_server_errors_total[5m])) by (service_namespace, deployment_environment_name)",
+            "sum(rate(http_server_duration_milliseconds_count{status_class=~\"5xx\"}[5m])) by (job, deployment_environment_name)",
             " or ",
-            "sum(rate(http_server_requests_total[5m])) by (service_namespace, deployment_environment_name) * 0",
+            "sum(rate(http_server_duration_milliseconds_count[5m])) by (job, deployment_environment_name) * 0",
             ")",
             " / ",
-            "sum(rate(http_server_requests_total[5m])) by (service_namespace, deployment_environment_name)",
+            "sum(rate(http_server_duration_milliseconds_count[5m])) by (job, deployment_environment_name)",
           ])
-          legendFormat = "{{service_namespace}} ({{deployment_environment_name}})"
+          legendFormat = "{{job}} ({{deployment_environment_name}})"
           refId        = "A"
         }]
       },
@@ -241,8 +251,8 @@ resource "grafana_dashboard" "system_overview" {
         datasource  = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
         fieldConfig = { defaults = { unit = "ms" } }
         targets = [{
-          expr         = "histogram_quantile(0.99, sum(rate(http_server_duration_milliseconds_bucket[5m])) by (le, service_namespace, deployment_environment_name))"
-          legendFormat = "{{service_namespace}} ({{deployment_environment_name}})"
+          expr         = "histogram_quantile(0.99, sum(rate(http_server_duration_milliseconds_bucket[5m])) by (le, job, deployment_environment_name))"
+          legendFormat = "{{job}} ({{deployment_environment_name}})"
           refId        = "A"
         }]
       },
@@ -300,10 +310,10 @@ resource "grafana_contact_point" "email" {
 }
 
 resource "grafana_notification_policy" "root" {
-  # Develop (and any alert without env=production) goes to email only. Prod adds Teams,
+  # Develop (and any alert without env=prod) goes to email only. Prod adds Teams,
   # via the first child below, and email via the second; a matched child stops
-  # the root, so prod lists both explicitly. The env label is "production" in the
-  # prod stacks (live/prod env = "production"), "development" in dev (alert label).
+  # the root, so prod lists both explicitly. The env label is "prod" in the
+  # prod stacks (live/prod env = "prod"), "dev" in dev (alert label).
   contact_point = grafana_contact_point.email.name
   # "env" is REQUIRED here, not "product" alone — caught in a pre-prod
   # audit, before it could bite: with only develop's alert rules active
@@ -319,21 +329,13 @@ resource "grafana_notification_policy" "root" {
   # alert is exactly the kind of noise that trains people to ignore it.
   repeat_interval = "12h"
 
-  # DEV → TEAMS, opt-in per rule (owner 2026-11-01 fast track). Dev stays email
-  # by default (the root contact point); a dev rule that must page carries
-  # `paging = "teams"`, and THIS child adds Teams on top of email. Two matchers
-  # are ANDed, so it cannot catch a prod rule and cannot catch any dev rule that
-  # did not opt in. Ordered before the prod children: a matched child stops the
-  # list only when `continue = false`, and this one continues so email still
-  # fires from the root.
+  # OPT-IN TEAMS (was dev-only, owner 2026-11-01; widened 2026-11-06): a rule
+  # that must page carries `paging = "teams"` on any env. Dev stays email by
+  # default (root); prod criticals are matched by the child below anyway. This
+  # child sits first and continues, so email still fires from the root.
   dynamic "policy" {
     for_each = local.alerting_enabled ? [1] : []
     content {
-      matcher {
-        label = "env"
-        match = "="
-        value = "development"
-      }
       matcher {
         label = "paging"
         match = "="
@@ -344,13 +346,25 @@ resource "grafana_notification_policy" "root" {
     }
   }
 
+  # PROD TEAMS = CRITICAL ONLY (audit 2026-11-06). The matcher used to be
+  # env=production alone, so every prod warning (filesystem 80%, NVMe wear,
+  # MCP write spike, 429, crashloop) paged Teams: the noise source. Now Teams
+  # is for `severity = "critical"`; prod warnings fall through to the email
+  # child below. A warning that MUST page carries `paging = "teams"`, caught by
+  # the dev/opt-in child above — that is how the authenticated-429 rules keep
+  # their no-friction page.
   dynamic "policy" {
     for_each = local.alerting_enabled ? [1] : []
     content {
       matcher {
         label = "env"
         match = "="
-        value = "production"
+        value = "prod"
+      }
+      matcher {
+        label = "severity"
+        match = "="
+        value = "critical"
       }
       contact_point = grafana_contact_point.teams[0].name
       continue      = true
@@ -361,7 +375,7 @@ resource "grafana_notification_policy" "root" {
     matcher {
       label = "env"
       match = "="
-      value = "production"
+      value = "prod"
     }
     contact_point = grafana_contact_point.email.name
   }
@@ -370,7 +384,7 @@ resource "grafana_notification_policy" "root" {
 # ── SERIES CAP: one rule, in billable-alert.tf ──────────────────────────────
 # This group used to carry two more copies of the cap signal (active-series
 # count at 70% and 80%). The audit (S-H3) found five rules firing on the same
-# condition; billable-alert.tf now owns the only warning (8,000) and critical
+# condition; billable-alert.tf now owns the only warning (9,000 since 2026-11-06) and critical
 # (10,000) pair on the org BILLABLE meter, which is the one the Free cap
 # actually enforces. The System Overview dashboard keeps the active-series
 # panel above for eyeballing the number.
@@ -419,8 +433,8 @@ resource "grafana_rule_group" "security_fail_open" {
       # NoData and reported OK forever. `alert_env` is the alert label, which
       # must match the notification policy and every other dev rule
       # ("development"), not the stream value.
-      develop    = { namespaces = ".+-dev", alert_env = "development", severity = "warning" }
-      production = { namespaces = ".+-prod", alert_env = "production", severity = "critical" }
+      develop    = { namespaces = ".+-dev", alert_env = "dev", severity = "warning" }
+      production = { namespaces = ".+-prod", alert_env = "prod", severity = "critical" }
     }
     iterator = env_rule
     content {
@@ -551,16 +565,6 @@ import {
 import {
   to = grafana_folder.slos
   id = "0:ffwpy0lokzcw0e"
-}
-
-import {
-  to = grafana_folder.rally_dashboards
-  id = "0:cfwpy0n7xqcqoc"
-}
-
-import {
-  to = grafana_folder.opshub_dashboards
-  id = "0:cfwqtc9gtooowd"
 }
 
 import {

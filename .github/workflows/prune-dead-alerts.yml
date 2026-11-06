@@ -61,3 +61,16 @@ jobs:
             args+=(--apply --confirm "$CONFIRM")
           fi
           python3 scripts/prune_dead_rova_alerts.py "${args[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # Backups must outlive the runner. The script writes the rule group, the
+      # SLO and each dashboard into prune-backups/ BEFORE the first delete; a
+      # failed backup aborts with nothing deleted. Always upload: on a partial
+      # failure these files are exactly what a rollback needs.
+      - name: Upload prune backups
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: prune-backups
+          path: prune-backups/
+          retention-days: 90
+          if-no-files-found: warn

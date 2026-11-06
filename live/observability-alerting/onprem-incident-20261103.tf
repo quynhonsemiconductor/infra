@@ -16,8 +16,8 @@
 # the same change, and the rova prod readyz check (rova-prod.tf) moved to 60s
 # from two probes.
 #
-# Labels route through the notification policy: env=production pages Teams +
-# email; env=development is email (plus Teams only with paging=teams).
+# Labels route through the notification policy: env=prod pages Teams +
+# email; env=dev is email (plus Teams only with paging=teams).
 # =============================================================================
 locals {
   onprem_incident_rules = {
@@ -34,10 +34,11 @@ locals {
       threshold = 0.8
       for       = "5m"
       no_data   = "OK"
-      product   = "rova"
-      env       = "production"
-      severity  = "critical"
-      summary   = "Postgres {{ $labels.cnpg_cluster }} ({{ $labels.pod }}) is using over 80% of max_connections for 5 minutes. New connections will soon be refused; check pool sizes and long-held sessions."
+      # platform: covers every prod cluster (pg-rova, pg-opshub, pg-kb).
+      product  = "platform"
+      env      = "prod"
+      severity = "critical"
+      summary  = "Postgres {{ $labels.cnpg_cluster }} ({{ $labels.pod }}) is using over 80% of max_connections for 5 minutes. New connections will soon be refused; check pool sizes and long-held sessions."
     }
     pg_connections_dev = {
       name      = "k3s-pg-connections-over-80-percent-dev"
@@ -47,7 +48,7 @@ locals {
       for       = "5m"
       no_data   = "OK"
       product   = "platform"
-      env       = "development"
+      env       = "dev"
       severity  = "warning"
       summary   = "Dev Postgres {{ $labels.cnpg_cluster }} ({{ $labels.pod }}) is using over 80% of max_connections for 5 minutes."
     }
@@ -55,13 +56,13 @@ locals {
       name = "k3s-deployment-unavailable-prod"
       # Missing replicas per Deployment. A normal rolling update closes the gap
       # well inside 5 minutes; a stuck rollout or a crash loop does not.
-      expr      = "max by (namespace, deployment) (kube_deployment_spec_replicas{cluster=\"qnsc-onprem\", namespace=~\"rova-prod|opshub-prod|kb-prod|data-prod\"} - kube_deployment_status_replicas_available{cluster=\"qnsc-onprem\", namespace=~\"rova-prod|opshub-prod|kb-prod|data-prod\"})"
+      expr      = "max by (namespace, deployment) (kube_deployment_spec_replicas{cluster=\"qnsc-onprem\", namespace=~\"rova-prod|opshub-prod|kb-prod|ai|data-prod\"} - kube_deployment_status_replicas_available{cluster=\"qnsc-onprem\", namespace=~\"rova-prod|opshub-prod|kb-prod|ai|data-prod\"})"
       op        = "gt"
       threshold = 0
       for       = "5m"
       no_data   = "OK"
       product   = "platform"
-      env       = "production"
+      env       = "prod"
       severity  = "critical"
       summary   = "Deployment {{ $labels.namespace }}/{{ $labels.deployment }} has had fewer available replicas than desired for 5 minutes."
     }
@@ -249,7 +250,7 @@ resource "grafana_rule_group" "onprem_apparmor" {
 
     labels = {
       product  = "platform"
-      env      = "production"
+      env      = "prod"
       severity = "critical"
     }
 

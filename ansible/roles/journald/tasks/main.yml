@@ -1,0 +1,27 @@
+---
+# One drop-in for every host (pve01 via pve_base, the three VMs via vm_guest). A drop-in rather than
+# /etc/systemd/journald.conf so the distribution file stays as shipped and an operator can see in one
+# directory what this project changed.
+- name: The journald drop-in directory exists
+  ansible.builtin.file:
+    path: "{{ journald_conf_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Journal disk limits (SystemMaxUse / SystemKeepFree)
+  ansible.builtin.template:
+    src: 90-qnsc.conf.j2
+    dest: "{{ journald_conf_file }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart systemd-journald
+
+# The caps are enforced from the next write on; the restart is what makes them visible in
+# `systemctl show systemd-journald -p SystemMaxUse` and in `journalctl --disk-usage` behaviour.
+- name: Start systemd-journald with the limits
+  ansible.builtin.systemd_service:
+    name: systemd-journald
+    state: started

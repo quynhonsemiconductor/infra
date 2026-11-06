@@ -236,6 +236,27 @@ jobs:
       - name: live/identity static guard
         run: sh live/identity/tests/static.sh
 
+      # live/edge's wirefilter strings are opaque to `tofu validate`; the API rejects a wrong selector
+      # only at apply time (identity.groups.id is an Array(Bytes): "cannot perform this operation on
+      # type Array(Bytes)", 2026-11-06). This greps the array form in, on every PR.
+      - name: live/edge static guard
+        run: sh live/edge/tests/static.sh
+
+      # The observability audit round (2026-11-06) shipped four new rules with
+      # env="production" while the policy matches env="prod" — a critical that
+      # never reaches Teams. Plan-free grep, same pattern as the identity guard.
+      - name: live/observability-alerting static guard
+        run: sh live/observability-alerting/tests/static.sh
+
+      # prune_dead_rova_alerts.py (owner, destructive): a local HTTP server
+      # stands in for Grafana, so the SLO-plugin path (`/api/plugins/
+      # grafana-slo-app/resources/v1/slo`) is pinned — the core `/api/v1/slo`
+      # 404ed the owner's first dry run on 2026-11-06. Also proves the
+      # read-validate-all-then-delete order, the dashboard backup files, and the
+      # title-mismatch refusal before any DELETE.
+      - name: prune-dead-alerts (offline test)
+        run: python3 -m unittest scripts/test_prune_dead_rova_alerts.py
+
       # The owner apply kit builds live/identity's TF_VAR_* from read-only az/op lookups. This runs it against
       # stub az/op and captured-shape fixtures: no credential, no live call; every broken input must stop it.
       - name: identity apply kit (offline test)
@@ -254,6 +275,15 @@ jobs:
       # mention does not, and --apply calls only `secret delete`.
       - name: prune-kv-secrets (offline test)
         run: bash scripts/owner/prune-kv-secrets_test.sh
+
+      # cf-tokens-audit.sh (owner, Cloudflare token audit): the policy summariser
+      # crashed on a resource of "*" (owner run 2026-11-06). Fixtures lock the
+      # object, string, mixed and empty shapes; --policy-fixture is offline.
+      - name: cf-tokens-audit (offline test)
+        run: bash scripts/owner/test_cf_tokens_audit.sh
+
+      - name: shellcheck the Cloudflare token scripts
+        run: shellcheck scripts/owner/cf-tokens-audit.sh scripts/owner/set-cf-token-expiry-tags.sh scripts/owner/test_cf_tokens_audit.sh
 
   # ───────────────────────────────────────────────────────────────────────
   # tflint — NOT a required check yet, deliberately.
