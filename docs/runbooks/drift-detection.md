@@ -49,8 +49,11 @@ values), through the owner apply kit:
 
 - the kit builds every required `TF_VAR_*` from read-only `az` lookups, so no id lives in Git;
 - both passes write to `live/identity/refresh.txt` / `plan.txt` and **never to the log or the step
-  summary**; a red identity stack says "details withheld" on purpose. Run the plan locally with
-  `scripts/owner/identity-env/identity-env.sh -- tofu plan` to see it.
+  summary**;
+- the destructive-guard classifier is **skipped for identity**: its `drift_report.py` prints drifted
+  resource addresses, and the identity `for_each` keys are user/app object ids. A red identity stack
+  (exit 2) shows one "details withheld" line and nothing else; run
+  `scripts/owner/identity-env/identity-env.sh -- tofu plan` locally to see it.
 
 Required repository secrets (owner, add once):
 

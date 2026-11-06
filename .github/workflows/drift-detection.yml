@@ -102,8 +102,9 @@ jobs:
           # REFRESH-ONLY comparison belongs here. It is planned with the same read identity
           # (Directory Readers reads app/group metadata and credential DATES, never values), through
           # the owner apply kit so every required TF_VAR_* comes from read-only lookups. Its plan text
-          # is written to a file and NEVER printed: this repo is public and the summary would expose
-          # break-glass UPNs and the Entra role layout. Required repo secrets (owner):
+          # is written to a file and NEVER printed, and the destructive-guard classifier is SKIPPED:
+          # drift_report.py prints drifted resource ADDRESSES, and the identity for_each keys are user
+          # and app object ids. This repo is public; exit 2 is red with a "details withheld" line only. Required repo secrets (owner):
           # IDENTITY_OWNER_OPERATOR_UPN, IDENTITY_SECOND_OWNER_UPN, IDENTITY_PROXMOX_HOST,
           # IDENTITY_PBS_HOST.
           - identity
@@ -301,7 +302,7 @@ jobs:
       # Output `class`: 2 matters, 3 informational, 0 none, 1 could not classify.
       - name: Classify external drift
         id: classify
-        if: ${{ steps.refresh.outputs.exitcode == '2' || steps.refresh_identity.outputs.exitcode == '2' }}
+        if: ${{ steps.refresh.outputs.exitcode == '2' }}
         uses: quynhonsemiconductor/ci/actions/destructive-guard@956804ad4aa2dcf930909553d306d72b3708fd5d # v1.34.1+ci#308
         with:
           mode: drift
@@ -331,31 +332,45 @@ jobs:
           {
             echo "## \`$stack\`"
             echo ""
-            case "$refresh" in
-              0) echo "- External drift: **none**" ;;
-              2) case "$class" in
-                   3) echo "- External drift: informational only (provider-computed attributes), listed above" ;;
-                   *) echo "- External drift: **DETECTED** — reality diverged from state" ;;
-                 esac ;;
-              *) echo "- External drift: :warning: refresh-only errored (exit $refresh)" ;;
-            esac
-            case "$plan" in
-              0) echo "- Unapplied config: **none** — main matches reality" ;;
-              2) echo "- Unapplied config: **DETECTED** — main has changes never applied" ;;
-              *) echo "- Unapplied config: :warning: plan errored (exit $plan)" ;;
-            esac
-            if [ "$stack" != "identity" ] && { [ "$refresh" = "2" ] || [ "$plan" = "2" ]; }; then
-              echo ""
-              echo "<details><summary>plan output</summary>"
-              echo ""
-              echo '```'
-              tail -c 8000 plan.txt 2>/dev/null || true
-              echo '```'
-              echo ""
-              echo "</details>"
-            elif [ "$stack" = "identity" ] && { [ "$refresh" = "2" ] || [ "$plan" = "2" ]; }; then
-              echo ""
-              echo "Details are withheld on purpose: this repository is public and the identity plan names break-glass accounts and the role layout. Run \`tofu plan\` with the owner kit locally."
+            if [ "$stack" = "identity" ]; then
+              # NEVER print a drifted ADDRESS for identity: the destructive-guard
+              # classifier (drift_report.py) prints them, and the identity
+              # for_each keys are user/app OBJECT IDS. The step is excluded above.
+              # Exit 2 is red with this one line; the owner runs the kit locally.
+              if [ "$refresh" = "2" ] || [ "$plan" = "2" ]; then
+                echo "- Drift: **detected** — details withheld, this repository is public. Run \`scripts/owner/identity-env/identity-env.sh -- tofu plan\` locally."
+              fi
+              # An errored pass is not drift and names nothing secret; keep it visible.
+              if [ "$refresh" != "0" ] && [ "$refresh" != "2" ]; then
+                echo "- External drift: :warning: refresh-only errored (exit $refresh)"
+              fi
+              if [ "$plan" != "0" ] && [ "$plan" != "2" ]; then
+                echo "- Unapplied config: :warning: plan errored (exit $plan)"
+              fi
+            else
+              case "$refresh" in
+                0) echo "- External drift: **none**" ;;
+                2) case "$class" in
+                     3) echo "- External drift: informational only (provider-computed attributes), listed above" ;;
+                     *) echo "- External drift: **DETECTED** — reality diverged from state" ;;
+                   esac ;;
+                *) echo "- External drift: :warning: refresh-only errored (exit $refresh)" ;;
+              esac
+              case "$plan" in
+                0) echo "- Unapplied config: **none** — main matches reality" ;;
+                2) echo "- Unapplied config: **DETECTED** — main has changes never applied" ;;
+                *) echo "- Unapplied config: :warning: plan errored (exit $plan)" ;;
+              esac
+              if [ "$refresh" = "2" ] || [ "$plan" = "2" ]; then
+                echo ""
+                echo "<details><summary>plan output</summary>"
+                echo ""
+                echo '```'
+                tail -c 8000 plan.txt 2>/dev/null || true
+                echo '```'
+                echo ""
+                echo "</details>"
+              fi
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
