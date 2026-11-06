@@ -27,12 +27,19 @@ Adding a repo to `repos.tf` or a ruleset to `rulesets.tf` is one map entry. The
 resource is already in state). A ruleset entry **with** an `id` is imported; one
 **without** an `id` is created, and the ruleset import block filters those out.
 
-`VLSIT_RTL_Generator_AI_Model` and `mcp-tools` are deliberately absent from
-`repos.tf`: the owner archives both by hand (2026-11-06; `mcp-tools` after its
-retirement PRs apply), and a `github_repository` resource defaults `archived = false`,
-so it would un-archive either repo on the next apply. `product-docs` has merge settings
-here but no ruleset: it is the only private repo, and the Free plan has no rulesets on
-private repositories.
+`VLSIT_RTL_Generator_AI_Model` was archived by the owner on 2026-11-06, and
+`mcp-tools` follows after its retirement PRs apply. Both are absent from `repos.tf`:
+they are read-only and need no merge settings. `archived` is in `ignore_changes`, so
+archiving any managed repo by hand is never undone by an apply. `product-docs` has merge
+settings here but no ruleset: it is the only private repo, and the Free plan has no
+rulesets on private repositories. Its description is not copied into this public repo —
+`description` is in `ignore_changes`, so the live value stays untouched.
+
+`opc` is protected (PR required, one approval, squash only) but has **no required status
+checks yet**: its only checks come from CodeQL default setup, which has reported on `main`
+only, never on a pull request. Requiring them would block every opc PR. Add them once a
+throwaway PR has shown them reporting. `code-review` requires the three `Analyze (...)`
+jobs its own CodeQL workflow runs on PRs.
 
 **Settings that differ from "squash only, delete branch on merge, auto-merge off"**
 (imported as they are; each is one value in the `repos` map): merge commits allowed on
@@ -230,5 +237,22 @@ Merging before step 1 makes `apply-github` fail loudly (no app credentials); not
 export GITHUB_TOKEN=...           # any token with Administration + Environments read; from your own shell, never argv or Git
 cd live/github
 tofu init -backend=false          # local state; the real state is on Azure
-tofu plan                         # 50 to import on an empty state
+tofu plan                         # imports + adds on an empty state; phantom `~` on every repo, see above
 ```
+
+### Owner's pre-apply admin plan (2026-11-06 import)
+
+Paste this before approving the `production` apply. It reads the REAL state with an admin
+token, so merge settings and bypass actors are visible and no phantom diff appears:
+
+```sh
+cd ~/Desktop/qnsc/infra/live/github
+az login --tenant <tenant-domain>     # identity with Storage Blob Data Contributor on stqnsctfstate
+tofu init                             # real backend, key infra/github/terraform.tfstate
+GITHUB_TOKEN=$(gh auth token) tofu plan -lock=false
+```
+
+Expected for the 2026-11-06 change: **`Plan: 12 to import, 16 to add, 0 to change, 0 to
+destroy`** — the 12 new repo imports, 12 `github_actions_repository_permissions` objects
+and the 4 new rulesets are `+`/import only, with **no `~` (update-in-place) on any of the
+12 repos**. Any `~` is a finding: stop and read it before approving.

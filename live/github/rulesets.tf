@@ -457,8 +457,11 @@ locals {
 
     # ── opc ─────────────────────────────────────────────────────────
     # Created 2026-11-06 (no `id`): the repo had no ruleset and no branch
-    # protection. opc has no workflow files; its only PR checks come from
-    # GitHub's CodeQL default setup, so those two are the required set.
+    # protection. NO required status checks yet: opc has no workflow files, and
+    # the CodeQL default-setup analyses have reported only on `main`, never on a
+    # pull request. Requiring them would block every opc PR forever. Add them
+    # (strict, both `Analyze (...)` contexts) once a throwaway PR has shown them
+    # reporting on a PR.
     "opc/main-protection" = {
       repo    = "opc"
       name    = "main-protection"
@@ -473,14 +476,6 @@ locals {
         last_push_approval = true
         thread_resolution  = true
         merge_methods      = ["squash"]
-      }
-      status_checks = {
-        strict                   = true
-        do_not_enforce_on_create = true
-        checks = [
-          { context = "Analyze (python)", integration_id = local.app_github_actions_id },
-          { context = "Analyze (javascript-typescript)", integration_id = local.app_github_actions_id },
-        ]
       }
     }
     "opc/tag-protection" = {

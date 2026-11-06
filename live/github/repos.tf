@@ -11,11 +11,11 @@
 # for repos where a ruleset is later removed.
 #
 # Two repos are deliberately ABSENT:
-#   VLSIT_RTL_Generator_AI_Model — the owner archives it by hand on 2026-11-06.
+#   VLSIT_RTL_Generator_AI_Model — archived by the owner on 2026-11-06 (done).
 #   mcp-tools — retired by owner decision on 2026-11-06; the owner archives it
-#     by hand after the retirement PRs apply. A github_repository resource here
-#     defaults `archived = false`, so it would UN-archive either repo on the
-#     next apply.
+#     by hand after the retirement PRs apply.
+# Both are read-only and need no merge settings. The resource also ignores
+# `archived`, so a repo the owner archives later is never re-opened by an apply.
 # =============================================================================
 locals {
   repos = {
@@ -65,9 +65,11 @@ locals {
       description = "PIDC (Pisico Data Center) marketing site — Astro, EN/VI, Cloudflare Pages"
     }
     "product-docs" = {
-      auto_merge  = false, merge_commit = true, rebase_merge = true, delete_branch = false # merge_commit/rebase_merge/delete_branch: target false/false/true
-      has_wiki    = false, visibility = "private"
-      description = "Central BA & product design docs (requirements, specs, mockups, diagrams) across QNSC-VN projects"
+      auto_merge = false, merge_commit = true, rebase_merge = true, delete_branch = false # merge_commit/rebase_merge/delete_branch: target false/false/true
+      has_wiki   = false, visibility = "private"
+      # description deliberately omitted: this repo is public, and the private
+      # repo's description must not be copied into it. `ignore_changes =
+      # [description]` below leaves the live description in place.
     }
     "qnsc-kb-backend" = {
       auto_merge = false, merge_commit = false, rebase_merge = true, delete_branch = true
@@ -127,8 +129,19 @@ resource "github_repository" "this" {
 
   # Deleting a repository by removing a line from a map is not a change anyone
   # means to make in a PR.
+  #
+  # `description`: this stack is public; the one private repo's description must
+  # not be copied here, so it is omitted from the map above and never managed.
+  # The lifecycle block is per-resource (not per-instance), so this leaves every
+  # repo's live description alone; the public descriptions are documentation, not
+  # policy.
+  #
+  # `archived`: the owner archives repos by hand (VLSIT done; mcp-tools and
+  # others later). The provider's default for the attribute is false, so without
+  # this an apply would UN-archive a repo the owner archived.
   lifecycle {
     prevent_destroy = true
+    ignore_changes  = [description, archived]
   }
 }
 
