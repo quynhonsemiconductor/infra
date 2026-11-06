@@ -22,7 +22,14 @@
 # set_database_context. The JWT the API verifies carries THIS app's aud.
 
 locals {
-  kb_dev_mcp_live  = contains(local.cutover_live, "kb-dev.qnsc.vn")
+  kb_dev_mcp_live = contains(local.cutover_live, "kb-dev.qnsc.vn")
+
+  # COUPLED ON PURPOSE to local.mcp_portal_live (mcp_portal.tf), which is the
+  # rova-dev cutover flag: the portal is ONE resource owned by that gate, so a
+  # server registration without a portal cannot exist. If rova-dev ever leaves
+  # `cutover`, the portal (and this registration) would be destroyed — a
+  # portal-wide decision, reviewed in mcp_portal.tf, not a silent side effect of
+  # this file. A separate "portal exists" variable would only hide that.
   kb_dev_in_portal = local.kb_dev_mcp_live && local.mcp_portal_live
 }
 
