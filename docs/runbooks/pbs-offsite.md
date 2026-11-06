@@ -102,6 +102,9 @@ The token is **not** IaC (Cloudflare has no API for minting tokens):
    - Bucket scope: **Only `qnsc-pbs-offsite`** (never account-wide);
    - TTL: none (a sync job runs forever); rotate by creating a replacement and re-running the Ansible run
      with the new keys.
+   - If the token has a **start date**, it must be **today**: a future start date authenticates nothing and
+     `s3 check` answers 403 with no hint. This cost an hour on 2026-11-06 — set the start date to the
+     moment of creation, never "tomorrow".
 2. Store the pair in 1Password as an **API Credential** item named
    **"PBS - R2 off-site sync"** — the field names are what `op read` below uses:
 
@@ -144,18 +147,31 @@ Notes:
   the upload starves the VMs.
 - Sync copies the encrypted chunks as they are: a key that is lost **after** a sync loss is still fatal, so
   the key drill in §0 is not optional.
-- PBS 4.2 or newer is required for S3 datastores (`proxmox-backup-manager --version`).
+- PBS 4.2 or newer is required for S3 datastores. Check with `proxmox-backup-manager versions --output-format json` (`--version` is not a command).
 
-Verify after the first run:
+Verify after the first run (`proxmox-backup-manager` has **no `snapshot` subcommand** — do not try one):
 
 ```sh
 proxmox-backup-manager sync-job show qnsc-offsite-weekly | grep -i encrypted   # encrypted-only: true
 proxmox-backup-manager datastore list                     # qnsc-offsite, used > 0
-proxmox-backup-manager snapshot list qnsc-offsite --output-format json | jq length
 proxmox-backup-manager verify-job list                    # qnsc-offsite-verify, weekly
-# the sync task log: skipped snapshots are the unencrypted ones (expected until they are pruned)
+
+# What the datastore actually holds: ask the PBS CLIENT, not the manager (this is the same repository
+# form §3 uses).
+proxmox-backup-client snapshot list --repository backup@pbs@127.0.0.1:qnsc-offsite \
+  --keyfile /etc/pve/priv/storage/pbs-qnsc.enc | wc -l
+
+# What PVE recorded for the nightly run — and, once encryption is on, which snapshots are encrypted.
+pvesh get /nodes/$(hostname)/storage/pbs-qnsc/content --output-format json \
+  | jq '[.[] | {volid, encrypted}] | .[-5:]'
+
+# The sync task log: "skipped" lines are the UNENCRYPTED snapshots (expected until they are pruned).
 ls -t /var/log/proxmox-backup/tasks/ | head
 ```
+
+Before the first encrypted backup exists, an off-site sync legitimately reports **"no new data"** — with
+`--encrypted-only` there is nothing to copy yet. That is the expected state right after the setup, not a
+failure.
 
 ### 2.1 R2 token rotation
 

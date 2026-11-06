@@ -651,21 +651,16 @@
       changed_when: false
       check_mode: false
 
+    - name: Load the version expression (shared with tests/pbs_version.yml)
+      ansible.builtin.include_vars:
+        file: "{{ role_path }}/vars/version.yml"
+
     - name: The PBS is new enough for an S3 datastore and encrypted-only sync
-      vars:
-        pbs_version: >-
-          {{ (pbs_versions_raw.stdout | from_json
-              | selectattr('name', 'equalto', 'proxmox-backup-server')
-              | map(attribute='ExtraInfo', default='') | list
-              | first | default('', true)
-              | regex_search('running version:\\s*([0-9.]+)', '\\1')
-              | default([], true) | first | default('', true))
-             | default('0', true) }}
       ansible.builtin.assert:
-        that: pbs_version is version('4.2', '>=')
+        that: pbs_version_parsed is version('4.2', '>=')
         fail_msg: >-
-          PBS {{ pbs_version }} is too old (or its version could not be read) : S3 datastores need 4.2 or
-          newer and --encrypted-only needs 4.0+. `apt update && apt dist-upgrade` on pve01
+          PBS {{ pbs_version_parsed }} is too old, or its version could not be read: S3 datastores need 4.2
+          or newer and --encrypted-only needs 4.0+. `apt update && apt dist-upgrade` on the PVE host
           (server-setup.md), then re-run. To see what was parsed:
           proxmox-backup-manager versions --output-format json
         quiet: true
