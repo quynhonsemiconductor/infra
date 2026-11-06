@@ -40,6 +40,13 @@ in_traffic=$(grep -rnE 'traffic[[:space:]]*=.*identity\.' --include='*.tf' . || 
 [ -z "$in_traffic" ] || fail "an identity selector is inside a traffic expression — move it to the policy's identity attribute:
 $in_traffic"
 
+# 2b. Selector TYPES differ inside one policy: `net.dst.ip` is a scalar Ip and must never be indexed —
+#     the API answers `cannot access index MapEach for type Ip` (2026-11-06). identity.groups.id and
+#     net.sni.domains ARE arrays and keep their `[*]`.
+dstip=$(grep -rnE 'net\.dst\.ip\[\*\]' --include='*.tf' . | grep -vE ':[[:space:]]*#' || true)
+[ -z "$dstip" ] || fail "net.dst.ip is a scalar Ip — use 'net.dst.ip in {...}', not an indexed form:
+$dstip"
+
 # 3. Belt and braces: no scalar or indexed comparison, in code or comment.
 bad=$(grep -rnE 'identity\.groups\.id(\[\*\])?[[:space:]]*(==|!=)' --include='*.tf' . || true)
 [ -z "$bad" ] || fail "identity.groups.id compared with ==/!= — it is an Array(Bytes); use any(...[*] in {...}):
