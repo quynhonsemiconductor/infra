@@ -61,6 +61,8 @@ build() { # build the fixture set from scratch
   echo "{\"id\":\"$(g 2 2)\"}" >"$FX/group-grp-qnsc-dev-users"
   echo "{\"id\":\"$(g 3 1)\"}" >"$FX/me"
   echo "{\"id\":\"$(g 3 2)\"}" >"$FX/user-second@tenant.example"
+  echo "{\"id\":\"$(g 3 6)\",\"userType\":\"Member\"}" >"$FX/user-owner@tenant.example"
+  echo "{\"id\":\"$(g 3 7)\",\"userType\":\"Guest\"}" >"$FX/user-owner-guest@tenant.example"
   echo "{\"id\":\"$(g 3 3)\",\"userType\":\"Member\"}" >"$FX/user-dev@tenant.example"
   echo "{\"id\":\"$(g 3 4)\",\"userType\":\"Guest\"}" >"$FX/user-guest@tenant.example"
   echo "{\"id\":\"$(g 3 5)\"}" >"$FX/user-nouser@tenant.example"
@@ -221,6 +223,17 @@ build; run env TF_VAR_dev_app_extra_owner_object_ids='{"opshub_dev":["stale"]}' 
   sh -c 'printf "%s" "${TF_VAR_dev_app_extra_owner_object_ids-UNSET}"' >"$T/stale.txt" 2>/dev/null \
   || fail "stale export: run mode"
 [ "$(cat "$T/stale.txt")" = UNSET ] || fail "a stale TF_VAR_dev_app_extra_owner_object_ids reached the child"
+
+# 1c. owner operator override: CI has no signed-in user; the UPN resolves to the same object id
+build
+run env IDENTITY_OWNER_OPERATOR_UPN="owner@tenant.example" bash "$SCRIPT" -- \
+  sh -c 'printf "%s" "$TF_VAR_owner_operator_object_id"' >"$T/owner.txt" 2>/dev/null \
+  || fail "owner operator override: run mode"
+[ "$(cat "$T/owner.txt")" = "$(g 3 6)" ] || fail "owner operator override: wrong id"
+grep -q 'v1.0/users/owner%40tenant.example' "$FX/calls.log" || fail "owner operator not read via Graph"
+build; out="$T/out.ownerguest"
+if run env IDENTITY_OWNER_OPERATOR_UPN="owner-guest@tenant.example" bash "$SCRIPT" >"$out" 2>&1; then fail "owner operator guest accepted"; fi
+grep -q 'STOP: IDENTITY_OWNER_OPERATOR_UPN is a guest or non-Member user' "$out" || fail "owner operator guest reason"
 
 # 2. run mode: the child sees the values (checked by shape, nothing printed), cwd is the stack dir
 CH="$T/child.out"

@@ -16,6 +16,9 @@
 #   IDENTITY_PBS_HOST           hostname of the Proxmox Backup Server admin door; the redirect URI is https://<host>/
 #                               (both are REQUIRED: the app backs both realms, runbook server-setup §3.2.1)
 # Optional:
+#   IDENTITY_OWNER_OPERATOR_UPN    the owner operator, when there is no signed-in user (CI OIDC: the read
+#                                  identity runs the nightly drift plan). Must be a Member user. Unset =
+#                                  the signed-in user, the normal owner-terminal behaviour.
 #   IDENTITY_DEV_APP_EXTRA_OWNERS  extra OWNERS for DEV sign-in apps only, as comma-separated
 #                                  app=upn pairs (e.g. opshub_dev=dev@example.com). Each UPN must be
 #                                  a Member user. Unset = no extras (empty map, today's behaviour).
@@ -77,7 +80,20 @@ put TF_VAR_platform_admins_object_id "$ADMINS_GROUP"
 put TF_VAR_grp_dev_users_object_id "$(grp_id grp-qnsc-dev-users)"
 
 # --- people --------------------------------------------------------------------------------------
-OWNER=$(az_json signed-in-user ad signed-in-user show | jq -r '.id // empty'); need_guid owner_operator_object_id "$OWNER"
+# The owner operator is normally the signed-in user. In CI (an OIDC service principal) there is no
+# signed-in user, so IDENTITY_OWNER_OPERATOR_UPN names the person instead; the lookup is the same
+# Graph users?$select=id,userType read used for the extra DEV owners, and a guest stops the run.
+if [[ -n "${IDENTITY_OWNER_OPERATOR_UPN:-}" ]]; then
+  enc=$(jq -rn --arg v "$IDENTITY_OWNER_OPERATOR_UPN" '$v|@uri')
+  me=$(az_json owner-operator rest --method get \
+    --url "https://graph.microsoft.com/v1.0/users/$enc?\$select=id,userType")
+  [[ "$(jq -r '.userType // empty' <<<"$me")" == "Member" ]] \
+    || die "IDENTITY_OWNER_OPERATOR_UPN is a guest or non-Member user"
+  OWNER=$(jq -r '.id // empty' <<<"$me")
+else
+  OWNER=$(az_json signed-in-user ad signed-in-user show | jq -r '.id // empty')
+fi
+need_guid owner_operator_object_id "$OWNER"
 put TF_VAR_owner_operator_object_id "$OWNER"
 [[ -n "${IDENTITY_SECOND_OWNER_UPN:-}" ]] || die "set IDENTITY_SECOND_OWNER_UPN"
 SECOND=$(az_json second-owner ad user show --id "$IDENTITY_SECOND_OWNER_UPN" | jq -r '.id // empty'); need_guid second_owner_object_id "$SECOND"
