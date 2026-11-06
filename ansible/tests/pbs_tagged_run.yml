@@ -1,0 +1,20 @@
+---
+# A tagged run must not reference a variable that another tag registers.
+#
+# 2026-11-06: `ansible-playbook pve-host.yml --tags pbs_offsite` failed with "pbs_cli is undefined"
+# because the stat task that registers it was tagged [pbs_install] only. The role is included here
+# normally; the tag filter comes from the command line, exactly as the owner ran it:
+#
+#   ansible-playbook -i localhost, -c local --check tests/pbs_tagged_run.yml --tags pbs_offsite
+#
+# The runner has no proxmox-backup-manager, so `pbs_cli.stat.exists` is false and the blocks that
+# need it skip — the point is that they EVALUATE instead of dying on an undefined variable.
+- name: The pbs role's tags run on their own
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Load the role (the command line's --tags filters its tasks)
+      ansible.builtin.include_role:
+        name: pbs
+      tags: [always]
