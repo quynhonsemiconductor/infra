@@ -15,6 +15,8 @@
 #   IDENTITY_PROXMOX_HOST       hostname of the Proxmox VE admin door; the redirect URI is https://<host>/
 #   IDENTITY_PBS_HOST           hostname of the Proxmox Backup Server admin door; the redirect URI is https://<host>/
 #                               (both are REQUIRED: the app backs both realms, runbook server-setup §3.2.1)
+#   IDENTITY_KV_AUDIT_EMAIL     recipient for the Key Vault audit alerts (kv_alerts.tf). REQUIRED: the
+#                               repository is public, so the address is never committed.
 # Optional:
 #   IDENTITY_OWNER_OPERATOR_UPN    the owner operator, when there is no signed-in user (CI OIDC: the read
 #                                  identity runs the nightly drift plan). Must be a Member user. Unset =
@@ -168,6 +170,13 @@ host_ok "$PVE_HOST" || die "set IDENTITY_PROXMOX_HOST (a bare DNS hostname)"
 host_ok "$PBS_HOST" || die "set IDENTITY_PBS_HOST (a bare DNS hostname)"
 [[ "$PVE_HOST" != "$PBS_HOST" ]] || die "IDENTITY_PROXMOX_HOST and IDENTITY_PBS_HOST must differ"
 put TF_VAR_proxmox_redirect_uris "$(jq -cn --arg pve "$PVE_HOST" --arg pbs "$PBS_HOST" '["https://\($pve)/", "https://\($pbs)/"]')"
+
+# Key Vault audit alert recipient: never committed (public repo). A malformed or
+# missing value stops the run rather than routing alerts to nobody.
+KV_EMAIL="${IDENTITY_KV_AUDIT_EMAIL:-}"
+[[ "$KV_EMAIL" =~ ^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$ ]] ||
+  die "set IDENTITY_KV_AUDIT_EMAIL to the audit-alert recipient (one address)"
+put TF_VAR_kv_audit_email "$KV_EMAIL"
 
 # --- app registrations ---------------------------------------------------------------------------
 # bash 3.2 (macOS /bin/bash) has no associative arrays: slot -> display name by function.

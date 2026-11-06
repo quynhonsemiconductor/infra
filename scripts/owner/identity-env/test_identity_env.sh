@@ -181,7 +181,7 @@ echo 'variable "other" {}' >"$T/stack/v.tf"
 
 run() { PATH="$BIN:$PATH" FX="$FX" IDENTITY_STACK_DIR="$T/stack" \
   IDENTITY_SECOND_OWNER_UPN="second@tenant.example" IDENTITY_PROXMOX_HOST="pve.example.test" \
-  IDENTITY_PBS_HOST="pbs.example.test" "$@"; }
+  IDENTITY_PBS_HOST="pbs.example.test" IDENTITY_KV_AUDIT_EMAIL="audit@tenant.example" "$@"; }
 fail() { echo "FAIL: $*"; exit 1; }
 leak_scan() { # no fixture identifier or PEM may appear in the captured output
   grep -qE '[0-9a-f]{8}-0000-4000-8000|BEGIN|PRIVATE|pve\.example|pbs\.example|tenant\.example|second@' "$1" && fail "$2: a value reached the output" || true
@@ -202,8 +202,8 @@ expect_stop_extra() { # expect_stop_extra <label> <expected fragment> <IDENTITY_
 # 1. happy path: names + lengths, 23 variables, no value anywhere
 build
 OUT="$T/out.happy"; run bash "$SCRIPT" >"$OUT" 2>&1 || { cat "$OUT"; fail "happy path exited non-zero"; }
-grep -q 'identity env OK: 23 variables' "$OUT" || { cat "$OUT"; fail "variable count"; }
-for v in subscription_id budget_period_start budget_period_end break_glass_upn_domain grp_platform_admins_object_id grp_developers_object_id grp_dev_users_object_id \
+grep -q 'identity env OK: 24 variables' "$OUT" || { cat "$OUT"; fail "variable count"; }
+for v in subscription_id kv_audit_email budget_period_start budget_period_end break_glass_upn_domain grp_platform_admins_object_id grp_developers_object_id grp_dev_users_object_id \
   owner_operator_object_id second_owner_object_id platform_admin_object_ids proxmox_redirect_uris existing_object_ids existing_sp_object_ids \
   mail_service_object_ids mail_service_sp_object_ids opshub_dev_app_role_ids mail_service_certificates \
   mail_service_rotated_certificates mail_service_graph_grant_ids signin_delegated_grant_ids signin_delegated_grant_scopes \
@@ -219,7 +219,7 @@ leak_scan "$OUT" happy
 build
 OUT="$T/out.extra"; run env IDENTITY_DEV_APP_EXTRA_OWNERS="opshub_dev=dev@tenant.example" bash "$SCRIPT" >"$OUT" 2>&1 \
   || { cat "$OUT"; fail "extra owners: happy path exited non-zero"; }
-grep -q 'identity env OK: 24 variables' "$OUT" || { cat "$OUT"; fail "extra owners: variable count"; }
+grep -q 'identity env OK: 25 variables' "$OUT" || { cat "$OUT"; fail "extra owners: variable count"; }
 grep -qE 'TF_VAR_dev_app_extra_owner_object_ids +[0-9]+$' "$OUT" || fail "extra owners: map not exported"
 leak_scan "$OUT" "extra owners"
 run env IDENTITY_DEV_APP_EXTRA_OWNERS="opshub_dev=dev@tenant.example" bash "$SCRIPT" -- \
@@ -263,7 +263,7 @@ build
 OUT="$T/out.admins"
 run env IDENTITY_DEV_APP_EXTRA_ADMINS="opshub_dev=admin1@tenant.example,opshub_dev=admin2@tenant.example" \
   bash "$SCRIPT" >"$OUT" 2>&1 || { cat "$OUT"; fail "extra admins: happy path exited non-zero"; }
-grep -q 'identity env OK: 25 variables' "$OUT" || { cat "$OUT"; fail "extra admins: variable count"; }
+grep -q 'identity env OK: 26 variables' "$OUT" || { cat "$OUT"; fail "extra admins: variable count"; }
 grep -qE 'TF_VAR_dev_app_extra_admin_object_ids +[0-9]+$' "$OUT" || fail "extra admins: object ids not exported"
 grep -qE 'TF_VAR_dev_app_extra_admin_assignment_ids +[0-9]+$' "$OUT" || fail "extra admins: assignment ids not exported"
 leak_scan "$OUT" "extra admins"
@@ -387,6 +387,10 @@ build; out="$T/out.noupn"; if PATH="$BIN:$PATH" FX="$FX" IDENTITY_STACK_DIR="$T/
 grep -q 'STOP: set IDENTITY_SECOND_OWNER_UPN' "$out" || fail "missing UPN reason"
 build; out="$T/out.nohost"; if run env -u IDENTITY_PROXMOX_HOST bash "$SCRIPT" >"$out" 2>&1; then fail "missing host did not stop"; fi
 grep -q 'STOP: set IDENTITY_PROXMOX_HOST' "$out" || fail "missing host reason"
+build; out="$T/out.nokvemail"; if run env -u IDENTITY_KV_AUDIT_EMAIL bash "$SCRIPT" >"$out" 2>&1; then fail "missing kv audit email did not stop"; fi
+grep -q 'STOP: set IDENTITY_KV_AUDIT_EMAIL' "$out" || fail "missing kv audit email reason"
+build; out="$T/out.badkvemail"; if run env IDENTITY_KV_AUDIT_EMAIL="not-an-address" bash "$SCRIPT" >"$out" 2>&1; then fail "malformed kv audit email did not stop"; fi
+grep -q 'STOP: set IDENTITY_KV_AUDIT_EMAIL' "$out" || fail "malformed kv audit email reason"
 build; out="$T/out.nopbshost"; if run env -u IDENTITY_PBS_HOST bash "$SCRIPT" >"$out" 2>&1; then fail "missing PBS host did not stop"; fi
 grep -q 'STOP: set IDENTITY_PBS_HOST' "$out" || fail "missing PBS host reason"
 build; out="$T/out.badpvehost"; if run env IDENTITY_PROXMOX_HOST="pve.example.test/" bash "$SCRIPT" >"$out" 2>&1; then fail "malformed PVE host did not stop"; fi
@@ -410,7 +414,7 @@ esofix() { local j=40 p; for p in dev prod platform; do j=$((j+1)); mkcert "eso-
 build; echo 'variable "eso_certificates" {}' >"$T/stack/eso.tf"
 expect_stop "eso app missing" "az lookup empty: eso app dev"
 build; esofix; OUT="$T/out.eso"; run bash "$SCRIPT" >"$OUT" 2>&1 || { cat "$OUT"; fail "eso happy path"; }
-grep -q 'identity env OK: 24 variables' "$OUT" || fail "eso variable count"
+grep -q 'identity env OK: 25 variables' "$OUT" || fail "eso variable count"
 grep -qE 'TF_VAR_eso_certificates +[0-9]+$' "$OUT" || fail "eso variable not built"
 leak_scan "$OUT" "eso happy path"
 # the PEM text uploaded by the provider reaches the child byte for byte (trailing newline included): no replace planned

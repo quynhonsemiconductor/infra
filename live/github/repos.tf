@@ -71,6 +71,17 @@ locals {
       # repo's description must not be copied into it. `ignore_changes =
       # [description]` below leaves the live description in place.
     }
+    # The VLSI platform's toolchain image. This is the first repository the
+    # stack CREATES (the others already existed and were imported): `create =
+    # true` keeps it out of the import block, and `auto_init` gives it a default
+    # branch so its rulesets can be created in the same apply.
+    "qnsc-eda" = {
+      auto_merge           = false, merge_commit = false, rebase_merge = false, delete_branch = true
+      description          = "Open-source EDA toolchain image for the QNSC VLSI platform: pinned OSS CAD Suite, Verilator, Yosys, cocotb, Verible and Surfer. Published to GHCR."
+      create               = true
+      auto_init            = true
+      vulnerability_alerts = true
+    }
     "qnsc-kb-backend" = {
       auto_merge = false, merge_commit = false, rebase_merge = true, delete_branch = true
       has_wiki   = false
@@ -107,6 +118,10 @@ resource "github_repository" "this" {
   description  = try(each.value.description, null)
   homepage_url = try(each.value.homepage, null)
   visibility   = try(each.value.visibility, "public")
+  # Creation-time input; ignored on update, so harmless for the imported
+  # repositories. A new repository needs a default branch before a ruleset can
+  # target it.
+  auto_init = try(each.value.auto_init, false)
 
   has_issues      = try(each.value.has_issues, true)
   has_wiki        = try(each.value.has_wiki, true)
@@ -125,7 +140,14 @@ resource "github_repository" "this" {
   merge_commit_title          = "MERGE_MESSAGE"
   merge_commit_message        = "PR_TITLE"
 
-  web_commit_signoff_required = true
+  # `web_commit_signoff_required` is deliberately NOT set. The organisation
+  # enforces commit signoff for every repository, and the provider (6.13.0) puts
+  # the field on the repository create/update PATCH whenever it is configured —
+  # even as `true`. GitHub answers that PATCH with
+  #   422 Commit signoff is enforced by the organization and cannot be disabled
+  # (integrations/terraform-provider-github#2077). Leaving the attribute unset
+  # keeps it Optional+Computed: the API-returned value stays in state, and the
+  # field is never sent. Every imported repository already carries `true` live.
 
   # Deleting a repository by removing a line from a map is not a change anyone
   # means to make in a PR.
@@ -145,8 +167,30 @@ resource "github_repository" "this" {
   }
 }
 
+# Vulnerability alerts live in their own resource. The inline
+# `github_repository.vulnerability_alerts` field is deprecated and emits a
+# provider warning on every plan; the standalone resource owns the same switch
+# without putting it on the repository create/update payload.
+resource "github_repository_vulnerability_alerts" "this" {
+  for_each = { for k, v in local.repos : k => v if try(v.vulnerability_alerts, false) }
+
+  repository = github_repository.this[each.key].name
+  enabled    = true
+}
+
 import {
-  for_each = local.repos
+  # `qnsc-eda` was created by the failed apply; import the alerts resource
+  # rather than asking the API to enable what is already on. The resource id is
+  # the repository name.
+  for_each = { for k, v in local.repos : k => v if try(v.vulnerability_alerts, false) }
+  to       = github_repository_vulnerability_alerts.this[each.key]
+  id       = each.key
+}
+
+import {
+  # Only the repositories that already exist. A `create = true` entry is made
+  # by this stack; importing it would fail on the empty state before the create.
+  for_each = { for k, v in local.repos : k => v if !try(v.create, false) }
   to       = github_repository.this[each.key]
   id       = each.key
 }
