@@ -117,8 +117,9 @@ resource "azurerm_storage_container_immutability_policy" "kv_audit" {
   locked                                = true
 }
 
-# 1-year retention. The rule runs daily and removes blobs under the audit
-# container only; nothing else ever lives in this account.
+# 1-year retention, one rule per container: the Key Vault trail and, since
+# 2026-11-06, the Entra directory-audit export (entra_audit_export.tf). Nothing
+# else lives in this account.
 resource "azurerm_storage_management_policy" "kv_audit" {
   storage_account_id = azurerm_storage_account.kv_audit.id
 
@@ -132,6 +133,25 @@ resource "azurerm_storage_management_policy" "kv_audit" {
     filters {
       blob_types   = ["blockBlob"]
       prefix_match = ["insights-logs-auditevent"]
+    }
+
+    actions {
+      base_blob {
+        delete_after_days_since_modification_greater_than = 365
+      }
+    }
+  }
+
+  # The Entra directory-audit export (entra_audit_export.tf) writes here. Same
+  # 365-day age as its WORM policy, so a blob becomes deletable exactly when
+  # its immutability expires.
+  rule {
+    name    = "expire-entra-audit-logs"
+    enabled = true
+
+    filters {
+      blob_types   = ["blockBlob"]
+      prefix_match = ["entra-audit"]
     }
 
     actions {
