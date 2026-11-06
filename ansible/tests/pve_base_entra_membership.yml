@@ -75,3 +75,105 @@
         that:
           - pve_base_entra_removed_users | map(attribute='userid') | list == ['alice@example.com@entra', 'bob@example.com@entra']
         quiet: true
+
+    # ── idempotency of the add / remove decisions (the changed=1-every-run bug) ──
+    #
+    # The role's add and remove loops use THESE lists. With the group id written in a case
+    # different from what PVE stored (a paste from Entra, or a hand-made group) and a group
+    # list padded with spaces, nothing may be added or removed: a converged host plans zero
+    # changes. set_fact (not play vars) because the earlier tasks in this play used facts.
+    - name: A host with mixed-case and space-padded group membership
+      ansible.builtin.set_fact:
+        pve_base_entra_group_id: "ABCDEF01-2345-6789-ABCD-EF0123456789-entra"
+        pve_base_entra_admin_emails: ["bob@example.com", "dave@example.com"]
+        pve_base_entra_users:
+          stdout: >-
+            {{ [
+                 {'userid': 'Bob@Example.com@entra', 'groups': ' abcdef01-2345-6789-abcd-ef0123456789-entra , other'},
+                 {'userid': 'carol@example.com@entra', 'groups': 'ABCDEF01-2345-6789-ABCD-EF0123456789-entra'},
+                 {'userid': 'dave@example.com@entra', 'groups': 'other'},
+                 {'userid': 'root@pam', 'groups': ''}
+               ] | to_json }}
+
+    - name: Re-evaluate the role's expressions against that host
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../roles/pve_base/vars/entra_membership.yml"
+
+    - name: Bob already has the group in another case; only Dave is added
+      ansible.builtin.assert:
+        that:
+          - pve_base_entra_group_adds | map(attribute='userid') | list == ['dave@example.com@entra']
+        quiet: true
+
+    - name: Only the unlisted Carol is removed
+      ansible.builtin.assert:
+        that:
+          - pve_base_entra_group_removals | map(attribute='userid') | list == ['carol@example.com@entra']
+        quiet: true
+
+    - name: The role's --groups rebuild drops the case-variant duplicate
+      ansible.builtin.assert:
+        that:
+          - >-
+            (pve_base_entra_membership_json | from_json
+             | selectattr('userid', 'equalto', 'Bob@Example.com@entra') | first
+            ).groups
+            | reject('search', '(?i)^' ~ (pve_base_entra_group_id | regex_escape) ~ '$')
+            | list == ['other']
+        quiet: true
+
+    - name: A converged host has nothing to add and nothing to remove
+      ansible.builtin.set_fact:
+        pve_base_entra_users:
+          stdout: >-
+            {{ [
+                 {'userid': 'bob@example.com@entra', 'groups': 'abcdef01-2345-6789-abcd-ef0123456789-entra'},
+                 {'userid': 'dave@example.com@entra', 'groups': 'other,abcdef01-2345-6789-abcd-ef0123456789-entra'}
+               ] | to_json }}
+
+    - name: Re-evaluate against the converged host
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../roles/pve_base/vars/entra_membership.yml"
+
+    - name: Neither list has an entry
+      ansible.builtin.assert:
+        that:
+          - pve_base_entra_group_adds | length == 0
+          - pve_base_entra_group_removals | length == 0
+        quiet: true
+
+
+    # A user the shared list wants but the realm read does not show yet is CREATED in the same
+    # run, so the add list must contain it too — otherwise a brand-new admin only reaches the
+    # group on the second run (review round 3).
+    - name: A brand-new admin converges in one run
+      ansible.builtin.set_fact:
+        pve_base_entra_group_id: g-entra
+        pve_base_entra_admin_emails: ["bob@example.com", "erin@example.com"]
+        pve_base_entra_users:
+          stdout: >-
+            {{ [{'userid': 'bob@example.com@entra', 'groups': ''}] | to_json }}
+
+    - name: Re-evaluate with the new admin absent from the read
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../roles/pve_base/vars/entra_membership.yml"
+
+    - name: The newly created user joins the group in the same run
+      ansible.builtin.assert:
+        that:
+          - pve_base_entra_group_adds | map(attribute='userid') | list == ['bob@example.com@entra', 'erin@example.com@entra']
+        quiet: true
+
+    - name: Nobody is added twice when the same user exists and lacks the group
+      ansible.builtin.assert:
+        that:
+          - pve_base_entra_group_adds | map(attribute='userid') | unique | list | length == (pve_base_entra_group_adds | length)
+        quiet: true
+
+    # CI runs this file and the two gate files in ONE invocation, and set_fact facts are
+    # host-wide: leave the host in the state the NEXT file sets up for itself (it asserts on an
+    # empty list). Without this the gate test fails on facts this file created.
+    - name: Hand the host back in the shape the next test file expects
+      ansible.builtin.set_fact:
+        pve_base_entra_group_id: g-entra
+        pve_base_entra_admin_emails: []
