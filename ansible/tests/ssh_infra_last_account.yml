@@ -1,11 +1,11 @@
 ---
 # Offline --check test of the LAST-ACCOUNT-REMOVED case: the marker still
-# lists daemon (a system account the fixture pretends this role created), and
+# lists a throwaway account the fixture pretends this role created, and
 # node_admin_users is empty. Offboarding must still run — the old bug skipped
 # it because the block was gated on the current list being non-empty.
 #
 # Every path is under /tmp and the run is --check, so nothing on the host is
-# written. CI greps the output for "would lock daemon".
+# written. CI creates qnsc-last-account and greps for "would lock qnsc-last-account".
 - name: Offboarding survives an empty node_admin_users
   hosts: localhost
   connection: local
@@ -15,9 +15,9 @@
     ssh_infra_ca_public_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITESTKEYONLY test@example"
     node_admin_users: []
     ssh_infra_managed_users_file: "{{ playbook_dir }}/fixtures/ssh-managed-users"
-    ssh_infra_ca_file: /tmp/qnsc-ssh-test/ca.pub
-    ssh_infra_sshd_dropin: /tmp/qnsc-ssh-test/10-qnsc-test.conf
-    ssh_infra_principals_dir: /tmp/qnsc-ssh-test/principals
-    ssh_infra_sudoers_dir: /tmp/qnsc-ssh-test/sudoers
+    ssh_infra_ca_file: /tmp/qnsc-ssh-last/ca.pub
+    ssh_infra_sshd_dropin: /tmp/qnsc-ssh-last/10-qnsc-test.conf
+    ssh_infra_principals_dir: /tmp/qnsc-ssh-last/principals
+    ssh_infra_sudoers_dir: /tmp/qnsc-ssh-last/sudoers
   roles:
     - role: ssh_infra

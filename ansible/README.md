@@ -205,9 +205,9 @@ node_admin_users:
 ```
 
 The role (tags `ssh_infra`) is included by the GPU node playbook (`k3s-agent-gpu.yml`) only
-today. **A node with no entry in `node_admin_users` is never touched**; add the
-role to another playbook and a target in `TF_VAR_ssh_infra_targets` when that
-node gets users. It writes `/etc/ssh/ca.pub` and a `sshd_config.d` drop-in with
+today. A node with no entry and no management history gets no account changes; the sudoers/principal
+sweeps still run wherever those role-owned paths exist. Add the role to another playbook and a target
+in `TF_VAR_ssh_infra_targets` when that node gets users. It writes `/etc/ssh/ca.pub` and a `sshd_config.d` drop-in with
 `TrustedUserCAKeys` plus `AuthorizedPrincipalsFile` (one principal per account,
 `%u`), validates the MERGED config with `sshd -t`, and on failure restores the
 previous drop-in and fails without reloading. For each listed account it creates
@@ -217,13 +217,14 @@ containing exactly the login name. Reserved/operator names (`root`, `qnsc`,
 `ubuntu`, system accounts) are refused, and so is any pre-existing account this
 role did not create. Removed from the list → the account is locked (expiry in
 the past), its active sessions are killed, its sudoers and principal files are
-removed, and the home stays; only a FAILED lock stays in the marker for a
-retry. Creation uses `useradd --password '*'`; re-adding runs `usermod -p '*' -e -1` only
+removed, and the home stays. The marker keeps EVERY name the role owns (desired and offboarded); a
+FAILED lock is retried next run. Creation uses `useradd --password '*'`; re-adding runs `usermod -p '*' -e -1` only
 when the shadow pre-check sees a hash other than `*` or an expiry (the user module strips `!` before
 comparing, so it is not used). `*` means no password login and does not block certificate login under
-UsePAM yes. An empty CA key
-**removes** the drop-in, `/etc/ssh/ca.pub` and the principal directory (a real
-revoke, not a silent skip). The break-glass operator account is never touched.
+UsePAM yes. An undefined `node_ssh_ca_public_key` or `node_admin_users` FAILS the run. Revoking the
+trust requires explicit empty values plus `ssh_infra_revoke: true`; it removes the drop-in,
+`/etc/ssh/ca.pub`, the principal directory and locks every owned account. The break-glass operator
+account is never touched.
 
 ```sh
 ansible-playbook k3s-agent-gpu.yml --tags ssh_infra --check --diff   # plan

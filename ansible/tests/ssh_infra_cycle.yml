@@ -46,6 +46,11 @@
     ssh_infra_sshd_dropin: /tmp/qnsc-ssh-cycle/10-qnsc-test.conf
     ssh_infra_principals_dir: /tmp/qnsc-ssh-cycle/principals
     ssh_infra_sudoers_dir: /tmp/qnsc-ssh-cycle/sudoers
+  pre_tasks:
+    - name: Start a session owned by the account
+      ansible.builtin.command:
+        argv: [runuser, -u, qnsc-test-admin, --, setsid, -f, sleep, "300"]
+      changed_when: false
   roles:
     - role: ssh_infra
   tasks:

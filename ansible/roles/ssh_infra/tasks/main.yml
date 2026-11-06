@@ -7,6 +7,29 @@
 # removed (or moved to another host) still locks that account and removes its
 # sudoers/principal. An empty CA key revokes the trust AND locks managed
 # accounts (full revoke).
+- name: SSH access inputs are explicit (a typo must not lock everyone)
+  when: not ssh_infra_revoke | bool
+  ansible.builtin.assert:
+    that:
+      - ssh_infra_ca_public_key != ssh_infra_undefined
+      - ssh_infra_admin_users != [ssh_infra_undefined]
+      - ssh_infra_ca_public_key | length > 0
+    fail_msg: >-
+      node_ssh_ca_public_key and node_admin_users must be defined in the LOCAL inventory. To revoke the
+      trust, set node_ssh_ca_public_key: "" and node_admin_users: [] AND ssh_infra_revoke: true.
+    quiet: true
+
+- name: Revoking needs explicit empty inputs
+  when: ssh_infra_revoke | bool
+  ansible.builtin.assert:
+    that:
+      - ssh_infra_ca_public_key | length == 0
+      - ssh_infra_admin_users | length == 0
+    fail_msg: >-
+      ssh_infra_revoke: true requires node_ssh_ca_public_key: "" and node_admin_users: []. An undefined or
+      non-empty value is a configuration error, not a revoke.
+    quiet: true
+
 - name: Select this node's admins
   ansible.builtin.set_fact:
     ssh_infra_host_users: >-
@@ -41,6 +64,18 @@
 - name: Work out the removed accounts (independent of the current list size)
   ansible.builtin.set_fact:
     ssh_infra_removed_names: "{{ ssh_infra_old_names | difference(ssh_infra_desired_names) }}"
+- name: A reserved account may never be removed from the admin group
+  ansible.builtin.set_fact:
+    ssh_infra_reserved_removals: "{{ ssh_infra_removed_names | select('in', ssh_infra_reserved_users) | list }}"
+- name: Fail loud if a reserved account appears in the removal set
+  ansible.builtin.assert:
+    that: (ssh_infra_reserved_removals | default([]) | length) == 0
+    fail_msg: >-
+      {{ ssh_infra_reserved_removals | join(', ') }} is a reserved/operator account but is in the removal
+      set. Refusing to change it; fix node_admin_users/the marker by hand.
+    quiet: true
+  tags: [ssh_infra]
+
 - name: Does this node carry any SSH-access state
   ansible.builtin.set_fact:
     ssh_infra_has_state: "{{ (ssh_infra_host_users | length) > 0 or (ssh_infra_old_names | length) > 0 }}"
@@ -57,8 +92,8 @@
   when: ssh_infra_has_state | bool
   tags: [ssh_infra]
 
-- name: Remove the Access for Infrastructure trust when disabled
-  when: not ssh_infra_enabled | bool
+- name: Remove the Access for Infrastructure trust (explicit revoke)
+  when: ssh_infra_revoke | bool
   tags: [ssh_infra]
   block:
     - name: Remove the CA, the sshd drop-in and the principal files

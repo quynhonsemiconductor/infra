@@ -11,11 +11,15 @@
 #     - { name: <login>, sudo: true, hosts: ["<gpu-node>"] }
 #
 # The unprefixed inventory names are aliased here so the role keeps its own
-# prefix without making the owner's inventory awkward.
-ssh_infra_ca_public_key: "{{ node_ssh_ca_public_key | default('') }}"
-ssh_infra_admin_users: "{{ node_admin_users | default([]) }}"
-# Empty key = role disabled: the drop-in, ca.pub and principal files are REMOVED.
-ssh_infra_enabled: "{{ ssh_infra_ca_public_key | length > 0 }}"
+# prefix without making the owner's inventory awkward. An UNDEFINED value is a
+# typo/omission and FAILS the run; only an explicit empty key + empty list with
+# ssh_infra_revoke: true revokes the trust.
+ssh_infra_undefined: "__SSH_INFRA_UNDEFINED__"
+ssh_infra_ca_public_key: "{{ node_ssh_ca_public_key | default('__SSH_INFRA_UNDEFINED__') }}"
+ssh_infra_admin_users: "{{ node_admin_users | default(['__SSH_INFRA_UNDEFINED__']) }}"
+ssh_infra_revoke: false
+ssh_infra_enabled: >-
+  {{ ssh_infra_ca_public_key != ssh_infra_undefined and ssh_infra_ca_public_key | length > 0 }}
 
 # Operator/system accounts this role must never take over. A listed `qnsc`,
 # `ubuntu` or `root` would lose its authorized_keys and be locked on removal.
