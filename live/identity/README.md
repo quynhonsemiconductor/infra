@@ -392,8 +392,9 @@ owner exports the live shape first and the plan is a hard go/no-go.
    - `TF_VAR_owner_operator_object_id` and `TF_VAR_second_owner_object_id` —
      the two human owners (A4/O2).
    Display names, descriptions and member types are IN the code now, taken
-   verbatim from the 2026-10-27 export (admin: `Admin`,
-   `["User", "Application"]`; auditor: `Auditor`; the rest `["User"]`). If a
+   verbatim from the 2026-10-27 export (admin: `Admin`, `["User"]` — the
+   `Application` member type was dropped by the 2026-11-06 audit because no
+   SP holds the role; auditor: `Auditor`; the rest `["User"]`). If a
    future export differs from the code on any role field, STOP and reconcile
    in a reviewed commit first. If an export shows `optionalClaims`, a `groupMembershipClaims`
    value, or ANY of the non-Computed fields above set differently from the
