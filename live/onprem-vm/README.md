@@ -265,7 +265,7 @@ to ai-01; vlsi-01 shrinks until the VLSI team starts.
 Totals: 52 GiB of the host's 60.5 GiB (24 + 24 + 4), leaving ~8.5 GiB for the host and the ZFS ARC.
 44 vCPUs are assigned across 32
 host threads — time-sliced, not a hard limit. Inside k3s the shape is Burstable (requests ~p95, limits
-higher); nothing is ballooned. Capping `zfs_arc_max` is a separate small PR.
+higher); nothing is ballooned.
 
 **Exactly TWO in-place VM updates; k3s-01 shows no line at all.** ai-01 and vlsi-01 both need a
 stop/start for dedicated memory and cores, so their new size lands at the next boot.
