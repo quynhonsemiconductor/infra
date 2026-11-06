@@ -155,13 +155,20 @@ Owner steps:
    sh live/identity/tests/static.sh
    ```
 
-2. Export the group id (an identifier, not a credential — it is
-   operator-supplied all the same, so it is never committed):
+2. Export the group ids (identifiers, not credentials — operator-supplied all
+   the same, so they are never committed). The apply kit does this for every
+   plan/apply; by hand they are:
 
    ```sh
-   export TF_VAR_platform_admins_object_id=$(
+   export TF_VAR_grp_platform_admins_object_id=$(
      az ad group show --group grp-qnsc-platform-admins --query id -o tsv)
+   export TF_VAR_grp_developers_object_id=$(
+     az ad group show --group grp-qnsc-developers --query id -o tsv)
    ```
+
+   Both groups are ADOPTED (`groups.tf`, import), not created: the plan shows
+   two imports with no change, and membership/description stay managed in
+   Entra (`ignore_changes`). An update or a replace on either is NO-GO.
 
 3. Plan and apply as above (owner-local only). The plan adds 3 applications,
    3 service principals, 3 federated identity credentials, 4 Secrets Officer
@@ -1119,6 +1126,29 @@ The other six roles stay per-user: no role-specific Entra group exists (owner
 decision 2026-11-05). Per-user assignments are additive and never remove the
 live user grants of the other roles.
 
+### Extra OpsHub Dev admin holders (`dev_extra_admins.tf`)
+
+Two tester grants were added by hand on 2026-08-31 (drift audit 2026-11-06):
+people who hold the OpsHub Dev `admin` role but are neither platform admins nor
+members of `grp-qnsc-platform-admins`. `dev_extra_admins.tf` ADOPTS those
+assignments so the next apply does not remove them. DEV only; a prod key fails
+the plan.
+
+No name, UPN or object id is committed. The owner lists the people as
+`opshub_dev=<upn>` pairs; the kit resolves each to a **Member** user and reads
+the app's live `appRoleAssignedTo`, so the assignments that already exist are
+IMPORTED (a re-create would be an HTTP 409):
+
+```sh
+export IDENTITY_DEV_APP_EXTRA_ADMINS='opshub_dev=<tester UPN>,opshub_dev=<tester UPN>'
+scripts/owner/identity-env/identity-env.sh -- tofu plan -out=tfplan
+```
+
+Go/no-go: the plan shows **1 import per existing tester assignment** and no
+change on them; any tester without a live assignment is a new add. Nothing to
+destroy or replace. Removing a UPN from the list removes that assignment on
+the next apply — review first.
+
 ## Prod identity: OpsHub (`prod_apps.tf`)
 
 Unlike the dev pair, the prod pair does not exist: this stack CREATES it.
@@ -1572,7 +1602,8 @@ product-docs), so the owner reads the rest from Entra or `az` as shown.
 | `TF_VAR_budget_period_start` / `_end` | RFC3339 UTC | `az consumption budget list`, the live budget (README "First apply" step 3) |
 | `TF_VAR_break_glass_upn_domain` | tenant primary domain | Entra admin center, Overview, Primary domain |
 | `TF_VAR_office_ip` | office /32, optional (empty disables allowlists) | GitHub repo variable `TF_VAR_office_ip` |
-| `TF_VAR_platform_admins_object_id` | group object id | `az ad group show --group grp-qnsc-platform-admins --query id -o tsv` |
+| `TF_VAR_grp_platform_admins_object_id` | group object id (import) | `az ad group show --group grp-qnsc-platform-admins --query id -o tsv` |
+| `TF_VAR_grp_developers_object_id` | group object id (import) | `az ad group show --group grp-qnsc-developers --query id -o tsv` |
 | `TF_VAR_existing_object_ids` | JSON, 4 sign-in app object ids | `*-app.json` `.id` from the sign-in export |
 | `TF_VAR_existing_sp_object_ids` | JSON, 4 sign-in SP object ids | `*-sp.json` `.id` from the sign-in export |
 | `TF_VAR_existing_identifier_uris` | JSON map; default `{}` | sign-in export shows none; leave default |

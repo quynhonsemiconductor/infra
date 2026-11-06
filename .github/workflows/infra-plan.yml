@@ -329,6 +329,20 @@ jobs:
           ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
           ARM_USE_OIDC:        'true'
 
+      # live/edge carries PRIVATE data in state: the SSH target map (addresses, logins). The provider marks
+      # none of those attributes sensitive, so anything that prints this stack's plan prints them too. The
+      # rule for edge is therefore the same as for identity: NO plan text in the log, the step summary, the
+      # PR comment or an artifact — only counts, the fingerprint and changed resource TYPES.
+      - name: SSH targets guard (edge)
+        if: matrix.stack == 'edge'
+        working-directory: live/edge
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/ssh-targets-guard.sh"
+        env:
+          SSH_INFRA_TARGETS: ${{ secrets.SSH_INFRA_TARGETS }}
+          ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID_READ }}
+          ARM_TENANT_ID: ${{ vars.ENTRA_TENANT_ID }}
+          ARM_USE_OIDC: 'true'
+
       - name: tofu validate
         working-directory: live/${{ matrix.stack }}
         run: tofu validate
@@ -382,11 +396,25 @@ jobs:
           if [ "$STACK" = "observability" ] || [ "$STACK" = "github" ]; then REFRESH_ARG="-refresh=false"; fi
           set -o pipefail
           set +e
-          # shellcheck disable=SC2086  # REFRESH_ARG is a fixed flag or empty
-          tofu plan -input=false -lock=false -no-color -detailed-exitcode $REFRESH_ARG -out=tfplan 2>&1 \
-            | sed -E 's/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/<redacted>/g' \
-            | tee plan.txt
-          echo "exitcode=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+          if [ "$STACK" = "edge" ]; then
+            # edge: the plan is NEVER printed. Its for_each keys are SSH target names and its attributes are
+            # addresses and logins. File only; the next step publishes counts, fingerprint and types.
+            # shellcheck disable=SC2086  # REFRESH_ARG is a fixed flag or empty
+            tofu plan -input=false -lock=false -no-color -detailed-exitcode $REFRESH_ARG -out=tfplan > plan.txt 2>&1
+            ec=$?
+            if [ "$ec" = "1" ]; then
+              # Diagnostics only: the `╷ … ╵` error boxes, never the plan body.
+              sed -n '/^╷/,/^╵/p' plan.txt \
+                | sed -E 's/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/<redacted>/g' >&2
+            fi
+          else
+            # shellcheck disable=SC2086  # REFRESH_ARG is a fixed flag or empty
+            tofu plan -input=false -lock=false -no-color -detailed-exitcode $REFRESH_ARG -out=tfplan 2>&1 \
+              | sed -E 's/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/<redacted>/g' \
+              | tee plan.txt
+            ec=${PIPESTATUS[0]}
+          fi
+          echo "exitcode=$ec" >> "$GITHUB_OUTPUT"
         env:
           STACK: ${{ matrix.stack }}
           # Azure OIDC for the onprem azurerm backend (read identity — this job
@@ -439,10 +467,28 @@ jobs:
           # variable anymore.
           TF_VAR_admin_private_cidr:     ${{ contains(fromJSON('["onprem","edge"]'), matrix.stack) && secrets.ADMIN_PRIVATE_CIDR || '' }}
           TF_VAR_warp_extra_excludes:    ${{ matrix.stack == 'edge' && secrets.WARP_EXTRA_EXCLUDES || '[]' }}
+          TF_VAR_ssh_infra_targets:      ${{ matrix.stack == 'edge' && secrets.SSH_INFRA_TARGETS || '{}' }}
           # live/github: a short-lived token minted from the READ-ONLY GitHub App by the
           # step above (rulesets, repository settings and environments, no write). The
           # write app exists for the apply job only, behind the `production` reviewer.
           TF_VAR_github_token:           ${{ steps.gh-read.outputs.token }}
+
+      # edge publishes counts + fingerprint + changed TYPES, and nothing else. The file is what the PR
+      # comment below posts; nothing from the plan body ever reaches the summary or the comment.
+      - name: Plan summary (edge)
+        if: matrix.stack == 'edge' && steps.plan.outputs.exitcode != '1'
+        working-directory: live/edge
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/plan-fingerprint.sh" plan edge "$EXIT_CODE"
+        env:
+          EXIT_CODE: ${{ steps.plan.outputs.exitcode }}
+          HIDE_ADDRESSES: 'true'
+          PLAN_TITLE: 'Plan: live/edge — counts, fingerprint and changed resource types only (the plan carries private SSH targets)'
+          SUMMARY_FILE: ${{ runner.temp }}/plan-summary-edge.md
+          FP_HMAC_KEY: ${{ secrets.SSH_INFRA_TARGETS }}
+          FP_JSON: ${{ runner.temp }}/fp-edge.json
+          ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID_READ }}
+          ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
+          ARM_USE_OIDC:        'true'
 
       # TASK 0.3 / §17b — refuse a plan that would lose data, before anyone reads
       # it. Runs BEFORE the plan comment on purpose: if the answer is "this deletes
@@ -491,15 +537,26 @@ jobs:
           script: |
             const fs = require('fs');
             const stack = process.env.STACK;
-            const plan = fs.readFileSync(`live/${stack}/plan.txt`, 'utf8');
-            const truncated = plan.length > 60000
-              ? plan.substring(0, 60000) + '\n\n... (truncated)'
-              : plan;
+            // edge: the plan body is private (SSH targets). Post its summary (counts, fingerprint, types),
+            // never plan.txt. Every other stack posts the plan, as before.
+            const edge = stack === 'edge';
+            const file = edge
+              ? `${process.env.RUNNER_TEMP}/plan-summary-edge.md`
+              : `live/${stack}/plan.txt`;
+            if (!fs.existsSync(file)) {
+              console.log(`no plan summary at ${file} (plan failed): nothing to comment`);
+              return;
+            }
+            let text = fs.readFileSync(file, 'utf8');
+            if (text.length > 60000) text = text.substring(0, 60000) + '\n\n... (truncated)';
+            const body = edge
+              ? `### Infrastructure Plan — \`live/${stack}\`\n\n${text}`
+              : `### Infrastructure Plan — \`live/${stack}\`\n\`\`\`hcl\n${text}\n\`\`\``;
             await github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: `### Infrastructure Plan — \`live/${stack}\`\n\`\`\`hcl\n${truncated}\n\`\`\``,
+              body,
             });
 
       # -detailed-exitcode: 0=no change, 2=changes (both OK for a PR), 1=error.
