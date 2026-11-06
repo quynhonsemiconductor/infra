@@ -1,22 +1,23 @@
 # =============================================================================
 # qnsc-eda — the first repository this stack CREATES (repos.tf `create = true`),
-# with its team access and CODEOWNERS as code.
+# with its team access as code.
 #
-# Why these live here and not in the UI: the repository is born protected in one
-# apply. Ordering matters and is encoded by references:
+# The team grants need exactly two permissions from the apply/plan credentials:
+# repository Administration (already minted: write for apply, read for plans)
+# and organisation Members read, because the "add team repository" endpoint
+# requires the caller to be able to see the team. Nothing else (see the three
+# token mints in .github/workflows and live/github/README.md).
 #
-#   github_repository.this["qnsc-eda"]   (created, auto_init gives branch main)
-#     └── github_repository_file.qnsc_eda_codeowners   (direct commit to main)
-#           └── github_repository_ruleset.this          (depends_on the file)
-#
-# Reversing the last edge would make the CODEOWNERS commit the first push the
-# new main-protection ruleset blocks.
+# CODEOWNERS is deliberately NOT a `github_repository_file` here: that needs
+# Contents write on an app installed on EVERY repository, which is more blast
+# radius than a file is worth. It is committed by the first pull request in the
+# new repository instead; the main-protection ruleset (created by this stack)
+# requires code-owner review from it thereafter.
 # =============================================================================
 
 locals {
   # Public team ids (same source as rulesets.tf's locals). Numeric ids avoid a
-  # data-source read of the organisation's teams, which the apply credential
-  # does not need.
+  # data-source read of the organisation's teams.
   qnsc_eda_team_ids = {
     platform     = 20267557 # team `platform`
     vlsi         = 19374898 # team `vlsi`
@@ -41,20 +42,4 @@ resource "github_team_repository" "qnsc_eda" {
   team_id    = local.qnsc_eda_team_ids[each.key]
   repository = github_repository.this["qnsc-eda"].name
   permission = each.value
-}
-
-# CODEOWNERS names both teams that review this repo: the platform team that
-# builds and operates the image, and the VLSI leads whose flow it serves.
-resource "github_repository_file" "qnsc_eda_codeowners" {
-  repository = github_repository.this["qnsc-eda"].name
-  branch     = "main"
-  file       = ".github/CODEOWNERS"
-
-  content = <<EOT
-# Every change needs a review from the platform team or the VLSI leads.
-* @quynhonsemiconductor/platform @quynhonsemiconductor/vlsi-leads
-EOT
-
-  commit_message      = "chore(codeowners): own qnsc-eda by platform and vlsi-leads"
-  overwrite_on_create = true
 }

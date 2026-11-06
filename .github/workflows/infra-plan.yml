@@ -364,6 +364,9 @@ jobs:
           owner: quynhonsemiconductor
           permission-administration: read
           permission-environments: read
+          # The qnsc-eda team grants: reading them needs repo admin (read) and
+          # seeing the team. The minimum; no Contents.
+          permission-members: read
 
       - name: tofu plan
         id: plan

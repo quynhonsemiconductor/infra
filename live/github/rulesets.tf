@@ -858,15 +858,15 @@ locals {
 resource "github_repository_ruleset" "this" {
   for_each = local.rulesets
 
+  # All repositories exist first, including the one this stack creates
+  # (qnsc-eda). A per-index reference cannot be used: `infra-template` has a
+  # ruleset but intentionally no entry in local.repos.
   repository  = each.value.repo
   name        = each.value.name
   target      = each.value.target
   enforcement = "active"
 
-  # qnsc-eda is created by this stack. Its CODEOWNERS commit must land on the
-  # default branch BEFORE branch protection exists, or the file write (a direct
-  # commit, not a PR) is blocked by the very ruleset being created.
-  depends_on = [github_repository_file.qnsc_eda_codeowners]
+  depends_on = [github_repository.this]
 
   conditions {
     ref_name {

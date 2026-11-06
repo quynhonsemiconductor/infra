@@ -74,13 +74,13 @@ locals {
     # The VLSI platform's toolchain image. This is the first repository the
     # stack CREATES (the others already existed and were imported): `create =
     # true` keeps it out of the import block, and `auto_init` gives it a default
-    # branch so the CODEOWNERS commit and the rulesets can follow in the same
-    # apply, before the protection exists.
+    # branch so its rulesets can be created in the same apply.
     "qnsc-eda" = {
-      auto_merge  = false, merge_commit = false, rebase_merge = false, delete_branch = true
-      description = "Open-source EDA toolchain image for the QNSC VLSI platform: pinned OSS CAD Suite, Verilator, Yosys, cocotb, Verible and Surfer. Published to GHCR."
-      create      = true
-      auto_init   = true
+      auto_merge           = false, merge_commit = false, rebase_merge = false, delete_branch = true
+      description          = "Open-source EDA toolchain image for the QNSC VLSI platform: pinned OSS CAD Suite, Verilator, Yosys, cocotb, Verible and Surfer. Published to GHCR."
+      create               = true
+      auto_init            = true
+      vulnerability_alerts = true
     }
     "qnsc-kb-backend" = {
       auto_merge = false, merge_commit = false, rebase_merge = true, delete_branch = true
@@ -119,9 +119,12 @@ resource "github_repository" "this" {
   homepage_url = try(each.value.homepage, null)
   visibility   = try(each.value.visibility, "public")
   # Creation-time input; ignored on update, so harmless for the imported
-  # repositories. A new repository needs a default branch before a file or a
-  # ruleset can target it.
+  # repositories. A new repository needs a default branch before a ruleset can
+  # target it.
   auto_init = try(each.value.auto_init, false)
+  # Optional+Computed: null leaves every imported repository exactly as it is;
+  # a `create = true` entry opts in explicitly.
+  vulnerability_alerts = try(each.value.vulnerability_alerts, null)
 
   has_issues      = try(each.value.has_issues, true)
   has_wiki        = try(each.value.has_wiki, true)

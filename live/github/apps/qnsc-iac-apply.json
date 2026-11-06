@@ -6,7 +6,6 @@
   "public": false,
   "default_permissions": {
     "administration": "write",
-    "contents": "write",
     "environments": "write",
     "members": "read",
     "metadata": "read"
