@@ -77,9 +77,8 @@ pve_base_entra_manage_admins: "{{ pve_base_entra_admin_emails | length > 0 }}"
 pve_base_entra_rotate_client_key: false
 
 # ── ZFS ARC ceiling (host memory, shared with the VMs) ──────────────────────
-# 8 GiB. The three VMs ask for 56 GiB of the host's 62 GiB, so the ceiling is
-# NOT extra allocation: ZFS reclaims ARC under pressure. 4 GiB (the old value,
-# set when PBS was not yet serving the backup pool) left the co-located PBS
-# reading chunks and metadata from disk during GC/verify. 8 GiB keeps those hot
-# while the cap still leaves the host and the VM baseline room to breathe.
-pve_base_zfs_arc_max_bytes: 8589934592
+# 4 GiB. pve01 is a 60.5 GiB host and the VMs ask for 52 GiB (24 + 24 + 4), so
+# the ceiling is NOT extra allocation: ZFS reclaims ARC under pressure. 4 GiB
+# leaves the host and the co-located PBS room for their own working sets; 8 GiB
+# was too much of the remaining headroom once ai-01 took 24 GiB.
+pve_base_zfs_arc_max_bytes: 4294967296

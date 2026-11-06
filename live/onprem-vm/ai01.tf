@@ -41,10 +41,10 @@ variable "ai01_cores" {
 
 variable "ai01_memory_mb" {
   type = number
-  # 28 GiB (28672 MiB), up from 12 GiB: the re-balance moves vlsi-01's spare RAM here.
-  # 24 (k3s-01) + 28 (ai-01) + 4 (vlsi-01) = 56 GiB of 62, leaving ~6 GiB to the host and ARC.
-  default     = 28672
-  description = "28 GiB after the re-balance (was 12 GiB). Ballooning OFF is required for passthrough (the provider sets floating = 0); a stop/start applies it."
+  # 24 GiB (24576 MiB), up from 12 GiB: the re-balance moves vlsi-01's spare RAM here.
+  # 24 (k3s-01) + 24 (ai-01) + 4 (vlsi-01) = 52 GiB of the host's 60.5, leaving ~8.5 GiB.
+  default     = 24576
+  description = "24 GiB after the re-balance (was 12 GiB). Ballooning OFF is required for passthrough (the provider sets floating = 0); a stop/start applies it."
 }
 
 variable "ai01_data_disk_gb" {
