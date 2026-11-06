@@ -153,7 +153,9 @@ locals {
       # cluster has no series and therefore stays quiet.
       # `namespace="data-prod"`: the dev cluster (pg-dev) is not a prod
       # signal and stays email-only through the dev rules.
-      expr      = "cnpg_collector_up{namespace=\"data-prod\"} == 0"
+      # Raw gauge; the `< 1` comparison is the rule threshold below, so the
+      # 7-day data guard still sees this series while every exporter is up.
+      expr      = "cnpg_collector_up{namespace=\"data-prod\"}"
       op        = "lt"
       threshold = 1
       for       = "15m"

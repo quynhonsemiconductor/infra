@@ -10,7 +10,8 @@ holds no Proxmox token, and the API endpoint is the admin door.
 
 ## Owns
 
-- `proxmox_virtual_environment_vm.k3s_01` — 28 vCPU, 24 GiB (unchanged by the VM re-balance), balloon off,
+- `proxmox_virtual_environment_vm.k3s_01` — 28 vCPU, 24 GiB (unchanged by the VM re-balance and by the
+  VLSI rollout), balloon off,
   q35 + OVMF, virtio-scsi-single, scsi0 120 G, scsi1 1200 G, net0 on the
   server VLAN, serial0 socket, VGA std. `prevent_destroy` is set: the VM holds
   every PVC. `reboot_after_update = false` — this stack never power-cycles the
@@ -181,8 +182,8 @@ Order for a whole new site: `docs/runbooks/site-from-zero.md`.
 
 ## ai-01 — the GPU agent node (§9.1)
 
-Same stack, second VM: `ai-01` (101), cloned from template 9000, 12 vCPU,
-24 GiB after the re-balance (was 8 vCPU, 12 GiB) with ballooning off,
+Same stack, second VM: `ai-01` (101), cloned from template 9000, 8 vCPU,
+12 GiB (3x the measured 4.0 GB peak; the e5 and reranker models sit in VRAM) with ballooning off,
 40 GiB system disk + 300 GiB model-cache disk, the
 RTX 5060 Ti via the `gpu-rtx5060ti` mapping, and only the `ai` namespace by
 taint. k3s-01 keeps 28 vCPU and is not resized.
@@ -307,3 +308,74 @@ Owner window (TEI / kb search is down ~2-3 min while ai-01 boots; k3s-01 and eve
 
 **Next step:** re-audit ALL VM sizes once every product is live, using pod requests/p95 (not guest
 usage) as the input to the next re-balance.
+
+## VLSI rollout — 12 / 16 (2026-11-06)
+
+Owner decision 2026-11-06 ("go VLSI", design: product-docs `projects/vlsi-platform/00_DESIGN.md`):
+**no RAM purchase**, a re-split. The measured 7-day peaks are 6.7 GB on k3s-01 and 4.0 GB on ai-01, so
+the room for the VLSI pool comes from ai-01 and stays with the platform's own node budget.
+
+| VM | before | after |
+|---|---|---|
+| `k3s-01` (100) | 24 GiB, 28 vCPU | **unchanged** |
+| `ai-01` (101) | 24 GiB, 12 vCPU, GPU | **12 GiB, 8 vCPU**, GPU (pinned, no ballooning) |
+| `vlsi-01` (102) | 4 GiB, 4 vCPU | **16 GiB, 12 vCPU**, `cpu.units` 25 (lower than the products) |
+
+Totals: 52 GiB of the host's 60.5 GiB (24 + 12 + 16), unchanged from before this window — the VLSI pool
+comes out of ai-01's margin, not out of the host. 48 vCPUs are assigned across 32 host threads
+(time-sliced, not a limit). Inside k3s the shape is Burstable; nothing is ballooned.
+
+**Kubelet reservations move with the sizes** (`ansible/roles/kubelet`, applied in the same window):
+gpu stays 1 CPU / 2 Gi, vlsi becomes 500m / 1 Gi. vlsi-01's allocatable after the 500Mi evictionHard
+floor is ~14.5 GiB — the number design §5.1 sizes the workspace quota against.
+
+**Exactly TWO in-place VM updates; k3s-01 shows no line at all.** Both need a stop/start: dedicated
+memory and cores land at the next boot, and `reboot_after_update = false` means the provider never
+power-cycles a VM.
+
+Owner window (TEI / kb search is down ~2-3 min while ai-01 boots; k3s-01 and every other product stay up):
+
+1. Check the GPU is not mid-job (the single 16 GiB RTX 5060 Ti is shared with kb prod TEI):
+   `ssh root@<admin-door host> 'qm config 101 | grep -i hostpci'` and on ai-01 `nvidia-smi`.
+2. Drain both agents so their pods move BEFORE the shutdown, instead of being killed by it:
+   `kubectl drain vlsi-01 --ignore-daemonsets --delete-emptydir-data --timeout=300s`, then the same for
+   `ai-01`. (On ai-01 the TEI pod has no other node to go to — it restarts after the VMs boot.)
+3. Stop the two agent VMs: `qm shutdown 102 --timeout 120`, then `qm shutdown 101 --timeout 180`.
+4. `tofu plan` go/no-go — **`0 to add, 2 to change, 0 to destroy`**, each change in place, no replacement,
+   and **no line for VM 100**. Because the VMs are now STOPPED outside tofu and the stack says
+   `started = true`, each of the two resources also shows the start it will perform — that is expected:
+
+   ```
+   ~ cpu     { cores = 12 -> 8 }              # ai-01
+   ~ memory  { dedicated = 24576 -> 12288 }
+   ~ started { false -> true }                # the apply powers it back on
+   ~ cpu     { cores = 4 -> 12 }              # vlsi-01
+   ~ memory  { dedicated = 4096 -> 16384 }
+   ~ started { false -> true }
+   ```
+
+   **All six lines MUST appear.** If a cores/memory pair is half present, `site.tfvars` still pins the
+   other old value (`ai01_cores` / `ai01_memory_mb` / `vlsi01_cores` / `vlsi01_memory_mb`); fix the file
+   and re-plan — never apply a partial shape. If `started` does NOT appear, the VM was not actually
+   stopped (check `qm status` before applying).
+
+5. `tofu apply tfplan`. The provider updates the stopped VM and **starts it at the end of the apply**
+   (`started = true` is the desired state), so do NOT run `qm start` for a VM it already started:
+   check `qm status 101`, `qm status 102` and start only what is still stopped. Wait for both nodes to
+   report Ready — they come back **cordoned** (step 2 drained them) and stay that way until step 8.
+6. Mount vlsi-01's data disk **before anything can schedule there**, i.e. while the node is still cordoned:
+   the disk is blank and nothing is at the mount path, so this is the simple path of
+   docs/runbooks/agent-data-disks.md — `ansible-playbook k3s-agent.yml --tags k3s_data_disk
+   -e k3s_data_disk_enabled=true -e k3s_data_disk_device=/dev/disk/by-id/<the 300G id>
+   -e k3s_data_disk_format=true` (`--check --diff` first). It mounts at `/var/lib/rancher/k3s/storage`
+   and restarts k3s-agent on that node only. Uncordoning first is the mistake this step exists to prevent:
+   a single `/home` PVC created on the 40 GiB root fills it and evicts the workspaces.
+7. Apply the kubelet drop-ins in the same window on ai-01 and vlsi-01 (also while cordoned)
+   (`ansible-playbook k3s-agent-gpu.yml -e kubelet_allow_restart=true` and
+   `k3s-agent.yml -e kubelet_allow_restart=true`; a drop-in change restarts k3s on that agent only).
+   Profiles: gpu 1 CPU / 2 Gi, vlsi 500m / 1 Gi. k3s-01's drop-in does not change.
+8. NOW uncordon: `kubectl uncordon ai-01`, `kubectl uncordon vlsi-01`. Then the smoke checks: `nvidia-smi`
+   on ai-01, the TEI pod healthy, `findmnt --mountpoint /var/lib/rancher/k3s/storage` on vlsi-01 (a ~300 G
+   filesystem, not the 40 G root).
+
+**Rollback:** the same four values in reverse and the same window; nothing else in this stack moves.
