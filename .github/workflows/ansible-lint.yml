@@ -65,6 +65,29 @@ jobs:
           printf '%s\n' "$out"
           grep -q "would lock daemon" <<<"$out"
 
+      # Real lifecycle: create -> offboard -> re-add, all through the role.
+      # Asserts shadow states (!* then *), expiry, artefacts and sessions.
+      - name: SSH lifecycle (create -> offboard -> re-add; real)
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'sudo userdel -r qnsc-test-admin 2>/dev/null || true; sudo rm -rf /tmp/qnsc-ssh-cycle' EXIT
+          sudo rm -rf /tmp/qnsc-ssh-cycle
+          if ! out=$(ansible-playbook -i localhost, -c local tests/ssh_infra_cycle.yml 2>&1); then
+            printf '%s\n' "$out"; exit 1
+          fi
+          printf '%s\n' "$out"
+
+      # The LAST listed account being removed must still be offboarded. Runs
+      # --check with /tmp paths and asserts the report line; writes nothing.
+      - name: SSH offboarding survives an empty admin list (--check)
+        shell: bash
+        run: |
+          set -euo pipefail
+          out=$(ansible-playbook -i localhost, -c local --check tests/ssh_infra_last_account.yml)
+          printf '%s\n' "$out"
+          grep -q "would lock daemon" <<<"$out"
+
       # Re-adding an offboarded account (locked + expired) must clear the lock
       # and expiry for real. --check first, then a real run on /tmp paths;
       # asserts passwd/chage state and that the account is not locked.

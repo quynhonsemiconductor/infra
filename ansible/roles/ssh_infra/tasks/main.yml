@@ -261,36 +261,98 @@
           `PermitEmptyPasswords no` before creating them.
         quiet: true
 
-    - name: Create each listed admin with no password
-      ansible.builtin.user:
-        name: "{{ item.name }}"
-        shell: /bin/bash
-        password: "*"
-        create_home: true
-        append: true
-        groups: >-
-          {{ (item.groups | default([]))
-             + (['video', 'render'] if inventory_hostname in (groups['k3s_agent_gpu'] | default([])) else []) }}
-        state: present
+    # Create with an explicit `*` hash: no password login, and the account is
+    # not in the empty-hash/NULL state that Ubuntu's nullok would accept.
+    - name: Report creating a listed admin (check mode)
+      ansible.builtin.debug:
+        msg: "would create {{ item.name }} (certificate login only, no password hash)"
+      changed_when: true
       loop: "{{ ssh_infra_host_users }}"
-      when: ssh_infra_getent_listed.results[ansible_loop.index0].rc != 0
+      when:
+        - ansible_check_mode
+        - ssh_infra_getent_listed.results[ansible_loop.index0].rc != 0
       loop_control:
         label: "{{ item.name }}"
         extended: true
 
-    # Re-adding an offboarded account must clear the lock/expiry the
-    # offboarding set, or the certificate would be accepted and PAM would still
-    # deny the login forever.
-    - name: Re-enable a listed account that already exists
-      ansible.builtin.user:
-        name: "{{ item.item.name }}"
-        password: "*"
-        expires: -1
-        state: present
-      loop: "{{ ssh_infra_getent_listed.results }}"
-      when: item.rc == 0
+    - name: Create a listed admin on a non-GPU node (cert only)
+      ansible.builtin.command:
+        argv:
+          - useradd
+          - --create-home
+          - --shell
+          - /bin/bash
+          - --password
+          - "*"
+          - "{{ item.name }}"
+      loop: "{{ ssh_infra_host_users }}"
+      when:
+        - not ansible_check_mode
+        - ssh_infra_getent_listed.results[ansible_loop.index0].rc != 0
+        - inventory_hostname not in (groups['k3s_agent_gpu'] | default([]))
+      changed_when: true
       loop_control:
-        label: "{{ item.item.name }}"
+        label: "{{ item.name }}"
+        extended: true
+
+    - name: Create a listed admin on the GPU node (video/render groups)
+      ansible.builtin.command:
+        argv:
+          - useradd
+          - --create-home
+          - --shell
+          - /bin/bash
+          - --password
+          - "*"
+          - --groups
+          - video,render
+          - "{{ item.name }}"
+      loop: "{{ ssh_infra_host_users }}"
+      when:
+        - not ansible_check_mode
+        - ssh_infra_getent_listed.results[ansible_loop.index0].rc != 0
+        - inventory_hostname in (groups['k3s_agent_gpu'] | default([]))
+      changed_when: true
+      loop_control:
+        label: "{{ item.name }}"
+        extended: true
+
+    # Re-adding an offboarded account: ONE idempotent command, gated by the
+    # shadow pre-check (the user module strips `!` before comparing, so it would
+    # skip `!*`). `-e -1` clears the expiry; `-p '*'` restores the cert-only
+    # hash. Checked every run, so a changed value converges.
+    - name: Read the shadow entry of each listed account
+      ansible.builtin.command: "getent shadow {{ item.name }}"
+      register: ssh_infra_shadow_listed
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      loop: "{{ ssh_infra_host_users }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Report re-enabling a listed account (check mode)
+      ansible.builtin.debug:
+        msg: "would set {{ item.item.name }} to password '*' and no expiry"
+      changed_when: true
+      loop: "{{ ssh_infra_shadow_listed.results }}"
+      when:
+        - ansible_check_mode
+        - item.rc == 0
+        - >-
+          item.stdout.split(':')[1] != '*'
+          or (item.stdout.split(':')[7] | default('')) not in ['', '-1', '0']
+
+    - name: Re-enable/repair a listed account (password *, no expiry)
+      ansible.builtin.command: "usermod -p '*' -e -1 {{ item.item.name }}"
+      loop: "{{ ssh_infra_shadow_listed.results }}"
+      when:
+        - not ansible_check_mode
+        - item.rc == 0
+        - >-
+          item.stdout.split(':')[1] != '*'
+          or (item.stdout.split(':')[7] | default('')) not in ['', '-1', '0']
+      changed_when: true
 
     # People SSH ONLY with a short-lived certificate. A personal key left on
     # the node would outlive offboarding, so it is removed, never managed.
@@ -428,7 +490,6 @@
   ansible.builtin.stat:
     path: "{{ ssh_infra_sudoers_dir }}"
   register: ssh_infra_sudoers_stat
-  when: ssh_infra_has_state | bool
   tags: [ssh_infra]
 
 - name: Find managed sudoers files
@@ -437,9 +498,7 @@
     patterns: "qnsc-*"
     file_type: file
   register: ssh_infra_sudoers_files
-  when:
-    - ssh_infra_has_state | bool
-    - ssh_infra_sudoers_stat.stat.exists
+  when: ssh_infra_sudoers_stat.stat.exists
   tags: [ssh_infra]
 
 - name: Remove sudo from accounts not listed for this node
@@ -447,9 +506,7 @@
     path: "{{ item.path }}"
     state: absent
   loop: "{{ ssh_infra_sudoers_files.files | default([]) }}"
-  when:
-    - ssh_infra_has_state | bool
-    - (item.path | basename | regex_replace('^qnsc-', '')) not in ssh_infra_desired_names
+  when: (item.path | basename | regex_replace('^qnsc-', '')) not in ssh_infra_desired_names
   loop_control:
     label: "{{ item.path | basename }}"
   tags: [ssh_infra]
@@ -458,7 +515,6 @@
   ansible.builtin.stat:
     path: "{{ ssh_infra_principals_dir }}"
   register: ssh_infra_principals_stat
-  when: ssh_infra_has_state | bool
   tags: [ssh_infra]
 
 - name: Find certificate principal files
@@ -466,9 +522,7 @@
     paths: "{{ ssh_infra_principals_dir }}"
     file_type: file
   register: ssh_infra_principal_files
-  when:
-    - ssh_infra_has_state | bool
-    - ssh_infra_principals_stat.stat.exists
+  when: ssh_infra_principals_stat.stat.exists
   tags: [ssh_infra]
 
 - name: Remove the principal file of an account not listed for this node
@@ -476,9 +530,7 @@
     path: "{{ item.path }}"
     state: absent
   loop: "{{ ssh_infra_principal_files.files | default([]) }}"
-  when:
-    - ssh_infra_has_state | bool
-    - (item.path | basename) not in ssh_infra_desired_names
+  when: (item.path | basename) not in ssh_infra_desired_names
   loop_control:
     label: "{{ item.path | basename }}"
   tags: [ssh_infra]
