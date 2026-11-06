@@ -21,11 +21,15 @@ to delete them needs two applies and leaves a fragile import in the graph; the
 Grafana provisioning API deletes exactly these objects in one reviewed run.
 
 ORDER AND SAFETY: every pinned object is READ and validated first; nothing is
-deleted until the whole set checks out. On --apply the rule group, the SLO and
-every dashboard are written to timestamped JSON files BEFORE the first DELETE,
-and a failed backup aborts the run while everything still exists. A rerun after
+deleted until the whole set checks out. On --apply the rule GROUP document, the
+full SLO body and every dashboard are written to timestamped JSON files in
+`prune-backups/` BEFORE the first DELETE, and a failed backup aborts the run
+while everything still exists (the workflow uploads that directory as an
+artifact, 90-day retention). A rerun after
 a partial failure is supported: "all six rules present" and "none present" are
-both accepted (same for the SLO); only a half-deleted ruleset refuses.
+both accepted (same for the SLO); only a half-deleted ruleset refuses. When
+NOTHING is found (no rules, no SLO, no dashboards) the script exits 3 — a
+lookup miss or a wrong folder must not report success.
 
 SAFETY, deliberately paranoid:
   * The six rule TITLES and the folder UID are pinned. If the matched set is
@@ -52,6 +56,7 @@ import json
 import os
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 
 RULE_GROUP = "rova (production)"
@@ -60,6 +65,7 @@ SLO_NAME = "HTTP availability (production)"
 # core API: `/api/v1/slo` returns 404 on qnsc.grafana.net (owner dry run
 # 42250794543). The plugin route needs the SLO plugin's own permissions.
 SLO_PATH = "api/plugins/grafana-slo-app/resources/v1/slo"
+BACKUP_DIR = "prune-backups"
 CONFIRM_PHRASE = "DELETE rova (production)"
 
 # The two orphan dashboards, pinned by UID AND title. Both are AWS-era
@@ -175,10 +181,11 @@ def main() -> int:
     # RESUME-SAFE: a partial earlier run may have deleted the group already.
     # "All six present" or "none present" are both valid states; anything in
     # between is a broken set and refuses.
-    if found and found != EXPECTED_RULES:
+    if matched and (len(matched) != len(EXPECTED_RULES) or found != EXPECTED_RULES):
         print("REFUSING: the matched rule set is neither the pinned six nor empty.", file=sys.stderr)
         print(f"  missing: {sorted(EXPECTED_RULES - found)}", file=sys.stderr)
         print(f"  unexpected: {sorted(found - EXPECTED_RULES)}", file=sys.stderr)
+        print(f"  count: {len(matched)} (a duplicate same-title rule is refused too)", file=sys.stderr)
         return 2
     if not found:
         print("  rule group already absent — resume path, skipping rule deletes")
@@ -224,7 +231,7 @@ def main() -> int:
                 continue
             print(f"REFUSING: cannot read dashboard {uid!r}: {error}", file=sys.stderr)
             return 1
-        except (urllib.error.URLError, TimeoutError) as error:
+        except (urllib.error.URLError, TimeoutError, BadResponse) as error:
             print(f"REFUSING: cannot read dashboard {uid!r}: {error}", file=sys.stderr)
             return 1
         model = (dashboard or {}).get("dashboard") or {}
@@ -237,6 +244,21 @@ def main() -> int:
             )
             return 2
         dashboards.append((uid, title, dashboard))
+
+    # Found-summary: a lookup miss on the first run must not look like a
+    # successful resume. All-zero exits 3 (red) unless the owner expects it.
+    summary = (
+        f"found: rules {len(matched)}/{len(EXPECTED_RULES)}, "
+        f"slo {len(slos)}/1, dashboards {len(dashboards)}/{len(EXPECTED_DASHBOARDS)}"
+    )
+    print(summary)
+    if not matched and not slos and not dashboards:
+        print(
+            "nothing found — already pruned, or the folder/lookup is wrong. "
+            "Refusing to report success.",
+            file=sys.stderr,
+        )
+        return 3
 
     # Everything validated; print the full plan before any write.
     print("\nplan:")
@@ -256,14 +278,38 @@ def main() -> int:
     # Rules and the SLO are as irreversible as the dashboards. One failed
     # write aborts the whole run while every object still exists.
     stamp = datetime.datetime.now().strftime("%Y%m%dT%H%M%S")
+    backup_dir = os.path.abspath(BACKUP_DIR)
+    try:
+        os.makedirs(backup_dir, exist_ok=True)
+    except OSError as error:
+        print(f"REFUSING: cannot create backup dir {backup_dir}: {error}", file=sys.stderr)
+        return 1
+    print(f"  backup dir: {backup_dir}")
+
     backups: list[tuple[str, object]] = []
     if matched:
-        backups.append((f"rules-rova-production-{stamp}.json", matched))
+        # The GROUP document (interval, rules), not the bare rule list.
+        group_url = (
+            f"{base}/api/v1/provisioning/folder/{args.folder_uid}/rule-groups/"
+            f"{urllib.parse.quote(RULE_GROUP, safe='')}"
+        )
+        try:
+            group = _request("GET", group_url, token)
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, BadResponse) as error:
+            print(f"REFUSING: cannot read the rule group for backup: {error}", file=sys.stderr)
+            return 1
+        backups.append((os.path.join(backup_dir, f"rule-group-rova-production-{stamp}.json"), group))
     for slo in slos:
         uuid = slo.get("uuid") or slo.get("id")
-        backups.append((f"slo-{uuid}-{stamp}.json", slo))
+        # The single-SLO document (query, objectives, alerting), not the list row.
+        try:
+            full = _request("GET", f"{base}/{SLO_PATH}/{uuid}", token)
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, BadResponse) as error:
+            print(f"REFUSING: cannot read SLO {uuid} for backup: {error}", file=sys.stderr)
+            return 1
+        backups.append((os.path.join(backup_dir, f"slo-{uuid}-{stamp}.json"), full))
     for uid, _title, dashboard in dashboards:
-        backups.append((f"dashboard-{uid}-{stamp}.json", dashboard))
+        backups.append((os.path.join(backup_dir, f"dashboard-{uid}-{stamp}.json"), dashboard))
     for name, payload in backups:
         try:
             with open(name, "w", encoding="utf-8") as handle:
