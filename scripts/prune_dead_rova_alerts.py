@@ -54,6 +54,10 @@ import urllib.request
 
 RULE_GROUP = "rova (production)"
 SLO_NAME = "HTTP availability (production)"
+# Grafana Cloud's SLO API is served by the grafana-slo-app PLUGIN, not the
+# core API: `/api/v1/slo` returns 404 on qnsc.grafana.net (owner dry run
+# 42250794543). The plugin route needs the SLO plugin's own permissions.
+SLO_PATH = "api/plugins/grafana-slo-app/resources/v1/slo"
 CONFIRM_PHRASE = "DELETE rova (production)"
 
 # The two orphan dashboards, pinned by UID AND title. Both are AWS-era
@@ -170,7 +174,7 @@ def main() -> int:
     # exists to prevent: one bad title used to abort AFTER the rule group was
     # already gone.
     try:
-        payload = _request("GET", f"{base}/api/v1/slo", token)
+        payload = _request("GET", f"{base}/{SLO_PATH}", token)
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as error:
         print(f"cannot list SLOs: {error}", file=sys.stderr)
         return 1
@@ -245,7 +249,7 @@ def main() -> int:
     for slo in slos:
         uuid = slo.get("uuid") or slo.get("id")
         try:
-            _request("DELETE", f"{base}/api/v1/slo/{uuid}", token)
+            _request("DELETE", f"{base}/{SLO_PATH}/{uuid}", token)
             print(f"  deleted SLO       {slo.get('name') or slo.get('title')}")
         except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as error:
             failures += 1
