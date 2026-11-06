@@ -103,9 +103,25 @@ window, not as a side effect of this procedure.
 
 Portal path: **Entra ID → Overview → Properties → Manage security defaults**
 (<https://entra.microsoft.com> → Identity → Overview → Properties). It reads
-**Enabled** or **Disabled**. Nobody but a GA can see this; record the result in
-the platform Teams channel — the 2026-11-06 audit could not read it (no
-`Policy.Read.All` on the read token), so this is the closing evidence either way.
+**Enabled** or **Disabled**. Nobody but a GA can see this; post the result in
+the platform Teams channel and add the row to the table below — the 2026-11-06
+audit could not read it (no `Policy.Read.All` on the read token), so this is the
+closing evidence either way.
+
+Record the state here — this table is the durable record; the owner adds a row
+when checking (the 2026-11-06 audit could not, its read token has no
+`Policy.Read.All`):
+
+| Checked | State | By | Evidence |
+| --- | --- | --- | --- |
+| 2026-11-06 | **unverified** | SA audit | read token cannot see `identitySecurityDefaultsEnforcementPolicy` |
+
+**If the state is Disabled, STOP here — do not start §2 or §3.** Creating the
+admin accounts and moving Global Administrator to them assumes MFA is enforced
+on those accounts; with Security Defaults off, an admin account is protected by
+its password alone and this procedure makes the tenant worse, not better. Bring
+Security Defaults to Enabled first (§5.1), in its own window, and only then
+continue.
 
 What Enabled gives us (and what it does not):
 
@@ -118,8 +134,9 @@ What Enabled gives us (and what it does not):
 | MFA for Azure portal / CLI / PowerShell | — |
 | **Not** included | Conditional Access, PIM, sign-in log export, custom MFA methods — P1/P2 |
 
-- **Enabled today** → nothing to change; go to §6.
-- **Disabled today** → read §5.1 before enabling.
+- **Enabled today** → nothing to change; continue §2–§3.
+- **Disabled today** → STOP (see above), read §5.1, enable in a separate window,
+  then come back to §2.
 
 ### 5.1 If it is Disabled: enabling it blocks legacy auth and SMTP AUTH at once
 
@@ -133,14 +150,22 @@ Our own applications are **not** affected: the product mail senders authenticate
 with the Microsoft Graph application permission `Mail.Send` on the service
 principals (no mailbox credentials, no SMTP AUTH). Verify that before enabling:
 
-```bash
-# Who holds an SMTP-AUTH-capable mailbox credential today? Run with an Exchange
-# admin session; a mailbox with SMTP AUTH on that something still uses is the
-# list you must migrate first.
+```powershell
+# 1. Tenant-level value. A mailbox whose own setting is empty ($null) INHERITS
+#    this, so reading mailboxes alone is not enough: if the tenant value is
+#    False, every mailbox with a null override can authenticate by SMTP AUTH.
+Get-TransportConfig | Format-List SmtpClientAuthenticationDisabled
+
+# 2. Per-mailbox overrides. $false = SMTP AUTH allowed on that mailbox;
+#    $null = inherits the tenant value from step 1; $true = disabled.
 Get-CASMailbox -ResultSize Unlimited |
-  Where-Object { $_.SmtpClientAuthenticationDisabled -eq $false } |
-  Select-Object PrimarySmtpAddress, SmtpClientAuthenticationDisabled
+  Select-Object PrimarySmtpAddress, SmtpClientAuthenticationDisabled |
+  Sort-Object SmtpClientAuthenticationDisabled
 ```
+
+Read the two together: a mailbox with `$null` is only a risk when the tenant
+value is `False`. Enabled = the tenant blocks SMTP AUTH by default; Disabled or
+unset = it does not.
 
 Anything still using SMTP AUTH (printers, scanners, line-of-business apps, the
 NAS alert mailer, a copier that emails scans) breaks the day you flip it. Order:
