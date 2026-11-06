@@ -27,11 +27,12 @@ variable "ai01_vm_name" {
 
 variable "ai01_cores" {
   type = number
-  # 12 vCPU, up from 8: the model-inference work is the bursty consumer. The three VMs
-  # total 44 vCPUs (28 + 12 + 4) on 32 host threads; vCPUs are time-sliced, so this is
+  # 8 vCPU (VLSI rollout, 2026-11-06): inference burst is short and the GPU does the work; the
+  # 4 vCPUs go to vlsi-01, where every RTL build and simulation runs. The three VMs total
+  # 48 vCPUs (28 + 8 + 12) on 32 host threads; vCPUs are time-sliced, so this is
   # oversubscription, not a hard limit.
-  default     = 12
-  description = "vCPUs. Re-balance target: 12 (k3s-01 stays 28, vlsi-01 4)."
+  default     = 8
+  description = "vCPUs. VLSI rollout: 8 (k3s-01 28, vlsi-01 12)."
 
   validation {
     condition     = var.ai01_cores >= 4 && var.ai01_cores <= 12
@@ -41,10 +42,13 @@ variable "ai01_cores" {
 
 variable "ai01_memory_mb" {
   type = number
-  # 24 GiB (24576 MiB), up from 12 GiB: the re-balance moves vlsi-01's spare RAM here.
-  # 24 (k3s-01) + 24 (ai-01) + 4 (vlsi-01) = 52 GiB of the host's 60.5, leaving ~8.5 GiB.
-  default     = 24576
-  description = "24 GiB after the re-balance (was 12 GiB). Ballooning OFF is required for passthrough (the provider sets floating = 0); a stop/start applies it."
+  # 12 GiB (12288 MiB). The measured peak over 7 days is 4.0 GB, and the e5 and reranker
+  # models live in VRAM, not RAM; GPU passthrough pins the whole allocation (floating = 0),
+  # so 12 GiB is 3x the peak. 24 (k3s-01) + 12 (ai-01) + 16 (vlsi-01) = 52 GiB of the host's
+  # 60.5, leaving ~8.5 GiB for the host and the ZFS ARC — the same total as before the
+  # VLSI node, so no new pressure on the host.
+  default     = 12288
+  description = "12 GiB (the measured peak is 4.0 GB; models sit in VRAM). Ballooning OFF is required for passthrough (the provider sets floating = 0); a stop/start applies it."
 }
 
 variable "ai01_data_disk_gb" {
