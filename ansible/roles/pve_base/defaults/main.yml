@@ -93,3 +93,21 @@ pve_base_entra_rotate_client_key: false
 # 4 GiB PBS GC/verify is slower (less chunk/metadata cached) — accepted by the
 # owner (2026-11-06): the host has only ~8.5 GiB beyond the 52 GiB of VMs.
 pve_base_zfs_arc_max_bytes: 4294967296
+
+# ── SMART: monthly LONG self-test ──────────────────────────────────────────
+#
+# smartmontools is installed above; smartd was never configured, so only the
+# "critical warning" flag was watched (pve_monitoring exports it, Grafana alerts
+# on it). A drive degrades before that flag trips; a long test exercises the
+# whole surface, which a short one does not.
+#
+# DEVICESCAN covers whatever disks the host has (the NVMe and the two HDDs today)
+# and stays right after a disk swap. The schedule is smartd's T/MM/DD/d/HH
+# regular expression: a SHORT test on the 1st of every month at 01:00 and a LONG
+# test at 03:00 (after the backups, before the 05:00 housekeeping):
+#   S/../.././01   short, any month, any day-of-month, any weekday, 01:00
+#   L/../01/./03   long,  any month, day 01,            any weekday, 03:00
+pve_base_smartd_conf: /etc/smartd.conf
+pve_base_smartd_devicescan_line: >-
+  DEVICESCAN -a -s (S/../.././01|L/../01/./03) -n standby,10,q
+pve_base_smartd_service: smartd

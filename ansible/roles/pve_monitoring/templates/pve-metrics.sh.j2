@@ -12,6 +12,7 @@ set -eu
 
 out_dir="{{ pve_monitoring_textfile_dir }}"
 nvme_glob="{{ pve_monitoring_nvme_glob }}"
+disk_glob="{{ pve_monitoring_disk_glob }}"
 
 umask 022
 mkdir -p "$out_dir"
@@ -56,6 +57,36 @@ for dev in $nvme_glob; do
     [ -n "$media" ] && emit "pve_nvme_media_errors{device=\"$dev\"} $media"
     [ -n "$crit" ] && emit "pve_nvme_critical_warning{device=\"$dev\"} $crit"
     [ -n "$passed" ] && emit "pve_nvme_health_ok{device=\"$dev\"} $passed"
+done
+
+# ── disk self-test result (the monthly LONG test smartd schedules) ─────────
+# pve_base installs smartd with `S/../.././01` (short) and `L/../01/./03` (long) on the 1st. A failed
+# test is not a mail (this host has no MTA): it is a gauge here plus an alert in live/observability-alerting.
+#   pve_disk_self_test_failed    1 when the newest test did not pass (0 when it is still running or absent)
+#   pve_disk_self_test_age_hours power-on hours since that test, so a schedule that STOPPED running is
+#                                stale-and-visible instead of silent
+# NVMe and ATA expose the result in different JSON; an entry without a result value emits nothing.
+for dev in $disk_glob; do
+    [ -e "$dev" ] || continue
+    json="$(timeout 20 smartctl -j -a "$dev" 2>/dev/null || true)"
+    [ -n "$json" ] || continue
+
+    # `// null`, not `// empty`: on a document where the first branch is absent, `empty` short-circuits
+    # the whole `if` and the ATA case would silently emit nothing.
+    failed="$(printf '%s' "$json" | jq -r '
+      if (.nvme_self_test_log[0].result.value? // null) != null then
+        (if .nvme_self_test_log[0].result.value == 0 then 0 else 1 end)
+      elif (.ata_smart_self_test_log.standard[0].status.value? // null) != null then
+        (if .ata_smart_self_test_log.standard[0].status.passed == true then 0 else 1 end)
+      else empty end' 2>/dev/null || true)"
+    age="$(printf '%s' "$json" | jq -r '
+      (.power_on_time.hours? // null) as $now
+      | ((.nvme_self_test_log[0].power_on_hours? // null)
+         // (.ata_smart_self_test_log.standard[0].lifetime_hours? // null)) as $then
+      | if $now != null and $then != null then ($now - $then) else empty end' 2>/dev/null || true)"
+
+    [ -n "$failed" ] && emit "pve_disk_self_test_failed{device=\"$dev\"} $failed"
+    [ -n "$age" ] && emit "pve_disk_self_test_age_hours{device=\"$dev\"} $age"
 done
 
 # ── PBS datastores ─────────────────────────────────────────────────────────
