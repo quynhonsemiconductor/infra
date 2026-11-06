@@ -119,8 +119,16 @@ locals {
   # YAGNI). ids come in as a variable (identifiers, not secrets — owner-
   # supplied, never committed). Modeling them is what keeps the import from
   # DELETING them: azuread 3.x does not treat app_roles as Computed.
+  #
+  # `admin` is USER-ONLY (2026-11-06 drift audit): no service principal holds
+  # it on either app (`appRoleAssignedTo` lists users only), so the declared
+  # `Application` member type was an unused app-only escalation path — anyone
+  # who can assign app roles could have granted an SP super-admin. OpsHub reads
+  # the signed-in user's `roles` claim and never requests an app-only admin
+  # token, so `["User"]` costs nothing. This one map drives BOTH apps
+  # (prod_apps.tf reads it too).
   opshub_app_roles = {
-    admin    = { display_name = "Admin", allowed_member_types = ["User", "Application"], description = "Super admin" }
+    admin    = { display_name = "Admin", allowed_member_types = ["User"], description = "Super admin" }
     it-admin = { display_name = "IT Administrator", allowed_member_types = ["User"], description = "Full IT operation access - assets, compliance, provisioning" }
     security = { display_name = "Security Officer", allowed_member_types = ["User"], description = "Compliance management and security posture access" }
     hr       = { display_name = "HR Manager", allowed_member_types = ["User"], description = "Employee lifecycle, leave approval, onboarding" }
