@@ -122,9 +122,6 @@ resource "github_repository" "this" {
   # repositories. A new repository needs a default branch before a ruleset can
   # target it.
   auto_init = try(each.value.auto_init, false)
-  # Optional+Computed: null leaves every imported repository exactly as it is;
-  # a `create = true` entry opts in explicitly.
-  vulnerability_alerts = try(each.value.vulnerability_alerts, null)
 
   has_issues      = try(each.value.has_issues, true)
   has_wiki        = try(each.value.has_wiki, true)
@@ -143,7 +140,14 @@ resource "github_repository" "this" {
   merge_commit_title          = "MERGE_MESSAGE"
   merge_commit_message        = "PR_TITLE"
 
-  web_commit_signoff_required = true
+  # `web_commit_signoff_required` is deliberately NOT set. The organisation
+  # enforces commit signoff for every repository, and the provider (6.13.0) puts
+  # the field on the repository create/update PATCH whenever it is configured —
+  # even as `true`. GitHub answers that PATCH with
+  #   422 Commit signoff is enforced by the organization and cannot be disabled
+  # (integrations/terraform-provider-github#2077). Leaving the attribute unset
+  # keeps it Optional+Computed: the API-returned value stays in state, and the
+  # field is never sent. Every imported repository already carries `true` live.
 
   # Deleting a repository by removing a line from a map is not a change anyone
   # means to make in a PR.
@@ -161,6 +165,26 @@ resource "github_repository" "this" {
     prevent_destroy = true
     ignore_changes  = [description, archived]
   }
+}
+
+# Vulnerability alerts live in their own resource. The inline
+# `github_repository.vulnerability_alerts` field is deprecated and emits a
+# provider warning on every plan; the standalone resource owns the same switch
+# without putting it on the repository create/update payload.
+resource "github_repository_vulnerability_alerts" "this" {
+  for_each = { for k, v in local.repos : k => v if try(v.vulnerability_alerts, false) }
+
+  repository = github_repository.this[each.key].name
+  enabled    = true
+}
+
+import {
+  # `qnsc-eda` was created by the failed apply; import the alerts resource
+  # rather than asking the API to enable what is already on. The resource id is
+  # the repository name.
+  for_each = { for k, v in local.repos : k => v if try(v.vulnerability_alerts, false) }
+  to       = github_repository_vulnerability_alerts.this[each.key]
+  id       = each.key
 }
 
 import {
