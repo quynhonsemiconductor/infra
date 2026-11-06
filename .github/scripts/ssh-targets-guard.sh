@@ -39,6 +39,9 @@ if [ "$configured" -gt 0 ]; then
 fi
 
 # Nothing configured: the state decides whether that is safe to plan.
+# `state list` is a read-only command that takes NO state lock (no -lock flag exists; it calls
+# StateMgr.RefreshState and reads), so the read-only identity used by the plan and drift jobs
+# can run it: it downloads the blob and needs only read access.
 if ! state=$(tofu state list 2>&1); then
   echo "STOP: 'tofu state list' failed, so the guard cannot tell whether targets exist. Not planning blind." >&2
   printf '%s\n' "$state" >&2
