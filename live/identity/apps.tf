@@ -56,6 +56,9 @@ locals {
     Files_Read     = { name = "Files.Read", type = "Scope" }
     Files_Read_All = { name = "Files.Read.All", type = "Scope" }
     Sites_Read_All = { name = "Sites.Read.All", type = "Scope" }
+    # The Cloudflare Access IdP app (cf_access.tf) requests this one so the
+    # edge IdP can match Entra groups (`support_groups = true` in live/edge).
+    GroupMember_Read_All = { name = "GroupMember.Read.All", type = "Scope" }
   }
 
   # Reconciled to ~/signin-export/*.json (2026-10-27):
