@@ -31,10 +31,12 @@ bridge = "vmbr0"
 # vlan_id = 10   # only when net0 carries a tag; the live k3s-01 has none
 
 # ── ai-01 (GPU agent node) ────────────────────────────────────────────────
+# 8 vCPU / 12 GiB since the VLSI rollout (2026-11-06): the GPU does the work and the
+# measured peak is 4.0 GB (models sit in VRAM). The rest of the host RAM is vlsi-01.
 ai01_vm_id     = 101
 ai01_vm_name   = "ai-01"
-ai01_cores     = 12
-ai01_memory_mb = 24576
+ai01_cores     = 8
+ai01_memory_mb = 12288
 ai01_data_disk_gb = 300
 # The GPU node's address on the same VLAN (replace: 192.0.2.x is documentation).
 k3s01_ipv4_address = "192.0.2.20/24"
@@ -42,9 +44,15 @@ ai01_ipv4_address  = "192.0.2.21/24"
 ipv4_gateway      = "192.0.2.1"
 dns_servers       = ["192.0.2.1"]
 
-# ── vlsi-01 (EDA / JupyterLab workspaces, Phase 3) ─────────────────────────
+# ── vlsi-01 (Coder / EDA workspaces, Phase 3) ──────────────────────────────
 # Next free address after ai-01 on the same VLAN (replace: 192.0.2.x is documentation).
 vlsi01_ipv4_address = "192.0.2.22/24"
+# 12 vCPU / 16 GiB since the VLSI rollout. Uncomment to pin them in a site that must not
+# follow the defaults; the stack's own defaults are the rollout values.
+# vlsi01_cores     = 12
+# vlsi01_memory_mb = 16384
+# Proxmox CPU weight, LOWER than k3s-01's so the products win under contention.
+# vlsi01_cpu_units = 25
 
 # Operator keys for the cloud-init user of ai-01 and vlsi-01 (public halves only).
 ssh_public_keys = [

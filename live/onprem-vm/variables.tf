@@ -63,20 +63,20 @@ variable "datastore_id" {
 
 variable "vm_cores" {
   type = number
-  # UNCHANGED 28 vCPU in the re-balance: k3s-01 is the control plane and runs every
-  # product; it is not resized in this window (no reboot of the control plane).
+  # UNCHANGED 28 vCPU: k3s-01 is the control plane and runs every product; it is not
+  # resized in the VLSI window (no reboot of the control plane).
   default     = 28
-  description = "vCPU cores (one socket, CPU type host). Unchanged by the re-balance: 28."
+  description = "vCPU cores (one socket, CPU type host). Unchanged: 28."
 }
 
 variable "vm_memory_mb" {
   type = number
-  # UNCHANGED 24 GiB (24576 MiB) in the re-balance. k3s-01's memory requests are ~16.4 GiB
-  # with kb prod plus the 2 GiB systemReserved, so shrinking it is no longer safe. The
-  # re-balance moves ai-01 to 24 GiB and vlsi-01 to 4 GiB; the three VMs total 52 GiB of
-  # the host's 60.5 GiB, leaving ~8.5 GiB for the host and the ZFS ARC.
+  # UNCHANGED 24 GiB (24576 MiB). k3s-01's memory requests are ~16.4 GiB with kb prod plus
+  # the 2 GiB systemReserved, so shrinking it is not safe. Since the VLSI rollout (2026-11-06)
+  # ai-01 is 12 GiB and vlsi-01 16 GiB; the three VMs total 52 GiB of the host's 60.5 GiB,
+  # leaving ~8.5 GiB for the host and the ZFS ARC.
   default     = 24576
-  description = "Dedicated memory in MiB (24 GiB, unchanged by the re-balance). Ballooning stays off (floating = 0)."
+  description = "Dedicated memory in MiB (24 GiB, unchanged). Ballooning stays off (floating = 0)."
 }
 
 variable "os_disk_gb" {
