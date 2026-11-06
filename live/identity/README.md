@@ -392,8 +392,9 @@ owner exports the live shape first and the plan is a hard go/no-go.
    - `TF_VAR_owner_operator_object_id` and `TF_VAR_second_owner_object_id` —
      the two human owners (A4/O2).
    Display names, descriptions and member types are IN the code now, taken
-   verbatim from the 2026-10-27 export (admin: `Admin`,
-   `["User", "Application"]`; auditor: `Auditor`; the rest `["User"]`). If a
+   verbatim from the 2026-10-27 export (admin: `Admin`, `["User"]` — the
+   `Application` member type was dropped by the 2026-11-06 audit because no
+   SP holds the role; auditor: `Auditor`; the rest `["User"]`). If a
    future export differs from the code on any role field, STOP and reconcile
    in a reviewed commit first. If an export shows `optionalClaims`, a `groupMembershipClaims`
    value, or ANY of the non-Computed fields above set differently from the
@@ -426,6 +427,45 @@ owner exports the live shape first and the plan is a hard go/no-go.
    KB Dev's cluster credential is split from the laptop one with
    `docs/runbooks/kb-dev-signin-secret.md` (one app, two credentials, same
    ESO key).
+
+## Cloudflare Access IdP app (`cf_access.tf`)
+
+"QNSC Cloudflare Access" is the Entra app every Zero Trust door signs users in
+with. It was the only sign-in app outside this stack (2026-11-06 drift audit,
+Med), so `cf_access.tf` ADOPTS it — app, service principal and its tenant-wide
+(AllPrincipals) delegated Graph grant — with `import` blocks. No object is
+created.
+
+Owner steps (the apply kit builds `TF_VAR_cf_access_object_ids` from read-only
+lookups; nothing is typed or committed):
+
+1. Run the kit's check mode, then the plan:
+
+   ```sh
+   scripts/owner/identity-env/identity-env.sh
+   scripts/owner/identity-env/identity-env.sh -- tofu plan -out=tfplan
+   ```
+
+2. **Go/no-go: 3 imports** (application, service principal, delegated grant),
+   **0 to add, only the 2 SP owners to change, 0 to destroy, 0 to replace.**
+   The app already has those two owners; the live SP has none. If the plan
+   shows a change on the app's redirect URIs, scopes or grant claim values,
+   STOP: export the live app again and reconcile the code in a reviewed commit
+   — never apply a change to the sign-in path of every Access door.
+
+3. The CLIENT SECRET is not managed here (§7: values out of state) and the
+   import does not touch it. The live credential is `cf-access-idp-2026-10`,
+   expiring **2027-10-28** — 12 months, longer than the 6-month policy the
+   rotation script enforces. At the next rotation window the owner runs:
+
+   ```sh
+   scripts/rotate-idp-secret.sh <app-object-id>
+   ```
+
+   which appends a +6-month credential and updates the infra repo secret
+   `ENTRA_IDP_CLIENT_SECRET` that live/edge reads. Revoke the 12-month
+   credential after a verified Access sign-in. The weekly expiry watch already
+   covers it (metadata only).
 
 ## Proxmox VE + PBS login (`proxmox.tf`): app "QNSC Proxmox", plan, secret
 
