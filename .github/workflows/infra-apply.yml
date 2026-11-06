@@ -138,7 +138,7 @@ jobs:
           else
             CHANGED="$(git diff --name-only "$BEFORE" "$AFTER")"
             echo "Changed files:"; echo "$CHANGED"
-            if echo "$CHANGED" | grep -qE '^\.github/(workflows/infra-apply\.yml|scripts/(plan-fingerprint|ssh-targets-guard|tofu-error|cf-gateway-preflight)\.sh)$'; then
+            if echo "$CHANGED" | grep -qE '^\.github/(workflows/infra-apply\.yml|scripts/(plan-fingerprint|ssh-targets-guard|tofu-error)\.sh)$'; then
               sel="$DEFAULT"
             else
               for s in $KNOWN; do
@@ -484,16 +484,6 @@ jobs:
           ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
           ARM_TENANT_ID: ${{ vars.ENTRA_TENANT_ID }}
           ARM_USE_OIDC: 'true'
-
-      # Prove the apply token may create Gateway L4 rules BEFORE planning, and print the API's own
-      # status + message when it may not: the 2026-11-06 apply failed with the provider's generic
-      # "failed to make http request" and the body never reached the log.
-      - name: Gateway create preflight (edge)
-        working-directory: live/edge
-        run: bash "$GITHUB_WORKSPACE/.github/scripts/cf-gateway-preflight.sh"
-        env:
-          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CF_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
 
       - name: tofu plan
         id: plan
