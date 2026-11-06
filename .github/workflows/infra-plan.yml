@@ -248,6 +248,15 @@ jobs:
       - name: live/observability-alerting static guard
         run: sh live/observability-alerting/tests/static.sh
 
+      # prune_dead_rova_alerts.py (owner, destructive): a local HTTP server
+      # stands in for Grafana, so the SLO-plugin path (`/api/plugins/
+      # grafana-slo-app/resources/v1/slo`) is pinned — the core `/api/v1/slo`
+      # 404ed the owner's first dry run on 2026-11-06. Also proves the
+      # read-validate-all-then-delete order, the dashboard backup files, and the
+      # title-mismatch refusal before any DELETE.
+      - name: prune-dead-alerts (offline test)
+        run: python3 -m unittest scripts/test_prune_dead_rova_alerts.py
+
       # The owner apply kit builds live/identity's TF_VAR_* from read-only az/op lookups. This runs it against
       # stub az/op and captured-shape fixtures: no credential, no live call; every broken input must stop it.
       - name: identity apply kit (offline test)
