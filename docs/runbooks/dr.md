@@ -13,7 +13,7 @@ git-ignored `site.tfvars` / local Ansible inventory and in 1Password.
 |---|---|---|---|---|
 | **A** | A pod, app or namespace deleted, or a database corrupt/deleted. Host, VMs and PBS are fine. | GitOps resync (objects); R2 `qnsc-backups` (database) | minutes (objects); ≤ 1 h (database) | none for objects; ≤ 15 min (WAL), last dump 24 h |
 | **B** | The NVMe (or the whole Proxmox install on it). The HDD mirror with the PBS datastore survives. | PBS on the HDD mirror, then R2 for database catch-up | 3–4 h | PBS nightly (≤ 24 h) + WAL (≤ 15 min) |
-| **C** | The site: host, both disk sets, or the building. | Git, 1Password, Key Vault, R2 (databases **and** the weekly PBS off-site copy) | 1 business day | R2: database ≤ 15 min; VMs ≤ 7 days |
+| **C** | The site: host, both disk sets, or the building. | Git, 1Password (also the PBS key), Key Vault, R2 (databases **and** the weekly PBS off-site copy) | 1 business day | R2: database ≤ 15 min; VMs ≤ 7 days |
 
 Tier C now has a real source for the VMs as well: the weekly off-site copy of the PBS
 ([`pbs-offsite.md`](pbs-offsite.md) §4). The expected disaster is **B**, not C: one consumer NVMe with no power-loss protection carries every
@@ -34,7 +34,7 @@ If the host lost power again, tier B is the plan.
 | Azure Key Vault | application secret VALUES, ESO federated identity (no stored credential) | any tier |
 | R2 `qnsc-backups` | `pg-rova/` WAL + base, `pg-opshub/` WAL + base, `dumps/`, `files/`, `dev/` | any tier |
 | PBS (`backup` pool, HDD mirror) | whole-VM snapshots of 100, 101, 102 (client-side encrypted since 2026-11-06 — restores need the key) | A, B |
-| R2 `qnsc-pbs-offsite` (weekly PBS sync) | the same snapshots, off the host; ciphertext, useless without the key | A, B, C |
+| R2 `qnsc-pbs-offsite` (weekly PBS sync, encrypted-only) | the same snapshots, off the host; ciphertext, useless without the key | A, B, C |
 | Azure state account | OpenTofu state for every stack | any tier |
 | The VMs' own disks | k3s sqlite datastore, local-path volumes, container images | A |
 
@@ -103,9 +103,11 @@ partition or re-create the `backup` pool.** Import it.
    again. Verify before restoring: `pvesm list pbs-qnsc` lists the old snapshots.
 5. **Restore the VMs in order.** List the snapshots, pick the newest good one per VM
    (`pvesm list pbs-qnsc --vmid 100`), then restore to the real ids:
-   `qmrestore <datastore>:backup/vm/<id>/<timestamp> <id> --storage local-zfs --keyfile <the key from 1Password>`
-   (since 2026-11-06 the backups are client-side encrypted: **without the key file every restore fails**, and
-   the key is not on this host — see [`pbs-offsite.md`](pbs-offsite.md) §0)
+   `qmrestore <datastore>:backup/vm/<id>/<timestamp> <id> --storage local-zfs --keyfile <key>`
+   (since 2026-11-06 the backups are client-side encrypted: **without the key file every restore fails**. On a
+   healthy host the key is PVE's own copy, `/etc/pve/priv/storage/pbs-qnsc.enc`; on a REBUILT host — this tier —
+   that file died with the old NVMe, so use the 1Password / paper / USB copy: see
+   [`pbs-offsite.md`](pbs-offsite.md) §0)
    (add `--force` only when a leftover VM with that id exists). Order: **100 (k3s-01), 101 (ai-01),
    102 (vlsi-01)** — the server first, then the agents.
 
@@ -147,7 +149,7 @@ impact. Owner window; roughly 1–2 h including the restore.
    verified one. `zpool list` must show enough free space for the thin restore (VM 100 has a 120 G
    OS disk and a 1.2 T data disk; only allocated blocks are written).
 2. **Restore as a new id, with new MACs:**
-   `qmrestore <datastore>:backup/vm/100/<timestamp> 900 --storage local-zfs --unique --keyfile <the key from 1Password>`
+   `qmrestore <datastore>:backup/vm/100/<timestamp> 900 --storage local-zfs --unique --keyfile /etc/pve/priv/storage/pbs-qnsc.enc`
    (encrypted backups; see [`pbs-offsite.md`](pbs-offsite.md) §0).
    `--unique` avoids colliding with the live VM's MAC addresses.
 3. **Unplug the network before the first boot.** Read `net0` from `qm config 900`, then set it with

@@ -109,4 +109,10 @@ pbs_s3_secret_key: "{{ lookup('ansible.builtin.env', 'PBS_S3_SECRET_KEY') }}"
 # Weekly is enough (decision 2026-11-04): the local PBS carries the RPO, this carries the site.
 pbs_offsite_sync_job_id: qnsc-offsite-weekly
 pbs_offsite_sync_schedule: "Sun 05:00"
+pbs_offsite_verify_job_id: qnsc-offsite-verify
+pbs_offsite_verify_schedule: "Wed 04:00"
 pbs_offsite_gc_schedule: "Mon 03:00"
+
+# sha256 of "<access>:<secret>" from the last run: PBS never shows the stored keys, so this is how a rotation
+# (a replacement R2 token in 1Password) is detected and pushed with `s3 endpoint update`.
+pbs_offsite_cred_hash_file: /etc/pbs-offsite-endpoint.sha256
