@@ -15,7 +15,7 @@ web and installs browser extensions. Today the tenant has four GA holders:
 | `bg1` (initial `*.onmicrosoft.com` domain) | break-glass | Global Administrator |
 | `bg2` (initial `*.onmicrosoft.com` domain) | break-glass | Global Administrator |
 
-The decision: create cloud-only `<name>-admin` accounts on the tenant's verified domain, move Global
+The decision: create cloud-only `<name>-admin@<tenant domain>` accounts, move Global
 Administrator onto them, remove it from the daily accounts, keep `bg1`/`bg2`.
 No Conditional Access is possible (it needs Entra ID P1, which the tenant does
 not have), so **Security Defaults** is the only MFA enforcement — §5 verifies it
@@ -25,10 +25,15 @@ is actually on.
 
 1. Open 1Password → vault `QNSC` → create item `Entra admin – <name>` for each
    new account. Put nothing in it until §2 step 4.
-2. Confirm you can sign in as **bg1** right now (it is the safety net for this
-   whole procedure; its password and TOTP are in 1Password). If you cannot,
-   stop and fix that first.
-3. Do this outside a change window: nothing breaks mid-way, but a half-finished
+2. Confirm you can sign in as **both `bg1` and `bg2`** right now — password and
+   TOTP, in a private window (they are the safety net for this whole procedure;
+   their credentials are in 1Password). One working break-glass account is not
+   enough: if the move goes wrong for the daily account *and* the one you tested
+   is the account you are signed in as, the second one is what saves you. If
+   either fails, stop and fix that first.
+3. Check the **Security Defaults state** now (§5): if it is Disabled, this
+   procedure must not be the thing that enables it — plan that separately.
+4. Do this outside a change window: nothing breaks mid-way, but a half-finished
    move leaves one daily account with GA.
 
 ## 2. Create the admin accounts
@@ -38,9 +43,10 @@ Portal: <https://entra.microsoft.com> → **Users → New user → Create new us
 
 For each of the two people:
 
-1. **User principal name**: `<firstname>adm@<tenant-domain>` (for example
-   `aaadm` and `bbadm` on the same verified domain). Keep it recognisable as an
-   admin identity, and do not reuse the daily account's mailbox alias.
+1. **User principal name**: `<name>-admin@<tenant domain>` — one pattern
+   everywhere in this guide, e.g. `aa-admin` and `bb-admin`. Keep it
+   recognisable as an admin identity, and do not reuse the daily account's
+   mailbox alias.
 2. **Display name**: `<Full name> (admin)`.
 3. **Password**: auto-generate; copy it straight into the 1Password item from
    §1. Tick "Require this user to change their password on first sign-in".
@@ -68,7 +74,9 @@ Do not use these accounts for daily work — no Teams, no mail, no browsing.
    the account.
 4. Only then: **Global Administrator → Assignments** → select the owner's
    daily account → **Remove assignment**. Repeat for the second admin's daily
-   account.
+   account. Before removing each, sign in once more as **both** `bg1` and `bg2`
+   in private windows (§1 step 2) — after this step those two are the only
+   recovery path if a new admin account cannot authenticate.
 5. Leave `bg1` and `bg2` exactly as they are (break-glass, excluded from daily
    use).
 
@@ -81,20 +89,73 @@ az rest --method get --url "https://graph.microsoft.com/v1.0/directoryRoles/$RID
   --query 'value[].userPrincipalName' -o tsv | sort
 ```
 
-Expected: the two `<name>adm` accounts, `bg1`, `bg2` — and **no daily
+Expected: the two `<name>-admin@<tenant domain>` accounts, `bg1`, `bg2` — and **no daily
 account**. The Application Administrator role must stay empty (it had no members
 at the 2026-11-06 audit; the same query with
 `displayName=='Application Administrator'` should return nothing).
 
-## 5. Verify Security Defaults is ON (this is the MFA control)
+## 5. Security Defaults: check the state first, then move senders
 
-There is no Conditional Access without P1, so if Security Defaults is off, the
-tenant has **no enforced MFA** and the only thing protecting these admin
-accounts is their password. Do not skip this.
+There is no Conditional Access without P1, so Security Defaults is the MFA
+control. **Check its state before §2, not after**: if it is OFF, turning it ON is
+itself a change with an outage path (below), and it should happen in its own
+window, not as a side effect of this procedure.
 
 Portal path: **Entra ID → Overview → Properties → Manage security defaults**
-(also reachable as <https://entra.microsoft.com> → Identity → Overview →
-Properties). The toggle must read **Enabled**.
+(<https://entra.microsoft.com> → Identity → Overview → Properties). It reads
+**Enabled** or **Disabled**. Nobody but a GA can see this; record the result in
+the platform Teams channel — the 2026-11-06 audit could not read it (no
+`Policy.Read.All` on the read token), so this is the closing evidence either way.
+
+What Enabled gives us (and what it does not):
+
+| Security Defaults enforces | Notes |
+| --- | --- |
+| MFA registration for all users, 14-day grace | Microsoft Authenticator only (no SMS/voice on Free) |
+| MFA required for all admins at every sign-in | the rule this procedure depends on |
+| MFA challenge for risky sign-ins / unfamiliar devices | the Free risk detections are basic |
+| Legacy authentication blocked | IMAP/POP/SMTP AUTH, older Office clients |
+| MFA for Azure portal / CLI / PowerShell | — |
+| **Not** included | Conditional Access, PIM, sign-in log export, custom MFA methods — P1/P2 |
+
+- **Enabled today** → nothing to change; go to §6.
+- **Disabled today** → read §5.1 before enabling.
+
+### 5.1 If it is Disabled: enabling it blocks legacy auth and SMTP AUTH at once
+
+Security Defaults has no per-protocol switches. The moment it is ON:
+
+- **legacy authentication is blocked**: IMAP, POP, SMTP AUTH (all of it), plus
+  older Office/Exchange clients;
+- every user must register MFA within 14 days (admins at every sign-in).
+
+Our own applications are **not** affected: the product mail senders authenticate
+with the Microsoft Graph application permission `Mail.Send` on the service
+principals (no mailbox credentials, no SMTP AUTH). Verify that before enabling:
+
+```bash
+# Who holds an SMTP-AUTH-capable mailbox credential today? Run with an Exchange
+# admin session; a mailbox with SMTP AUTH on that something still uses is the
+# list you must migrate first.
+Get-CASMailbox -ResultSize Unlimited |
+  Where-Object { $_.SmtpClientAuthenticationDisabled -eq $false } |
+  Select-Object PrimarySmtpAddress, SmtpClientAuthenticationDisabled
+```
+
+Anything still using SMTP AUTH (printers, scanners, line-of-business apps, the
+NAS alert mailer, a copier that emails scans) breaks the day you flip it. Order:
+
+1. Enumerate the senders above and who owns each (office manager, ops).
+2. Migrate each one to a method Security Defaults allows — Microsoft Graph
+   `Mail.Send` (what our apps use), or an SMTP relay that does not authenticate
+   as a mailbox user (the on-prem MTA, if one exists). Do the migrations first.
+3. Then enable Security Defaults **in a window**, announce it, and keep an hour
+   to catch the sender someone forgot.
+4. Re-verify the new admin accounts can sign in (MFA prompt) immediately after.
+
+If any sender cannot be migrated now, record it and decide with the owner
+whether the legacy path is acceptable until then — do not leave the tenant
+without enforced MFA because of a printer.
 
 What "Enabled" gives us (and what it does not):
 
