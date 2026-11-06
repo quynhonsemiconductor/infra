@@ -63,27 +63,23 @@
 #          token in the dashboard. The cert-manager solver reads the Secret on each
 #          issuance, so no restart is needed.
 #
-# ONE route, not two (finding from the first apply, run 42205180725).
+# ONE route, and the WILDCARD SPELLING IS THE ONE THAT WORKS (owner, live, 2026-11-07 ~01:45).
 #
-# Cloudflare stores a private hostname route under its PARENT name: a route entered
-# as `*.coder.qnsc.vn` is "saved as" `coder.qnsc.vn`, and the stored entry matches
-# the name and one label below it (`*.internal.local` is saved as `internal.local`,
-# "will match all subdomains at the wildcard level", covers `foo.internal.local` but
-# not `foo.bar.internal.local" — Cloudflare Zero Trust docs, "Connect a private
-# hostname", wildcard section). The first apply created `coder.qnsc.vn` and the API
-# answered 409 for `*.coder.qnsc.vn`: the same stored object, under the other
-# spelling. Creating both is therefore impossible, not merely redundant.
+# History: the first apply created `coder.qnsc.vn`; `*.coder.qnsc.vn` was rejected 409 (Cloudflare
+# stores a route under its parent name, so the pair is one object). The pilot then showed what the docs
+# do not say clearly: the plain entry matched ONLY the apex — `code--<ws>--<user>.coder.qnsc.vn` did
+# not resolve over WARP. The owner deleted it and re-created it from the dashboard with the `*.` spelling
+# on the same tunnel (same description); the dashboard still lists it as `coder.qnsc.vn`, and now
+#   dig coder.qnsc.vn                        -> 172.64.138.235
+#   dig code--test-nghia2--nghiavt.coder...  -> 172.64.138.236
+# both over WARP (in-cluster CoreDNS wildcard: gitops#409).
 #
-# So this file keeps the name the API kept — `coder.qnsc.vn` — and relies on that
-# entry matching both the control plane and the workspace apps at ONE label
-# (`ws1.coder.qnsc.vn`). That is also what a wildcard entry would have done.
+# So the route is created with the wildcard spelling, the API round-trips it under the parent name, and
+# this stack ADOPTS the owner's object instead of re-creating it (its id changed when it was re-created,
+# so a plain plan would try to create and hit 409). The import block below finds the live route with the
+# list API and binds it to the SAME address the state already uses.
 #
-# If the pilot shows the apex resolving but a workspace app not, the fix is to
-# recreate the route from the dashboard with the `*.` spelling (Cloudflare must
-# accept it once the plain name is gone) and import it under the same key:
-#   tofu import 'cloudflare_zero_trust_network_hostname_route.coder["coder.qnsc.vn"]' <route id>
-# Do not add a second resource for the same name.
-#
+# Route records are additive and idempotent; prevent_destroy so a bad plan can
 # Route records are additive and idempotent; prevent_destroy so a bad plan can
 # never silently drop the only door to the platform.
 
@@ -91,13 +87,48 @@ locals {
   # Gated on the tunnels exactly like every other edge object: the route carries a
   # tunnel id, and live/onprem creates the tunnels.
   coder_private_hostnames = var.tunnels_exist ? toset(["coder.qnsc.vn"]) : toset([])
+
+  # The live route, found by hostname (substring match) scoped to the qnsc-apps tunnel. The API reports
+  # the stored name, which is the parent spelling whichever way it was created, so the comparison strips
+  # a leading `*.` from both sides.
+  coder_routes_live = try([
+    for r in data.cloudflare_zero_trust_network_hostname_routes.coder[0].result :
+    r if replace(r.hostname, "*.", "") == "coder.qnsc.vn"
+  ], [])
+  coder_route = try(one(local.coder_routes_live), null)
+}
+
+# Read-only discovery for the import below. Scoped by tunnel and by `is_deleted = false`, so a deleted
+# route from an earlier re-create cannot be adopted by mistake.
+data "cloudflare_zero_trust_network_hostname_routes" "coder" {
+  count      = var.tunnels_exist ? 1 : 0
+  account_id = var.cloudflare_account_id
+  max_items  = 100
+  # Flat arguments on the LIST data source (the single one takes a `filter` block): substring hostname,
+  # the tunnel, and no deleted rows.
+  hostname   = "coder.qnsc.vn"
+  tunnel_id  = data.cloudflare_zero_trust_tunnel_cloudflared.qnsc_apps[0].id
+  is_deleted = false
+}
+
+# ADOPTION (2026-11-07): the address below already existed in state pointing at the route the owner
+# deleted; the id therefore changed and this block re-binds the live object to the same address. After
+# the first apply it is a no-op (same address, same id). If the route is ever missing, the plan fails
+# here with a null id rather than creating a duplicate (which the API would reject 409 anyway).
+import {
+  to = cloudflare_zero_trust_network_hostname_route.coder["coder.qnsc.vn"]
+  id = local.coder_route.id
 }
 
 resource "cloudflare_zero_trust_network_hostname_route" "coder" {
   for_each = local.coder_private_hostnames
 
   account_id = var.cloudflare_account_id
-  hostname   = each.value
+  # The WILDCARD spelling, which is what makes workspace apps resolve (see the header). The API stores
+  # it under `coder.qnsc.vn`; if the provider reads that parent spelling back, the plan shows a diff on
+  # this attribute and the value here becomes the read-back one — the wildcard behaviour lives in the
+  # stored object either way, which is why the owner's re-created route keeps working.
+  hostname = "*.${each.value}"
   # The in-cluster tunnel: Coder is a Kubernetes Service, and only the in-cluster
   # cloudflared can reach it (the qnsc-admin tunnel runs on pve01, outside k3s).
   tunnel_id = data.cloudflare_zero_trust_tunnel_cloudflared.qnsc_apps[0].id
