@@ -10,6 +10,10 @@ WHAT IS DEAD
     are ``rova-prod-http-5xx-rate`` (prod-http-5xx.tf) plus the prod signals.
   * SLO ``HTTP availability (production)`` — same ``production`` selector, so
     the SLO and its burn alerts were dead too.
+  * The two orphan dashboards ``rova-overview-production`` and
+    ``rova-runtime-production`` — same selector on every panel (13 and 9
+    queries), so they render empty. Not owned by any state file; the UIDs and
+    titles are pinned below.
 
 WHY A SCRIPT AND NOT TERRAFORM: neither object is in any state this repo can
 reach (the rova prod stack is the closed AWS-era account). Importing them only
@@ -45,6 +49,15 @@ import urllib.request
 RULE_GROUP = "rova (production)"
 SLO_NAME = "HTTP availability (production)"
 CONFIRM_PHRASE = "DELETE rova (production)"
+
+# The two orphan dashboards, pinned by UID AND title. Both are AWS-era
+# rova exports: every query filters deployment_environment_name="production",
+# which on-prem never emits, so both render empty. They carry no folder
+# ownership in IaC — `provisioned` tag only.
+EXPECTED_DASHBOARDS = {
+    "rova-overview-production": "Overview (production)",
+    "rova-runtime-production": "Runtime & Dependencies (production)",
+}
 
 # QNSC/Alerts (imported as "0:efwpy0l5x8nwgb" in live/observability-alerting).
 # Override only if the group really lives in another folder.
@@ -194,10 +207,47 @@ def main() -> int:
                 failures += 1
                 print(f"    FAILED: {error}", file=sys.stderr)
 
+    # ── The two orphan dashboards ──────────────────────────────────────────
+    # Pinned by UID AND title: a missing dashboard is fine (idempotent re-run),
+    # a present one with a DIFFERENT title means the UID was reused and the
+    # script refuses rather than delete someone's live board.
+    for uid, expected_title in EXPECTED_DASHBOARDS.items():
+        try:
+            dashboard = _request("GET", f"{base}/api/dashboards/uid/{uid}", token)
+        except urllib.error.HTTPError as error:
+            if error.code == 404:
+                print(f"dashboard {uid!r}: absent (nothing to delete)")
+                continue
+            print(f"cannot read dashboard {uid!r}: {error}", file=sys.stderr)
+            failures += 1
+            continue
+        except (urllib.error.URLError, TimeoutError) as error:
+            print(f"cannot read dashboard {uid!r}: {error}", file=sys.stderr)
+            failures += 1
+            continue
+        model = (dashboard or {}).get("dashboard") or {}
+        title = model.get("title")
+        if title != expected_title:
+            print(
+                f"REFUSING: dashboard {uid!r} has title {title!r}, "
+                f"expected {expected_title!r}",
+                file=sys.stderr,
+            )
+            return 2
+        print(
+            f"  {'DELETE' if args.apply else 'would delete'} "
+            f"dashboard {title} (uid={uid})"
+        )
+        if args.apply:
+            try:
+                _request("DELETE", f"{base}/api/dashboards/uid/{uid}", token)
+            except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as error:
+                failures += 1
+                print(f"    FAILED: {error}", file=sys.stderr)
+
     if not args.apply:
         print("\ndry run: nothing changed. Re-run with --apply and --confirm.")
     return 1 if failures else 0
-
 
 if __name__ == "__main__":
     sys.exit(main())
