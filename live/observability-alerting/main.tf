@@ -564,11 +564,6 @@ import {
 }
 
 import {
-  to = grafana_folder.rova_dashboards
-  id = "0:cfwpy0n7xqcqoc"
-}
-
-import {
   to = grafana_dashboard.system_overview
   id = "0:system-overview"
 }
