@@ -57,15 +57,22 @@ proxmox-backup-client key show /etc/pve/priv/storage/pbs-qnsc.enc
 `dr.md` can restore on that host without 1Password. **Tier C cannot** — the key file died with the host — which
 is exactly why the three offline copies exist.
 
-Check: the OpenTofu plan for `live/onprem-vm` fails with "pbs-qnsc has no client-side encryption key" until
-this is done (a `terraform_data` guard reads the storage's `encryption-key-fingerprint`); after it, the plan
-shows **no change** on the storage. The key must also be absent from the state (it is never a TF input, and
-the check proves it):
+Check: the OpenTofu plan for `live/onprem-vm` must show **no change** on the storage — a `-/+` (replace) is
+NO-GO at every apply. Set `pbs_encryption_required = true` in the git-ignored `site.tfvars` (default false, so
+every other plan keeps working): from then on the plan fails with "pbs-qnsc has no client-side encryption key"
+whenever the storage lost its key (a `terraform_data` guard reads the storage's read-only
+`encryption-key-fingerprint`).
+
+The key must also be absent from the state. It is never a TF input; the check greps the state for the key's own
+base64 material (the PVE key file is JSON, so `grep` on the file would match nothing):
 
 ```sh
 cd live/onprem-vm
-tofu state pull | grep -F -- "$(head -c 24 /etc/pve/priv/storage/pbs-qnsc.enc)" \
-  && { echo "STOP: key found in state"; exit 1; } || echo "key not in state"
+KEY_DATA="$(jq -r .data /etc/pve/priv/storage/pbs-qnsc.enc)"
+tofu state pull | grep -qF -- "$KEY_DATA" \
+  && { echo "STOP: key material found in state"; exit 1; } || echo "key not in state"
+tofu state show proxmox_storage_pbs.pbs_qnsc | grep -E '^[[:space:]]*encryption_key[[:space:]]*=' \
+  && { echo "STOP: encryption_key attribute in state"; exit 1; } || echo "no encryption_key attribute"
 ``` A `-/+` (replace) on `proxmox_storage_pbs.pbs_qnsc` is **NO-GO** at every
 apply: it would deregister the storage and the key with it.
 

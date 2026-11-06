@@ -83,6 +83,10 @@ pve_acls = {
 # }
 
 # ── PBS (backup.tf) ─────────────────────────────────────────────────────────
+# Turn this on AFTER the encryption-key ceremony (docs/runbooks/pbs-offsite.md §0.1): from that point the
+# plan fails if pbs-qnsc has no client-side encryption key. Leave it false until then — encryption itself is
+# PVE's, not this stack's, so false does not encrypt or decrypt anything.
+# pbs_encryption_required = true
 # Certificate fingerprint as `ansible-playbook pve-host.yml --tags pbs` prints it (not a secret).
 pbs_fingerprint = "00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff"
 

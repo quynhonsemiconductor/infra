@@ -27,6 +27,12 @@
 # 6 monthly). They are also why the off-site sync runs with `--encrypted-only` (Ansible `pbs`): the copy must
 # never carry a readable image, and `--encrypted-only` skips those old snapshots instead of publishing them.
 
+variable "pbs_encryption_required" {
+  type        = bool
+  default     = false
+  description = "True once the owner has run the key ceremony (docs/runbooks/pbs-offsite.md §0): the plan then FAILS if the pbs-qnsc storage has no client-side encryption key. False keeps other plans working before the ceremony; it does not turn encryption on or off — PVE owns the key either way."
+}
+
 variable "pbs_server" {
   type        = string
   default     = "127.0.0.1"
@@ -93,11 +99,17 @@ resource "proxmox_storage_pbs" "pbs_qnsc" {
   }
 }
 
-# Encryption is ON, or the plan fails. `lifecycle.precondition` cannot read its own resource, so the check
-# lives on this zero-cost guard resource that depends on it: the read-only fingerprint is empty when the
-# storage carries no client-side key, i.e. when the next nightly backup would be readable in transit and in the
-# R2 copy. The key itself stays in PVE's /etc/pve/priv (the header explains why it is never a TF input).
+# Encryption is ON, or the plan fails — but ONLY once the owner says it must be. `lifecycle.precondition`
+# cannot read its own resource, so the check lives on this zero-cost guard resource that depends on it: the
+# read-only fingerprint is empty when the storage carries no client-side key, i.e. when the next nightly backup
+# would be readable in transit and in the R2 copy. The key itself stays in PVE's /etc/pve/priv (the header
+# explains why it is never a TF input).
+#
+# Default OFF so that every other `live/onprem-vm` plan keeps working before the key ceremony has run; the
+# owner flips it on (site.tfvars) in the same apply that first requires encryption. From then on a plan that
+# lost the key fails instead of silently backing up in the clear.
 resource "terraform_data" "pbs_encryption_required" {
+  count = var.pbs_encryption_required ? 1 : 0
   input = proxmox_storage_pbs.pbs_qnsc.encryption_key_fingerprint
 
   lifecycle {
