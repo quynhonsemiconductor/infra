@@ -87,7 +87,5 @@ jobs:
           printf '%s\n' "$out"
           shadow=$(sudo getent shadow qnsc-test-admin | cut -d: -f2)
           [ "$shadow" = "*" ] || { echo "shadow field is '$shadow', expected exactly '*'"; exit 1; }
-          state=$(sudo passwd -S qnsc-test-admin | awk '{print $2}')
-          [ "$state" != "L" ] || { echo "qnsc-test-admin is still locked"; exit 1; }
           sudo chage -l qnsc-test-admin | grep -qi '^Account expires.*never' \
             || { sudo chage -l qnsc-test-admin; echo "expiry was not cleared"; exit 1; }

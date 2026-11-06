@@ -218,7 +218,8 @@ containing exactly the login name. Reserved/operator names (`root`, `qnsc`,
 role did not create. Removed from the list → the account is locked (expiry in
 the past), its active sessions are killed, its sudoers and principal files are
 removed, and the home stays; only a FAILED lock stays in the marker for a
-retry. Re-adding the account clears the lock and the expiry. An empty CA key
+retry. Re-adding the account clears the expiry and normalises the password hash to
+`*` (no password login; certificate login still works under UsePAM yes). An empty CA key
 **removes** the drop-in, `/etc/ssh/ca.pub` and the principal directory (a real
 revoke, not a silent skip). The break-glass operator account is never touched.
 
