@@ -20,3 +20,9 @@ shutdownGracePeriod: 120s
 shutdownGracePeriodCriticalPods: 60s
 
 imageMaximumGCAge: "{{ kubelet_image_maximum_gc_age }}"
+
+# Image garbage collection watermarks (see defaults/main.yml). Collection always runs above the high
+# percent and never below the low one; the upstream default is 85/80, which let k3s-01's image store grow
+# to ~91 GiB of a 120 GiB root before it ran at all.
+imageGCHighThresholdPercent: {{ kubelet_image_gc_high_percent }}
+imageGCLowThresholdPercent: {{ kubelet_image_gc_low_percent }}
