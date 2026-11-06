@@ -243,6 +243,12 @@ jobs:
       - name: rotate-signin-secret (offline test)
         run: bash scripts/owner/rotate-signin-secret_test.sh
 
+      # prune-kv-secrets.sh (owner, unreferenced-secret deletion): fake trees and
+      # a stub az. Proves a code reference blocks every deletion, a comment/docs
+      # mention does not, and --apply calls only `secret delete`.
+      - name: prune-kv-secrets (offline test)
+        run: bash scripts/owner/prune-kv-secrets_test.sh
+
   # ───────────────────────────────────────────────────────────────────────
   # tflint — NOT a required check yet, deliberately.
   #
