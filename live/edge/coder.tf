@@ -125,8 +125,11 @@ resource "cloudflare_zero_trust_network_hostname_route" "coder" {
 # traffic, evaluated before anything reaches a tunnel. They are IDENTITY policies:
 # `identity.groups.id` is an ARRAY of the Entra group object ids carried in the WARP identity, so it is
 # always tested with `any(...[*] in {...})` — an `==` against it is a wirefilter type error at the API
-# ("cannot perform this operation on type Array(Bytes)", 2026-11-06). live/edge/tests/static.sh forbids
-# the equality form coming back.
+# ("cannot perform this operation on type Array(Bytes)", 2026-11-06).
+#
+# AND it goes in the policy's `identity` attribute, never inside `traffic`: the API rejects an identity
+# field in a traffic expression with 400 code 2091 "expression contains fields that are not allowed for
+# rule-type traffic" (same day, third failure on this resource). live/edge/tests/static.sh enforces both.
 #
 #   900 allow  platform admins             — today's access, stated explicitly so a
 #                                            later blanket rule cannot take it away
@@ -170,6 +173,11 @@ locals {
     "vlsi-block-other-private",
   ]
   gateway_precedences = [900, 910, 920]
+
+  # The private destinations the tunnels can expose, as a TRAFFIC expression. RFC 1918 + CGNAT; the
+  # synthetic IP a private hostname resolves to (172.64.128.0/20) is outside every one of them, which is
+  # why the Coder allow below matches on SNI instead.
+  private_l4_traffic = "any(net.dst.ip[*] in {10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10})"
 }
 
 # Every L4 policy on the account, read at plan time. Two facts the plan must have before it
@@ -188,7 +196,12 @@ resource "cloudflare_zero_trust_gateway_policy" "admin_allow_private" {
   enabled     = true
   action      = "allow"
   filters     = ["l4"]
-  traffic     = "any(identity.groups.id[*] in {\"${var.grp_platform_admins_id}\"})"
+  # IDENTITY AND TRAFFIC ARE SEPARATE FIELDS (Cloudflare API: `traffic` = traffic matching expression,
+  # `identity` = identity matching expression, `device_posture` = posture). Putting an identity selector
+  # in `traffic` is rejected at the API with
+  #   400 code 2091 "Invalid expression: expression contains fields that are not allowed for rule-type traffic".
+  identity = "any(identity.groups.id[*] in {\"${var.grp_platform_admins_id}\"})"
+  traffic  = local.private_l4_traffic
 
   lifecycle {
     # A rule about the account this file does not own, proven before anything is created: our
@@ -232,7 +245,8 @@ resource "cloudflare_zero_trust_gateway_policy" "vlsi_allow_coder" {
   enabled     = true
   action      = "allow"
   filters     = ["l4"]
-  traffic     = "any(identity.groups.id[*] in {\"${var.grp_vlsi_id}\"}) and any(net.sni.domains[*] == \"coder.qnsc.vn\")"
+  identity    = "any(identity.groups.id[*] in {\"${var.grp_vlsi_id}\"})"
+  traffic     = "any(net.sni.domains[*] == \"coder.qnsc.vn\")"
 }
 
 resource "cloudflare_zero_trust_gateway_policy" "vlsi_block_private" {
@@ -252,5 +266,6 @@ resource "cloudflare_zero_trust_gateway_policy" "vlsi_block_private" {
   # above already claims the one public-looking destination the group needs (the Coder
   # hostname, matched on SNI before this rule). Only the allow needs to be there: a request
   # that reaches Coder matches 100 first, everything else private matches here.
-  traffic = "any(identity.groups.id[*] in {\"${var.grp_vlsi_id}\"}) and any(net.dst.ip[*] in {10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10})"
+  identity = "any(identity.groups.id[*] in {\"${var.grp_vlsi_id}\"})"
+  traffic  = local.private_l4_traffic
 }
