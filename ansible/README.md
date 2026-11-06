@@ -141,14 +141,14 @@ credential is revoked after a green login on both doors. The key is momentarily 
 
 ## ZFS ARC ceiling (`pve_base_zfs`)
 
-`pve_base` owns `/etc/modprobe.d/zfs.conf` (one `options zfs zfs_arc_max=8589934592` line) and applies
+`pve_base` owns `/etc/modprobe.d/zfs.conf` (one `options zfs zfs_arc_max=4294967296` line) and applies
 the live `/sys/module/zfs/parameters/zfs_arc_max`. It refuses a file whose `options zfs` line carries
 other settings instead of overwriting them; merge by hand and re-run. The initramfs handler rebuilds,
 and no reboot is needed. After a run that changed the value:
 
 ```sh
 proxmox-boot-tool status                                  # boot entry/initramfs is current
-cat /sys/module/zfs/parameters/zfs_arc_max                # 8589934592
+cat /sys/module/zfs/parameters/zfs_arc_max                # 4294967296
 ```
 
 `--check` reports the pending file line and live change; `pve-host.yml --tags pve_base_zfs` converges just this.

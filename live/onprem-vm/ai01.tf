@@ -26,20 +26,25 @@ variable "ai01_vm_name" {
 }
 
 variable "ai01_cores" {
-  type        = number
-  default     = 8
-  description = "vCPUs. The host has 28 assigned to k3s-01 and the card needs a fast feed, not all the cores; the split is 28 + 8 on a 32-thread CPU, leaving headroom for the hypervisor."
+  type = number
+  # 12 vCPU, up from 8: the model-inference work is the bursty consumer. The three VMs
+  # total 44 vCPUs (28 + 12 + 4) on 32 host threads; vCPUs are time-sliced, so this is
+  # oversubscription, not a hard limit.
+  default     = 12
+  description = "vCPUs. Re-balance target: 12 (k3s-01 stays 28, vlsi-01 4)."
 
   validation {
     condition     = var.ai01_cores >= 4 && var.ai01_cores <= 12
-    error_message = "ai01_cores must be within 4-12: k3s-01 keeps 28 and the host needs headroom."
+    error_message = "ai01_cores must be within 4-12 (the validated 12-vCPU ceiling)."
   }
 }
 
 variable "ai01_memory_mb" {
-  type        = number
-  default     = 12288
-  description = "12 GiB (12288 MiB; was 20 GiB before Phase 3). Ballooning OFF is required for passthrough (the provider sets floating = 0). An in-place change that needs the guest restarted: docs/runbooks/phase3-window.md."
+  type = number
+  # 24 GiB (24576 MiB), up from 12 GiB: the re-balance moves vlsi-01's spare RAM here.
+  # 24 (k3s-01) + 24 (ai-01) + 4 (vlsi-01) = 52 GiB of the host's 60.5, leaving ~8.5 GiB.
+  default     = 24576
+  description = "24 GiB after the re-balance (was 12 GiB). Ballooning OFF is required for passthrough (the provider sets floating = 0); a stop/start applies it."
 }
 
 variable "ai01_data_disk_gb" {

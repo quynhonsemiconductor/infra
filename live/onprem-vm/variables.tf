@@ -62,19 +62,21 @@ variable "datastore_id" {
 }
 
 variable "vm_cores" {
-  type        = number
+  type = number
+  # UNCHANGED 28 vCPU in the re-balance: k3s-01 is the control plane and runs every
+  # product; it is not resized in this window (no reboot of the control plane).
   default     = 28
-  description = "vCPU cores (one socket, CPU type host). The host keeps ~8 GB of RAM; do not oversubscribe cores."
+  description = "vCPU cores (one socket, CPU type host). Unchanged by the re-balance: 28."
 }
 
 variable "vm_memory_mb" {
   type = number
-  # 24 GiB (24576 MiB), down from 36 GiB (36864): Phase 3 gives vlsi-01 20 GiB and ai-01 keeps
-  # 12 GiB, and the host has ~60 GB usable. This is an IN-PLACE change that needs the guest
-  # restarted to take effect; the stack keeps reboot_after_update = false, so nothing power-cycles
-  # VM 100 behind your back. Do it in the window (docs/runbooks/phase3-window.md).
+  # UNCHANGED 24 GiB (24576 MiB) in the re-balance. k3s-01's memory requests are ~16.4 GiB
+  # with kb prod plus the 2 GiB systemReserved, so shrinking it is no longer safe. The
+  # re-balance moves ai-01 to 24 GiB and vlsi-01 to 4 GiB; the three VMs total 52 GiB of
+  # the host's 60.5 GiB, leaving ~8.5 GiB for the host and the ZFS ARC.
   default     = 24576
-  description = "Dedicated memory in MiB (24 GiB after Phase 3; was 36 GiB). Ballooning stays off (floating = 0)."
+  description = "Dedicated memory in MiB (24 GiB, unchanged by the re-balance). Ballooning stays off (floating = 0)."
 }
 
 variable "os_disk_gb" {
