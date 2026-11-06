@@ -22,6 +22,12 @@ hostname; the kit builds `TF_VAR_proxmox_redirect_uris` with the trailing slash 
 `TF_VAR_dev_app_extra_owner_object_ids` (keys limited to `rova_dev`, `opshub_dev`, `kb_dev`; prod keys stop the
 kit). Unset = empty map. An app owner can add client credentials and redirect URIs, so extras are DEV-only.
 
+`IDENTITY_DEV_APP_EXTRA_ADMINS` is optional: extra holders of the OpsHub Dev `admin` APP ROLE
+(`opshub_dev=<upn>[,opshub_dev=<upn>]`). Each UPN must be a **Member** user. The kit builds
+`TF_VAR_dev_app_extra_admin_object_ids` AND reads the app's live `appRoleAssignedTo` to build
+`TF_VAR_dev_app_extra_admin_assignment_ids` — the import ids of the assignments that already exist, so
+the plan adopts them instead of re-creating them (a duplicate is a 409). Unset = empty maps.
+
 `tfplan` / `*.tfplan` are git-ignored (root `.gitignore`) but a plan file holds the values: delete it after the apply (`rm live/identity/tfplan`).
 
 It stops (never guesses) on an empty lookup, a duplicate app name, a non-GUID id, an app-role set other than the
