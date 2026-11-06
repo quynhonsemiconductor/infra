@@ -228,7 +228,11 @@ jobs:
         run: bash "$GITHUB_WORKSPACE/.github/scripts/ssh-targets-guard.sh"
         env:
           SSH_INFRA_TARGETS: ${{ secrets.SSH_INFRA_TARGETS }}
-          ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          # READ identity, exactly as the init and plan steps in THIS job: the write
+          # identity's federated credential is bound to environment:production, and this job
+          # deliberately has no environment, so a write id here fails the token exchange
+          # (AADSTS700213, subject ref:refs/heads/main). Fix: keep the two in step.
+          ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID_READ }}
           ARM_TENANT_ID: ${{ vars.ENTRA_TENANT_ID }}
           ARM_USE_OIDC: 'true'
 
