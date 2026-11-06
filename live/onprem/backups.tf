@@ -231,6 +231,56 @@ resource "cloudflare_r2_bucket_lifecycle" "qnsc_backups" {
         condition = { type = "Age", max_age = 1296000 } # 15 d
       }
     },
+    # ── CNPG barman archives: 30 days, base AND wal ────────────────────────
+    #
+    # barman is told to keep 14 days (gitops platform/cnpg/*.yaml retentionPolicy); this is the
+    # BACKSTOP for anything barman fails to prune — an orphaned base after a cluster rebuild, WALs of a
+    # generation nobody deleted. 30 d is more than twice the barman window, so it can never remove a
+    # backup barman still intends to keep, and it is above the 14-day bucket lock on wals/ (a delete
+    # before the lock expires would simply be refused and retried).
+    #
+    # One rule per cluster prefix rather than one for pg-*/: a single new cluster must opt in by
+    # appearing here, which is what keeps this list the audit trail. Ids keep the API's by-id order.
+    {
+      id      = "pg-coder"
+      enabled = true
+      conditions = {
+        prefix = "pg-coder/"
+      }
+      delete_objects_transition = {
+        condition = { type = "Age", max_age = 2592000 } # 30 d
+      }
+    },
+    {
+      id      = "pg-kb"
+      enabled = true
+      conditions = {
+        prefix = "pg-kb/"
+      }
+      delete_objects_transition = {
+        condition = { type = "Age", max_age = 2592000 } # 30 d
+      }
+    },
+    {
+      id      = "pg-opshub"
+      enabled = true
+      conditions = {
+        prefix = "pg-opshub/"
+      }
+      delete_objects_transition = {
+        condition = { type = "Age", max_age = 2592000 } # 30 d
+      }
+    },
+    {
+      id      = "pg-rova"
+      enabled = true
+      conditions = {
+        prefix = "pg-rova/"
+      }
+      delete_objects_transition = {
+        condition = { type = "Age", max_age = 2592000 } # 30 d
+      }
+    },
   ]
 
   # The API fills the UNUSED transition of every rule with an empty
