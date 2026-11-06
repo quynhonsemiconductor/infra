@@ -6,6 +6,20 @@
     fail_msg: "k3s_server_oidc_issuer_enabled is true but k3s_server_oidc_issuer is empty: set it in the local inventory."
     quiet: true
 
+- name: The Entra auth inputs are complete when it is enabled
+  ansible.builtin.assert:
+    that:
+      - not (k3s_server_entra_auth_enabled | bool) or (
+          k3s_server_entra_tenant_id is match('^[0-9a-fA-F-]{36}$')
+          and k3s_server_entra_client_id is match('^[0-9a-fA-F-]{36}$')
+          and k3s_server_entra_platform_admins_group_id is match('^[0-9a-fA-F-]{36}$')
+          and k3s_server_entra_developers_group_id is match('^[0-9a-fA-F-]{36}$'))
+    fail_msg: >-
+      k3s_server_entra_auth_enabled is true but an id is missing or not a GUID: tenant, client and the
+      two group OBJECT ids (from the "QNSC k3s" app's apply and from Entra). A display name or an empty
+      value here would either refuse every sign-in or bind cluster-admin to the wrong group.
+    quiet: true
+
 - name: Directory for the k3s configuration
   ansible.builtin.file:
     path: /etc/rancher/k3s
@@ -52,16 +66,29 @@
     quiet: true
   when: k3s_server_oidc_issuer_enabled | bool
 
-- name: Write the k3s server configuration
+# Written ONLY in a run that also allows the restart (the kubelet role's rule): a config change that
+# sits on disk waiting for an unplanned restart is a change nobody chose. k3s-01 is the only API
+# server, so the restart is a short cluster-wide API outage; the admin client-certificate kubeconfig
+# keeps working afterwards (it authenticates as CN=system:admin, not through OIDC).
+- name: Write the k3s server configuration (only with the restart allowed)
   ansible.builtin.template:
     src: config.yaml.j2
     dest: /etc/rancher/k3s/config.yaml
     owner: root
     group: root
     mode: "0644"
+  when: k3s_server_allow_restart | bool
   notify:
     - Restart k3s
-    - Report that k3s needs a restart
+  tags: [k3s_server_config]
+
+- name: Report that the k3s configuration change was withheld
+  ansible.builtin.debug:
+    msg: >-
+      /etc/rancher/k3s/config.yaml was NOT written: a change here restarts the cluster's only API
+      server, and must take effect in the window it was reviewed in. Re-run with
+      -e k3s_server_allow_restart=true (add --check --diff first to read the exact change).
+  when: not (k3s_server_allow_restart | bool)
   tags: [k3s_server_config]
 
 - name: Install the pinned k3s server
@@ -70,3 +97,46 @@
   vars:
     k3s_install_role: server
   tags: [k3s_server_install]
+
+# The bindings are Kubernetes objects, so they go through the cluster's own API — AFTER the install,
+# on a node that may just have been rebuilt, and after the API answers.
+- name: Wait for the API server to answer
+  ansible.builtin.command: k3s kubectl get --raw=/readyz
+  register: k3s_server_readyz
+  until: k3s_server_readyz.rc == 0
+  retries: 30
+  delay: 5
+  changed_when: false
+  # Same gate as the config write: applying RBAC the API server does not yet trust Entra for is a
+  # half-apply. Without the restart flag the run stops after reporting, like every other k3s change.
+  when:
+    - k3s_server_entra_auth_enabled | bool
+    - k3s_server_allow_restart | bool
+    - not ansible_check_mode
+  tags: [k3s_server_rbac]
+
+- name: Apply the Entra RBAC (developer ClusterRole + two group bindings)
+  ansible.builtin.command:
+    argv: [k3s, kubectl, apply, -f, -]
+    stdin: "{{ lookup('ansible.builtin.template', 'entra-rbac.yaml.j2') }}"
+  register: k3s_server_entra_rbac
+  # `kubectl apply` prints one line per object: "configured"/"created" when it changed something,
+  # "unchanged" when it did not. A mixed result (one created, one unchanged) must count as changed —
+  # testing for the absence of "unchanged" would report a fresh create as no-op.
+  changed_when: k3s_server_entra_rbac.stdout is search('(created|configured)')
+  when:
+    - k3s_server_entra_auth_enabled | bool
+    - k3s_server_allow_restart | bool
+    - not ansible_check_mode
+  tags: [k3s_server_rbac]
+
+- name: Report the Entra RBAC (check mode)
+  ansible.builtin.debug:
+    msg: >-
+      would apply the Entra RBAC: ClusterRole qnsc-k8s-developer-readonly, bindings qnsc-k8s-developers
+      (group {{ k3s_server_entra_developers_group_id }}) and qnsc-k8s-platform-admins
+      (group {{ k3s_server_entra_platform_admins_group_id }})
+  when:
+    - k3s_server_entra_auth_enabled | bool
+    - ansible_check_mode
+  tags: [k3s_server_rbac]
