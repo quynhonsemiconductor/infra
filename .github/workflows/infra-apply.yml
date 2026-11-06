@@ -220,6 +220,25 @@ jobs:
         env:
           AM_URL: ${{ vars.AM_METRICS_URL }}
 
+      - name: Refuse to plan away existing SSH targets when the secret is unset
+        if: matrix.stack == 'edge'
+        working-directory: live/edge
+        run: |
+          if [ -n "${SSH_INFRA_TARGETS}" ]; then
+            printf '%s' "$SSH_INFRA_TARGETS" | jq -r '.. | strings' | while IFS= read -r v; do
+              [ -n "$v" ] && echo "::add-mask::$v"
+            done
+          fi
+          if [ -z "${SSH_INFRA_TARGETS}" ] && tofu state list 2>/dev/null | grep -q '^cloudflare_zero_trust_access_infrastructure_target\.'; then
+            echo "STOP: SSH_INFRA_TARGETS is unset but state holds access targets; refusing to plan a destroy." >&2
+            exit 1
+          fi
+        env:
+          SSH_INFRA_TARGETS: ${{ secrets.SSH_INFRA_TARGETS }}
+          ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ vars.ENTRA_TENANT_ID }}
+          ARM_USE_OIDC: 'true'
+
       - name: tofu plan
         id: plan
         working-directory: live/${{ matrix.stack }}
@@ -270,6 +289,7 @@ jobs:
           TF_VAR_healthchecks_api_token: ${{ matrix.stack == 'observability-alerting' && secrets.HEALTHCHECKS_API_TOKEN_READONLY || '' }}
           TF_VAR_admin_private_cidr:     ${{ contains(fromJSON('["onprem","edge"]'), matrix.stack) && secrets.ADMIN_PRIVATE_CIDR || '' }}
           TF_VAR_warp_extra_excludes:    ${{ matrix.stack == 'edge' && secrets.WARP_EXTRA_EXCLUDES || '[]' }}
+          TF_VAR_ssh_infra_targets:      ${{ matrix.stack == 'edge' && secrets.SSH_INFRA_TARGETS || '{}' }}
 
       - name: Summary and fingerprint
         id: fp
@@ -442,6 +462,24 @@ jobs:
           ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
           ARM_USE_OIDC:        'true'
 
+      - name: Refuse to plan away existing SSH targets when the secret is unset
+        working-directory: live/edge
+        run: |
+          if [ -n "${SSH_INFRA_TARGETS}" ]; then
+            printf '%s' "$SSH_INFRA_TARGETS" | jq -r '.. | strings' | while IFS= read -r v; do
+              [ -n "$v" ] && echo "::add-mask::$v"
+            done
+          fi
+          if [ -z "${SSH_INFRA_TARGETS}" ] && tofu state list 2>/dev/null | grep -q '^cloudflare_zero_trust_access_infrastructure_target\.'; then
+            echo "STOP: SSH_INFRA_TARGETS is unset but state holds access targets; refusing to plan a destroy." >&2
+            exit 1
+          fi
+        env:
+          SSH_INFRA_TARGETS: ${{ secrets.SSH_INFRA_TARGETS }}
+          ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ vars.ENTRA_TENANT_ID }}
+          ARM_USE_OIDC: 'true'
+
       - name: tofu plan
         id: plan
         working-directory: live/edge
@@ -492,6 +530,7 @@ jobs:
           # Extra WARP split-tunnel excludes (partner VPN endpoints), JSON list of {address, description}.
           # A secret, not a var: partner addresses must not print in public logs.
           TF_VAR_warp_extra_excludes: ${{ secrets.WARP_EXTRA_EXCLUDES || '[]' }}
+          TF_VAR_ssh_infra_targets: ${{ secrets.SSH_INFRA_TARGETS || '{}' }}
           TF_VAR_tunnels_exist: ${{ vars.TUNNELS_EXIST }}
           # MCP hub (live/edge/variables.mcp_hub.tf): flag and ids are repo variables (`|| 'false'`: an empty value breaks the
           # bool); the two OAuth client secrets are ENVIRONMENT secrets of `production`, so only this job has them.
@@ -509,6 +548,32 @@ jobs:
           TF_VAR_entra_tenant_id: ${{ vars.ENTRA_TENANT_ID }}
           TF_VAR_entra_idp_client_id: ${{ vars.ENTRA_IDP_CLIENT_ID }}
           TF_VAR_entra_idp_client_secret: ${{ secrets.ENTRA_IDP_CLIENT_SECRET }}
+
+      # The edge PR comment publishes plan.txt: redact every SSH target value
+      # (hostname/IP/username) there, not only in the masked log stream.
+      - name: Redact SSH target values from the plan
+        working-directory: live/edge
+        env:
+          SSH_INFRA_TARGETS: ${{ secrets.SSH_INFRA_TARGETS }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib
+          raw = os.environ.get("SSH_INFRA_TARGETS", "")
+          if not raw:
+              raise SystemExit(0)
+          vals = set()
+          def walk(x):
+              if isinstance(x, str): vals.add(x)
+              elif isinstance(x, dict):
+                  for v in x.values(): walk(v)
+              elif isinstance(x, list):
+                  for v in x: walk(v)
+          walk(json.loads(raw))
+          p = pathlib.Path("plan.txt"); s = p.read_text()
+          for v in sorted(vals, key=len, reverse=True):
+              if v: s = s.replace(v, "<redacted-ssh-target>")
+          p.write_text(s)
+          PY
 
       # APPROVE WHAT YOU SAW: the plan above ran with the write credentials; its fingerprint (sha256 of the sorted
       # "<address> <action>" lines) must equal the one the plan stage showed for approval, else nothing is applied.

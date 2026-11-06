@@ -21,3 +21,10 @@
     ssh_infra_sudoers_dir: /tmp/qnsc-ssh-last/sudoers
   roles:
     - role: ssh_infra
+
+  tasks:
+    - name: This fixture is a --check test only
+      ansible.builtin.assert:
+        that: ansible_check_mode
+        fail_msg: "run this playbook with --check; it must not lock a real account"
+        quiet: true

@@ -149,6 +149,25 @@ jobs:
           ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
           ARM_USE_OIDC:        'true'
 
+      - name: Refuse to drift away existing SSH targets when the secret is unset
+        if: matrix.stack == 'edge'
+        working-directory: live/edge
+        run: |
+          if [ -n "${SSH_INFRA_TARGETS}" ]; then
+            printf '%s' "$SSH_INFRA_TARGETS" | jq -r '.. | strings' | while IFS= read -r v; do
+              [ -n "$v" ] && echo "::add-mask::$v"
+            done
+          fi
+          if [ -z "${SSH_INFRA_TARGETS}" ] && tofu state list 2>/dev/null | grep -q '^cloudflare_zero_trust_access_infrastructure_target\.'; then
+            echo "STOP: SSH_INFRA_TARGETS is unset but state holds access targets; refusing to plan a destroy." >&2
+            exit 1
+          fi
+        env:
+          SSH_INFRA_TARGETS: ${{ secrets.SSH_INFRA_TARGETS }}
+          ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID_READ }}
+          ARM_TENANT_ID: ${{ vars.ENTRA_TENANT_ID }}
+          ARM_USE_OIDC: 'true'
+
       - name: Require the read-only Cloudflare token
         if: ${{ contains(fromJSON('["edge","storage-dev","storage-prod","onprem"]'), matrix.stack) }}
         env:
@@ -203,6 +222,7 @@ jobs:
           ARM_USE_OIDC:        'true'
           TF_VAR_admin_private_cidr: ${{ contains(fromJSON('["onprem","edge"]'), matrix.stack) && secrets.ADMIN_PRIVATE_CIDR || '' }}
           TF_VAR_warp_extra_excludes: ${{ matrix.stack == 'edge' && secrets.WARP_EXTRA_EXCLUDES || '[]' }}
+          TF_VAR_ssh_infra_targets:   ${{ matrix.stack == 'edge' && secrets.SSH_INFRA_TARGETS || '{}' }}
         run: |
           set +e
           tofu plan -refresh-only -input=false -lock=false -no-color -detailed-exitcode -out=refresh.tfplan 2>&1 | tee refresh.txt
@@ -247,6 +267,7 @@ jobs:
           ARM_USE_OIDC:        'true'
           TF_VAR_admin_private_cidr: ${{ contains(fromJSON('["onprem","edge"]'), matrix.stack) && secrets.ADMIN_PRIVATE_CIDR || '' }}
           TF_VAR_warp_extra_excludes: ${{ matrix.stack == 'edge' && secrets.WARP_EXTRA_EXCLUDES || '[]' }}
+          TF_VAR_ssh_infra_targets:   ${{ matrix.stack == 'edge' && secrets.SSH_INFRA_TARGETS || '{}' }}
         run: |
           set +e
           tofu plan -input=false -lock=false -no-color -detailed-exitcode 2>&1 | tee plan.txt
