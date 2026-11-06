@@ -1,11 +1,13 @@
 # =============================================================================
-# Repository rulesets — every ruleset that exists in the org today, imported
-# exactly (42 across 17 repos on 2026-11-02). The data is the live API output,
-# reduced to the fields the provider can manage; see README.md "Not managed by
-# the provider" for the two ruleset fields it cannot express.
+# Repository rulesets — every ruleset that exists in the org today. The 42 that
+# existed on 2026-11-02 were imported exactly (17 repos). The 4 for code-review
+# and opc (2026-11-06, IaC drift audit §GitHub) carry no `id` and are CREATED by
+# this stack: the import block skips any entry without one. The data is the live
+# API output, reduced to the fields the provider can manage; see README.md "Not
+# managed by the provider" for the two ruleset fields it cannot express.
 #
-# Adding a ruleset = one entry here (id omitted until it exists, then the import
-# block is not needed; create it through this file, not the UI).
+# Adding a ruleset = one entry here. With an `id`, it is imported; without one,
+# it is created. Either way it goes through this file, not the UI.
 # =============================================================================
 locals {
   # Org team / app ids (public numbers shown by the GitHub API).
@@ -175,6 +177,45 @@ locals {
     "chipgraph/tag-protection" = {
       repo    = "chipgraph"
       id      = 24852357
+      name    = "tag-protection"
+      target  = "tag"
+      include = ["~ALL"]
+      bypass  = [{ id = local.team_merge_bypass, type = "Team", mode = "always" }]
+      rules   = ["deletion", "update"]
+    }
+
+    # ── code-review ─────────────────────────────────────────────────
+    # Created 2026-11-06 (no `id`): the repo had no ruleset and no branch
+    # protection. Checks are the three languages in the repo's own CodeQL
+    # workflow (`.github/workflows/codeql.yml`); the repo's other product
+    # workflows live only on feature branches, so they are not required here.
+    "code-review/main-protection" = {
+      repo    = "code-review"
+      name    = "main-protection"
+      target  = "branch"
+      include = ["~DEFAULT_BRANCH"]
+      bypass  = [{ id = local.team_merge_bypass, type = "Team", mode = "pull_request" }]
+      rules   = ["deletion", "non_fast_forward"]
+      pull_request = {
+        approvals          = 1
+        dismiss_stale      = true
+        code_owner_review  = true
+        last_push_approval = true
+        thread_resolution  = true
+        merge_methods      = ["squash"]
+      }
+      status_checks = {
+        strict                   = true
+        do_not_enforce_on_create = true
+        checks = [
+          { context = "Analyze (actions)", integration_id = local.app_github_actions_id },
+          { context = "Analyze (go)", integration_id = local.app_github_actions_id },
+          { context = "Analyze (javascript-typescript)", integration_id = local.app_github_actions_id },
+        ]
+      }
+    }
+    "code-review/tag-protection" = {
+      repo    = "code-review"
       name    = "tag-protection"
       target  = "tag"
       include = ["~ALL"]
@@ -407,6 +448,43 @@ locals {
     "mcp-tools/tag-protection" = {
       repo    = "mcp-tools"
       id      = 22875998
+      name    = "tag-protection"
+      target  = "tag"
+      include = ["~ALL"]
+      bypass  = [{ id = local.team_merge_bypass, type = "Team", mode = "always" }]
+      rules   = ["deletion", "update"]
+    }
+
+    # ── opc ─────────────────────────────────────────────────────────
+    # Created 2026-11-06 (no `id`): the repo had no ruleset and no branch
+    # protection. opc has no workflow files; its only PR checks come from
+    # GitHub's CodeQL default setup, so those two are the required set.
+    "opc/main-protection" = {
+      repo    = "opc"
+      name    = "main-protection"
+      target  = "branch"
+      include = ["~DEFAULT_BRANCH"]
+      bypass  = [{ id = local.team_merge_bypass, type = "Team", mode = "pull_request" }]
+      rules   = ["deletion", "non_fast_forward"]
+      pull_request = {
+        approvals          = 1
+        dismiss_stale      = true
+        code_owner_review  = true
+        last_push_approval = true
+        thread_resolution  = true
+        merge_methods      = ["squash"]
+      }
+      status_checks = {
+        strict                   = true
+        do_not_enforce_on_create = true
+        checks = [
+          { context = "Analyze (python)", integration_id = local.app_github_actions_id },
+          { context = "Analyze (javascript-typescript)", integration_id = local.app_github_actions_id },
+        ]
+      }
+    }
+    "opc/tag-protection" = {
+      repo    = "opc"
       name    = "tag-protection"
       target  = "tag"
       include = ["~ALL"]
@@ -864,9 +942,10 @@ resource "github_repository_ruleset" "this" {
 
 # Imports: the live rulesets are adopted, never recreated. `repository:id` is the
 # provider's import id. Safe to leave in place after the first apply (OpenTofu
-# ignores an import block whose resource is already in state).
+# ignores an import block whose resource is already in state). Entries without
+# an `id` are the rulesets this stack creates, so they are skipped here.
 import {
-  for_each = local.rulesets
+  for_each = { for key, ruleset in local.rulesets : key => ruleset if try(ruleset.id, null) != null }
   to       = github_repository_ruleset.this[each.key]
   id       = "${each.value.repo}:${each.value.id}"
 }
