@@ -2,11 +2,12 @@
 # qnsc-eda — the first repository this stack CREATES (repos.tf `create = true`),
 # with its team access as code.
 #
-# The team grants need exactly two permissions from the apply/plan credentials:
-# repository Administration (already minted: write for apply, read for plans)
-# and organisation Members read, because the "add team repository" endpoint
-# requires the caller to be able to see the team. Nothing else (see the three
-# token mints in .github/workflows and live/github/README.md).
+# The team grants need exactly two permissions from the apply credential:
+# repository Administration (already minted) and organisation Members read,
+# because the "add team repository" endpoint requires the caller to be able to
+# see the team. The two refresh paths (apply and monthly drift) request it; the
+# PR plan is `-refresh=false` and never reads the grants, so the read-only app
+# does not need it.
 #
 # CODEOWNERS is deliberately NOT a `github_repository_file` here: that needs
 # Contents write on an app installed on EVERY repository, which is more blast

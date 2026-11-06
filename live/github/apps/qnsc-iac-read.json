@@ -7,7 +7,6 @@
   "default_permissions": {
     "administration": "read",
     "environments": "read",
-    "members": "read",
     "metadata": "read"
   },
   "default_events": []

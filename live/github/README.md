@@ -163,21 +163,23 @@ same pin as our other repos) and GitHub revokes it when the job ends.
 
 | app | manifest | permissions | used by |
 |---|---|---|---|
-| `qnsc-iac-read` | `apps/qnsc-iac-read.json` | Administration **read**, Environments **read**, Members **read**, Metadata read | PR plans of this stack (`-refresh=false`), drift |
-| `qnsc-iac-apply` | `apps/qnsc-iac-apply.json` | Administration **read/write**, Environments **read/write**, Members **read**, Metadata read | the `apply-github` job only (environment `production`) |
+| `qnsc-iac-read` | `apps/qnsc-iac-read.json` | Administration **read**, Environments **read**, Metadata read | PR plans of this stack (`-refresh=false`). It never refreshes, so it never reads the team grants. |
+| `qnsc-iac-apply` | `apps/qnsc-iac-apply.json` | Administration **read/write**, Environments **read/write**, Members **read**, Metadata read | the `apply-github` job and the monthly drift, both with refresh on |
 
 Members read is required by `qnsc-eda.tf`: the team-grant endpoint needs repository Administration
-(present above) and the ability to see the team. Contents is deliberately **not** requested — the
-apply app is installed on every repository, so Contents write would let any run push to all of them.
-**Existing installations need Members read added by the owner** (see the owner checklist below);
-changing the manifest file alone does not change the live app. The three token mints request exactly
-the same minimum (`permission-members: read`), so the installation approval list is one item.
+(present above) and the ability to see the team. Both refresh paths use the **apply** app, so the
+owner approves one permission on one app. The PR plan (`-refresh=false`) never reads the grants, so
+the read app does not request Members read — and neither app requests Contents, because the apply
+app is installed on every repository and Contents write would let any run push to all of them.
+**Existing installations need Members read added to the apply app by the owner** (see the owner
+checklist below); changing the manifest file alone does not change the live app. The apply and drift
+mints request exactly `permission-members: read`.
 
 Both: no webhook, no subscribed events, **not public** (installable only on this
 account), installed on **All repositories** (the stack manages 19 of them, and a new repo
 would otherwise need an app change).
 
-### Members read on the existing apps (owner, required before the qnsc-eda apply)
+### Members read on the apply app (owner, required before the qnsc-eda apply)
 
 Raising an app's permissions is an owner action; the manifest in this repo is the desired
 state, not something an apply can push into GitHub. Before the `apply-github` job runs:
@@ -187,10 +189,11 @@ state, not something an apply can push into GitHub. Before the `apply-github` jo
 2. Approve the increase for the installation: **Organisation settings → GitHub Apps →
    `qnsc-iac-apply` → Configure → review the request → Approve**. (Without this the installation
    token still lacks the permission.)
-3. Repeat for `qnsc-iac-read`: **Members: Read-only**. Nothing else is requested — in particular
-   **not Contents**: this app is installed on every repository.
 
-No key changes: the next workflow run mints a token with the new permissions.
+Nothing else is requested, and the read app is untouched: in particular **not Contents** (this app
+is installed on every repository) and no Members read on the plan-only app.
+
+No key changes: the next workflow run mints a token with the new permission.
 
 Where the credentials live (names the workflows read):
 
