@@ -1,5 +1,5 @@
 ---
-# Offline check of the PBS version read, against the EXACT JSON pve01 returned on 2026-11-06. It includes
+# Offline check of the PBS version read, against the EXACT JSON the PVE host returned on 2026-11-06. It includes
 # the role's own vars/version.yml, so the test and the role cannot drift.
 #
 #   ansible-playbook -i localhost, -c local tests/pbs_version.yml
@@ -35,6 +35,20 @@
         file: "{{ playbook_dir }}/../roles/pbs/vars/version.yml"
 
     - name: No ExtraInfo means no version, and the assert message will say so
+      ansible.builtin.assert:
+        that: pbs_version_parsed == '0'
+        quiet: true
+
+    - name: An ExtraInfo that does not match yields 0, not the raw text
+      ansible.builtin.set_fact:
+        pbs_versions_raw:
+          stdout: '[{"Package":"proxmox-backup-server","ExtraInfo":"running version 4.2.8","Version":"4.2.9-1"}]'
+
+    - name: Re-evaluate with the malformed text
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../roles/pbs/vars/version.yml"
+
+    - name: A non-matching ExtraInfo is not a version
       ansible.builtin.assert:
         that: pbs_version_parsed == '0'
         quiet: true
