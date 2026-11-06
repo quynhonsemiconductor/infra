@@ -557,7 +557,8 @@ resource "grafana_rule_group" "onprem_pve_risk" {
     #   ansible-playbook pve-host.yml --tags pve_monitoring,pve_base_smartd
     # then verify `pve_disk_self_test_age_hours{job="pve-host"}` exists and FLIP
     # this back to "Alerting" — absence is a real signal once the exporter is
-    # live (a stopped timer or a dead host must page).
+    # live (a stopped timer or a dead host must page). Tracked by issue #460
+    # (owner, due 2026-11-13).
     no_data_state  = "OK"
     exec_err_state = "KeepLast"
 
