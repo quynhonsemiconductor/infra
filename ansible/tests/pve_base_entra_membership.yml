@@ -142,6 +142,34 @@
           - pve_base_entra_group_removals | length == 0
         quiet: true
 
+
+    # A user the shared list wants but the realm read does not show yet is CREATED in the same
+    # run, so the add list must contain it too — otherwise a brand-new admin only reaches the
+    # group on the second run (review round 3).
+    - name: A brand-new admin converges in one run
+      ansible.builtin.set_fact:
+        pve_base_entra_group_id: g-entra
+        pve_base_entra_admin_emails: ["bob@example.com", "erin@example.com"]
+        pve_base_entra_users:
+          stdout: >-
+            {{ [{'userid': 'bob@example.com@entra', 'groups': ''}] | to_json }}
+
+    - name: Re-evaluate with the new admin absent from the read
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../roles/pve_base/vars/entra_membership.yml"
+
+    - name: The newly created user joins the group in the same run
+      ansible.builtin.assert:
+        that:
+          - pve_base_entra_group_adds | map(attribute='userid') | list == ['bob@example.com@entra', 'erin@example.com@entra']
+        quiet: true
+
+    - name: Nobody is added twice when the same user exists and lacks the group
+      ansible.builtin.assert:
+        that:
+          - pve_base_entra_group_adds | map(attribute='userid') | unique | list | length == (pve_base_entra_group_adds | length)
+        quiet: true
+
     # CI runs this file and the two gate files in ONE invocation, and set_fact facts are
     # host-wide: leave the host in the state the NEXT file sets up for itself (it asserts on an
     # empty list). Without this the gate test fails on facts this file created.
