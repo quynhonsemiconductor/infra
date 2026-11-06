@@ -387,6 +387,20 @@ esac
 [[ "$SIGNIN_GRANTS" == "{}" ]] || put TF_VAR_signin_delegated_grant_ids "$SIGNIN_GRANTS"
 [[ "$SIGNIN_GRANT_SCOPES" == "{}" ]] || put TF_VAR_signin_delegated_grant_scopes "$SIGNIN_GRANT_SCOPES"
 
+# --- Cloudflare Access IdP app (cf_access.tf) --------------------------------------------------
+# The app behind every Zero Trust door. Only ids: the app carries a credential, and the kit never
+# reads credentials. Its AllPrincipals Graph grant comes from the same delegated lookup as the
+# sign-in apps; a missing grant stops the run (the import id would be empty and the apply would
+# create a duplicate grant, which Entra answers with 409).
+fetch_app cf_access "QNSC Cloudflare Access" cfaccess
+CF_GRANT=$(delegated_grant "$(<"$APPS_DIR/cfaccess-cf_access.sp")")
+[[ -n "$CF_GRANT" ]] || die "'QNSC Cloudflare Access' has no AllPrincipals Graph grant"
+put TF_VAR_cf_access_object_ids "$(jq -nc \
+  --arg a "$(jq -r '.id // empty' "$APPS_DIR/cfaccess-cf_access.json")" \
+  --arg s "$(<"$APPS_DIR/cfaccess-cf_access.sp")" \
+  --arg g "$(jq -r '.id // empty' <<<"$CF_GRANT")" \
+  '{application:$a, service_principal:$s, grant:$g}')"
+
 # --- ESO certificates: only while the stack still declares the variable (removed by the #254 PR) -------------
 # The PUBLIC certificate live on each ESO app, from Graph like the mail certs: a file on disk can be stale (rotation)
 # and a stale value plans a REPLACE that takes the ClusterSecretStores' credential away.

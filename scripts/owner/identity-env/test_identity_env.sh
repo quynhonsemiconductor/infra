@@ -106,6 +106,12 @@ build() { # build the fixture set from scratch
   jq -n --arg id "grant$(g 16 2)" --arg g "$(g 90 1)" \
     --arg s "openid profile email offline_access User.Read Files.Read Files.Read.All Sites.Read.All" \
     '{value:[{id:$id,consentType:"AllPrincipals",resourceId:$g,scope:$s}]}' >"$FX/delegated-$(g 16 2).json"
+  # Cloudflare Access IdP app (cf_access.tf): one app, its SP, one AllPrincipals Graph grant.
+  jq -n --arg id "$(g 17 1)" --arg app "$(g 17 2)" '[{id:$id,appId:$app}]' >"$FX/app-QNSC-Cloudflare-Access.list"
+  jq -n --arg app "$(g 17 2)" --arg sp "$(g 17 3)" '[{id:$sp,appId:$app}]' >"$FX/sp-$(g 17 2)"
+  jq -n --arg id "grant$(g 17 3)" --arg g "$(g 90 1)" \
+    --arg s "openid email profile offline_access User.Read GroupMember.Read.All" \
+    '{value:[{id:$id,consentType:"AllPrincipals",resourceId:$g,scope:$s}]}' >"$FX/delegated-$(g 17 3).json"
   roles='[]'; n=0
   for r in admin it-admin security hr manager helpdesk auditor; do n=$((n+1)); roles=$(jq -c --arg r "$r" --arg id "$(g 30 $n)" '.+[{value:$r,id:$id,isEnabled:true}]' <<<"$roles"); done
   jq --argjson r "$roles" '.appRoles=$r' "$FX/app-OpsHub-Dev" >"$FX/x" && mv "$FX/x" "$FX/app-OpsHub-Dev"
@@ -175,14 +181,15 @@ expect_stop_extra() { # expect_stop_extra <label> <expected fragment> <IDENTITY_
   leak_scan "$out" "$1"
 }
 
-# 1. happy path: names + lengths, 21 variables, no value anywhere
+# 1. happy path: names + lengths, 22 variables, no value anywhere
 build
 OUT="$T/out.happy"; run bash "$SCRIPT" >"$OUT" 2>&1 || { cat "$OUT"; fail "happy path exited non-zero"; }
-grep -q 'identity env OK: 21 variables' "$OUT" || { cat "$OUT"; fail "variable count"; }
+grep -q 'identity env OK: 22 variables' "$OUT" || { cat "$OUT"; fail "variable count"; }
 for v in subscription_id budget_period_start budget_period_end break_glass_upn_domain platform_admins_object_id grp_dev_users_object_id \
   owner_operator_object_id second_owner_object_id platform_admin_object_ids proxmox_redirect_uris existing_object_ids existing_sp_object_ids \
   mail_service_object_ids mail_service_sp_object_ids opshub_dev_app_role_ids mail_service_certificates \
-  mail_service_rotated_certificates mail_service_graph_grant_ids signin_delegated_grant_ids signin_delegated_grant_scopes; do
+  mail_service_rotated_certificates mail_service_graph_grant_ids signin_delegated_grant_ids signin_delegated_grant_scopes \
+  cf_access_object_ids; do
   grep -qE "TF_VAR_$v +[0-9]+$" "$OUT" || fail "missing TF_VAR_$v in the report"
 done
 grep -qE 'TF_VAR_mail_service_cert_key_ids' "$OUT" && fail "the keyIds are pinned in code, the kit must not export them" || true
@@ -194,7 +201,7 @@ leak_scan "$OUT" happy
 build
 OUT="$T/out.extra"; run env IDENTITY_DEV_APP_EXTRA_OWNERS="opshub_dev=dev@tenant.example" bash "$SCRIPT" >"$OUT" 2>&1 \
   || { cat "$OUT"; fail "extra owners: happy path exited non-zero"; }
-grep -q 'identity env OK: 22 variables' "$OUT" || { cat "$OUT"; fail "extra owners: variable count"; }
+grep -q 'identity env OK: 23 variables' "$OUT" || { cat "$OUT"; fail "extra owners: variable count"; }
 grep -qE 'TF_VAR_dev_app_extra_owner_object_ids +[0-9]+$' "$OUT" || fail "extra owners: map not exported"
 leak_scan "$OUT" "extra owners"
 run env IDENTITY_DEV_APP_EXTRA_OWNERS="opshub_dev=dev@tenant.example" bash "$SCRIPT" -- \
@@ -230,7 +237,7 @@ grep -q 'STOP: IDENTITY_OWNER_OPERATOR_UPN is a guest or non-Member user' "$out"
 
 # 2. run mode: the child sees the values (checked by shape, nothing printed), cwd is the stack dir
 CH="$T/child.out"
-run bash "$SCRIPT" -- bash -c 'jq -e "(.dev|length)>0" >/dev/null 2>&1 <<<"{}" ; [[ "$TF_VAR_budget_period_start" == 2026-10-01T00:00:00Z && "$TF_VAR_budget_period_end" == 2028-09-30T00:00:00Z ]] && [[ "$TF_VAR_proxmox_redirect_uris" == "[\"https://pve.example.test/\",\"https://pbs.example.test/\"]" ]] && jq -e "length==2" <<<"$TF_VAR_platform_admin_object_ids" >/dev/null && jq -e "length==4" <<<"$TF_VAR_mail_service_certificates" >/dev/null && jq -e "length==1 and (.[\"'$(g 22 99)'\"] != null)" <<<"$TF_VAR_mail_service_rotated_certificates" >/dev/null && jq -e "length==4" <<<"$TF_VAR_mail_service_graph_grant_ids" >/dev/null && jq -e "length==6 and .opshub_prod != null and .kb_prod != null" <<<"$TF_VAR_signin_delegated_grant_ids" >/dev/null && jq -e "length==6 and (.kb_dev|index(\"email\") != null) and (.kb_prod|length == 8) and (.rova_prod|length == 5)" <<<"$TF_VAR_signin_delegated_grant_scopes" >/dev/null && jq -e ".[\"rova_prod/User.Invite.All\"] != null and .[\"opshub_dev/User.Read.All\"] != null" <<<"$TF_VAR_mail_service_graph_grant_ids" >/dev/null && [[ "$TF_VAR_break_glass_upn_domain" == tenant.example ]] && jq -e ".admin and .auditor" <<<"$TF_VAR_opshub_dev_app_role_ids" >/dev/null && pwd' >"$CH" 2>&1 || { cat "$CH"; fail "child did not get the right env"; }
+run bash "$SCRIPT" -- bash -c 'jq -e "(.dev|length)>0" >/dev/null 2>&1 <<<"{}" ; [[ "$TF_VAR_budget_period_start" == 2026-10-01T00:00:00Z && "$TF_VAR_budget_period_end" == 2028-09-30T00:00:00Z ]] && [[ "$TF_VAR_proxmox_redirect_uris" == "[\"https://pve.example.test/\",\"https://pbs.example.test/\"]" ]] && jq -e "length==2" <<<"$TF_VAR_platform_admin_object_ids" >/dev/null && jq -e "length==4" <<<"$TF_VAR_mail_service_certificates" >/dev/null && jq -e "length==1 and (.[\"'$(g 22 99)'\"] != null)" <<<"$TF_VAR_mail_service_rotated_certificates" >/dev/null && jq -e "length==4" <<<"$TF_VAR_mail_service_graph_grant_ids" >/dev/null && jq -e "length==6 and .opshub_prod != null and .kb_prod != null" <<<"$TF_VAR_signin_delegated_grant_ids" >/dev/null && jq -e ".application != null and .service_principal != null and .grant != null" <<<"$TF_VAR_cf_access_object_ids" >/dev/null && jq -e "length==6 and (.kb_dev|index(\"email\") != null) and (.kb_prod|length == 8) and (.rova_prod|length == 5)" <<<"$TF_VAR_signin_delegated_grant_scopes" >/dev/null && jq -e ".[\"rova_prod/User.Invite.All\"] != null and .[\"opshub_dev/User.Read.All\"] != null" <<<"$TF_VAR_mail_service_graph_grant_ids" >/dev/null && [[ "$TF_VAR_break_glass_upn_domain" == tenant.example ]] && jq -e ".admin and .auditor" <<<"$TF_VAR_opshub_dev_app_role_ids" >/dev/null && pwd' >"$CH" 2>&1 || { cat "$CH"; fail "child did not get the right env"; }
 [ "$(cat "$CH")" = "$T/stack" ] || fail "child cwd is not the stack dir"
 # the rotated certificate reaches the child byte for byte under its pinned keyId
 run bash "$SCRIPT" -- sh -c 'printf "%s" "$TF_VAR_mail_service_rotated_certificates"' >"$T/rot.json" 2>/dev/null || fail "rotated child"
@@ -251,6 +258,7 @@ build; : >"$FX/account"; expect_stop "empty subscription" "az lookup empty: subs
 build; echo '[{},{}]' >"$FX/budget"; expect_stop "two budgets" "expected exactly 1 budget"
 build; echo '[{"timePeriod":{"startDate":"2026-10-01","endDate":"2028-09-30T00:00:00Z"}}]' >"$FX/budget"; expect_stop "bare-date budget" "budget timestamp is not RFC3339"
 build; rm "$FX/app-KB-Dev.list"; expect_stop "app missing" "az lookup empty: app KB Dev"
+build; rm "$FX/delegated-$(g 17 3).json"; expect_stop "cf access without a grant" "'QNSC Cloudflare Access' has no AllPrincipals Graph grant"
 build; jq -c '. + .' "$FX/app-Rova-Dev.list" >"$FX/x" && mv "$FX/x" "$FX/app-Rova-Dev.list"; expect_stop "duplicate app" "expected exactly 1 app named 'Rova Dev'"
 build; echo '[{"id":"not-a-guid","appId":"x"}]' | jq -c '.' >"$FX/sp-$(g 11 1)"; expect_stop "bad SP id" "SP object id is not a GUID"
 build; jq -c '[.[0]|.appRoles|=map(select(.value!="hr"))]' "$FX/app-OpsHub-Dev.list" >"$FX/x" && mv "$FX/x" "$FX/app-OpsHub-Dev.list"; expect_stop "missing app role" "OpsHub Dev must carry exactly the 7 app roles"
@@ -331,7 +339,7 @@ esofix() { local j=40 p; for p in dev prod platform; do j=$((j+1)); mkcert "eso-
 build; echo 'variable "eso_certificates" {}' >"$T/stack/eso.tf"
 expect_stop "eso app missing" "az lookup empty: eso app dev"
 build; esofix; OUT="$T/out.eso"; run bash "$SCRIPT" >"$OUT" 2>&1 || { cat "$OUT"; fail "eso happy path"; }
-grep -q 'identity env OK: 22 variables' "$OUT" || fail "eso variable count"
+grep -q 'identity env OK: 23 variables' "$OUT" || fail "eso variable count"
 grep -qE 'TF_VAR_eso_certificates +[0-9]+$' "$OUT" || fail "eso variable not built"
 leak_scan "$OUT" "eso happy path"
 # the PEM text uploaded by the provider reaches the child byte for byte (trailing newline included): no replace planned
