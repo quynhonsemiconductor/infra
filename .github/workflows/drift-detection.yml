@@ -97,6 +97,16 @@ jobs:
           # github is NOT here: the read app cannot see repository bypass actors or merge settings, so a
           # nightly read-only refresh would be red every night. It has its own monthly job in
           # environment production (.github/workflows/github-drift.yml), planned with the apply app.
+          #
+          # identity: NEVER planned in infra-plan.yml (owner-only, public plan output), but a
+          # REFRESH-ONLY comparison belongs here. It is planned with the same read identity
+          # (Directory Readers reads app/group metadata and credential DATES, never values), through
+          # the owner apply kit so every required TF_VAR_* comes from read-only lookups. Its plan text
+          # is written to a file and NEVER printed: this repo is public and the summary would expose
+          # break-glass UPNs and the Entra role layout. Required repo secrets (owner):
+          # IDENTITY_OWNER_OPERATOR_UPN, IDENTITY_SECOND_OWNER_UPN, IDENTITY_PROXMOX_HOST,
+          # IDENTITY_PBS_HOST.
+          - identity
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -107,6 +117,24 @@ jobs:
         with:
           tofu-version: ${{ env.TOFU_VERSION }}
           fmt: 'false'   # install only
+
+      # The identity kit reads Entra through the `az` CLI, so the CLI needs a login
+      # of its own: the ARM_* OIDC variables below configure the PROVIDERS, not az.
+      # Same one-exchange flow (and the same read identity) as secret-expiry.yml.
+      - name: Azure login for the identity kit (read identity, OIDC)
+        if: matrix.stack == 'identity'
+        env:
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID_READ }}
+          AZURE_TENANT_ID: ${{ vars.ENTRA_TENANT_ID }}
+        run: |
+          set -euo pipefail
+          token="$(curl -fsS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange" | jq -r .value)"
+          if [ -z "$token" ] || [ "$token" = "null" ]; then
+            echo "::error::no federated token"; exit 1
+          fi
+          az login --service-principal --username "$AZURE_CLIENT_ID" --tenant "$AZURE_TENANT_ID" \
+            --federated-token "$token" --allow-no-subscriptions --output none
 
       - name: tofu init
         working-directory: live/${{ matrix.stack }}
@@ -135,6 +163,7 @@ jobs:
       # locks via the admin role. PIPESTATUS[0] captures tofu's exit past the `tee`.
       - name: Detect external drift (refresh-only)
         id: refresh
+        if: matrix.stack != 'identity'
         working-directory: live/${{ matrix.stack }}
         env:
           TF_VAR_cloudflare_zone_id:    ${{ vars.CLOUDFLARE_ZONE_ID }}
@@ -180,6 +209,7 @@ jobs:
 
       - name: Detect unapplied config
         id: plan
+        if: matrix.stack != 'identity'
         working-directory: live/${{ matrix.stack }}
         env:
           TF_VAR_cloudflare_zone_id:    ${{ vars.CLOUDFLARE_ZONE_ID }}
@@ -221,12 +251,57 @@ jobs:
           tofu plan -input=false -lock=false -no-color -detailed-exitcode 2>&1 | tee plan.txt
           echo "exitcode=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
 
+      # ── identity: same two passes, through the owner kit, output FILE ONLY ──
+      # The kit builds every required TF_VAR_* from read-only az lookups, then runs
+      # the command in live/identity. Both passes write to live/identity/<file>
+      # and never to the log or the step summary: the public-repo rule that keeps
+      # identity out of infra-plan.yml applies here too.
+      - name: Detect external drift (refresh-only) — identity via the owner kit
+        id: refresh_identity
+        if: matrix.stack == 'identity'
+        env:
+          ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID_READ }}
+          ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
+          ARM_USE_OIDC:        'true'
+          IDENTITY_OWNER_OPERATOR_UPN: ${{ secrets.IDENTITY_OWNER_OPERATOR_UPN }}
+          IDENTITY_SECOND_OWNER_UPN:   ${{ secrets.IDENTITY_SECOND_OWNER_UPN }}
+          IDENTITY_PROXMOX_HOST:       ${{ secrets.IDENTITY_PROXMOX_HOST }}
+          IDENTITY_PBS_HOST:           ${{ secrets.IDENTITY_PBS_HOST }}
+        run: |
+          set +e
+          scripts/owner/identity-env/identity-env.sh -- \
+            tofu plan -refresh-only -input=false -lock=false -no-color -detailed-exitcode -out=refresh.tfplan \
+            >"$GITHUB_WORKSPACE/live/identity/refresh.txt" 2>&1
+          rc=$?
+          # The kit's OWN failures (a missing input, an ambiguous app) must not
+          # masquerade as a clean plan: the kit exits non-zero AND the plan file is
+          # absent, which the classifier reports as class=1.
+          echo "exitcode=$rc" >> "$GITHUB_OUTPUT"
+
+      - name: Detect unapplied config — identity via the owner kit
+        id: plan_identity
+        if: matrix.stack == 'identity'
+        env:
+          ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID_READ }}
+          ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
+          ARM_USE_OIDC:        'true'
+          IDENTITY_OWNER_OPERATOR_UPN: ${{ secrets.IDENTITY_OWNER_OPERATOR_UPN }}
+          IDENTITY_SECOND_OWNER_UPN:   ${{ secrets.IDENTITY_SECOND_OWNER_UPN }}
+          IDENTITY_PROXMOX_HOST:       ${{ secrets.IDENTITY_PROXMOX_HOST }}
+          IDENTITY_PBS_HOST:           ${{ secrets.IDENTITY_PBS_HOST }}
+        run: |
+          set +e
+          scripts/owner/identity-env/identity-env.sh -- \
+            tofu plan -input=false -lock=false -no-color -detailed-exitcode \
+            >"$GITHUB_WORKSPACE/live/identity/plan.txt" 2>&1
+          echo "exitcode=$?" >> "$GITHUB_OUTPUT"
+
       # Only when the refresh-only pass found something: classify it. The classifier and the list of protected types live in
       # quynhonsemiconductor/ci/actions/destructive-guard (mode: drift), the same list the plan guard uses.
       # Output `class`: 2 matters, 3 informational, 0 none, 1 could not classify.
       - name: Classify external drift
         id: classify
-        if: ${{ steps.refresh.outputs.exitcode == '2' }}
+        if: ${{ steps.refresh.outputs.exitcode == '2' || steps.refresh_identity.outputs.exitcode == '2' }}
         uses: quynhonsemiconductor/ci/actions/destructive-guard@956804ad4aa2dcf930909553d306d72b3708fd5d # v1.34.1+ci#308
         with:
           mode: drift
@@ -236,11 +311,22 @@ jobs:
       # Exit codes: 0 = no changes, 1 = error, 2 = changes present.
       - name: Report
         working-directory: live/${{ matrix.stack }}
+        env:
+          # Passed through the environment, never interpolated: the identity step
+          # ids are the only outputs not already handled this way in this file, and
+          # ${{ }} inside `run` is the template-injection shape zizmor flags.
+          REFRESH_IDENTITY: ${{ steps.refresh_identity.outputs.exitcode }}
+          PLAN_IDENTITY: ${{ steps.plan_identity.outputs.exitcode }}
+          STACK_NAME: ${{ matrix.stack }}
         run: |
           refresh="${{ steps.refresh.outputs.exitcode }}"
           plan="${{ steps.plan.outputs.exitcode }}"
+          stack="$STACK_NAME"
+          if [ "$stack" = "identity" ]; then
+            refresh="$REFRESH_IDENTITY"
+            plan="$PLAN_IDENTITY"
+          fi
           class="${{ steps.classify.outputs.class }}"   # 2 matters, 3 informational, 0 none, 1 could not classify
-          stack="${{ matrix.stack }}"
 
           {
             echo "## \`$stack\`"
@@ -258,7 +344,7 @@ jobs:
               2) echo "- Unapplied config: **DETECTED** — main has changes never applied" ;;
               *) echo "- Unapplied config: :warning: plan errored (exit $plan)" ;;
             esac
-            if [ "$refresh" = "2" ] || [ "$plan" = "2" ]; then
+            if [ "$stack" != "identity" ] && { [ "$refresh" = "2" ] || [ "$plan" = "2" ]; }; then
               echo ""
               echo "<details><summary>plan output</summary>"
               echo ""
@@ -267,6 +353,9 @@ jobs:
               echo '```'
               echo ""
               echo "</details>"
+            elif [ "$stack" = "identity" ] && { [ "$refresh" = "2" ] || [ "$plan" = "2" ]; }; then
+              echo ""
+              echo "Details are withheld on purpose: this repository is public and the identity plan names break-glass accounts and the role layout. Run \`tofu plan\` with the owner kit locally."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 

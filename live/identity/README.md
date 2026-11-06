@@ -9,6 +9,12 @@ layout, so the owner runs `tofu plan` and `tofu apply` locally. An identity
 able to apply this stack could grant itself any role in the tenant, so no CI
 identity is given that ability.
 
+The nightly `.github/workflows/drift-detection.yml` DOES compare this stack with
+reality, refresh-only, through the owner kit and the same read identity (no
+write rights). Its plan text is written to a file and never printed. See
+`docs/runbooks/drift-detection.md` for the four repository secrets the job
+needs (`IDENTITY_*`).
+
 ## Owns
 
 - `rg-qnsc-platform`, the four Key Vaults (`kv-qnsc-{prod,dev,platform,admin}`)
