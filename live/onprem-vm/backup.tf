@@ -4,14 +4,40 @@
 # Split of duties: PBS owns retention (prune job: 7 daily, 4 weekly, 6 monthly) and verification; PVE only writes.
 # So the storage keeps every backup from PVE's side (keep_all) and the job has no prune settings of its own.
 #
-# No client-side encryption for now: the datastore is on the same machine as the VMs, behind the same root, so a key
-# protects nothing there and losing it would make every backup unreadable. Turn it on together with an off-site
-# copy (PBS sync / remote), with the key created once and kept in 1Password.
+# CLIENT-SIDE ENCRYPTION (2026-11-06). The backup is encrypted by PVE before it leaves the guest's host process,
+# so a copy that leaves the machine (the weekly off-site sync, Ansible `pbs`, docs/runbooks/pbs-offsite.md) is
+# unreadable without the key. The key is created ONCE by the owner with
+# `proxmox-backup-client key create --kdf none` (PVE only supports keys with no KDF), kept in 1Password, on
+# paper (its `key paperkey` base32 form) and on a USB stick — and it is passed to this stack through
+# TF_VAR_pbs_encryption_key from 1Password, never committed.
+#
+# LOSING THE KEY MAKES EVERY ENCRYPTED BACKUP UNREADABLE. There is no recovery path without it: PBS stores
+# opaque chunks and the key lives only in those three places. Restoring needs the key file too
+# (`qmrestore --keyfile <file>`), and it is required for every restore AFTER the switch, including the routine
+# Tier A/B drills.
+#
+# The switch is one apply: PVE writes the key to /etc/pve/priv/storage/pbs-qnsc.enc and encrypts every NEW
+# backup. Existing unencrypted snapshots stay restorable without the key until PBS prunes them (the prune job
+# keeps 7 daily / 4 weekly / 6 monthly, so the last unencrypted snapshot ages out on its own). Run
+# docs/runbooks/pbs-offsite.md §1 before this apply: the key must already be in 1Password, on paper and on the
+# USB stick, or this storage becomes a pile of noise.
 
 variable "pbs_server" {
   type        = string
   default     = "127.0.0.1"
   description = "Address PVE uses to reach PBS. PBS runs on the same host, so loopback; change it only if PBS moves."
+}
+
+variable "pbs_encryption_key" {
+  type        = string
+  sensitive   = true
+  default     = ""
+  description = "CLIENT-SIDE encryption key for this storage: the CONTENTS of the key file the owner created with `proxmox-backup-client key create --kdf none`. From 1Password, never committed: TF_VAR_pbs_encryption_key=\"$(op read ...)\". Empty = encryption OFF (the pre-2026-11-06 behaviour), which the precondition below refuses once the off-site sync exists."
+
+  validation {
+    condition     = var.pbs_encryption_key == "" || length(var.pbs_encryption_key) >= 200
+    error_message = "pbs_encryption_key must be the whole key FILE content (a PEM/AES blob of a few hundred bytes), not a password or a fingerprint. Generate it with `proxmox-backup-client key create --kdf none <file>`."
+  }
 }
 
 variable "pbs_datastore" {
@@ -62,8 +88,20 @@ resource "proxmox_storage_pbs" "pbs_qnsc" {
 
   content = ["backup"]
 
+  # Client-side encryption (see the header). The provider marks this write-only where the Terraform version
+  # supports it (1.11+), so the key does not have to land in state; `encryption_key_fingerprint` (read-only)
+  # is what the plan shows instead. Empty leaves the storage unencrypted, which the precondition below forbids.
+  encryption_key = var.pbs_encryption_key
+
   backups {
     keep_all = true
+  }
+
+  lifecycle {
+    precondition {
+      condition     = length(var.pbs_encryption_key) > 0
+      error_message = "pbs_encryption_key is empty. An unencrypted backup must not be copied off-site (Ansible pbs, qnsc-pbs-offsite): set TF_VAR_pbs_encryption_key from 1Password before applying, or the off-site sync would publish readable VM images."
+    }
   }
 }
 

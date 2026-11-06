@@ -287,6 +287,29 @@ output "qnsc_backups_bucket" {
   value       = cloudflare_r2_bucket.qnsc_backups.name
 }
 
+# ── qnsc-pbs-offsite — the off-site PBS datastore (S3, 2026-11-06) ───────────
+#
+# The Proxmox Backup Server on pve01 writes its snapshots to the local `qnsc` datastore and, weekly, a
+# local sync job copies them into a SECOND datastore that is backed by THIS bucket (Ansible role `pbs`,
+# live/onprem-vm backup.tf, docs/runbooks/pbs-offsite.md). The chunks are client-side encrypted by PVE
+# before PBS ever sees them, so what sits here is ciphertext; the key is in 1Password + paper + a USB
+# stick, and losing it makes this bucket useless.
+#
+# NO cloudflare_r2_bucket_lock and NO versioning, on purpose: PBS documents Object Lock and versioning as
+# the fastest way to CORRUPT an S3 datastore (the store rewrites its own index objects). Immutability is
+# provided one layer up instead: the sync job never propagates deletions, so a prune or a bad local backup
+# cannot reach back and erase what is here.
+resource "cloudflare_r2_bucket" "qnsc_pbs_offsite" {
+  account_id = var.cloudflare_account_id
+  name       = "qnsc-pbs-offsite"
+  location   = "apac"
+}
+
+output "qnsc_pbs_offsite_bucket" {
+  description = "Bucket behind the off-site PBS datastore; the R2 API token (Object Read & Write) is scoped to it and stored in 1Password, never here."
+  value       = cloudflare_r2_bucket.qnsc_pbs_offsite.name
+}
+
 output "qnsc_backups_dev_bucket" {
   description = "Bucket for the pg-dev dump only; the dev R2 token is scoped to it, never to qnsc-backups."
   value       = cloudflare_r2_bucket.qnsc_backups_dev.name

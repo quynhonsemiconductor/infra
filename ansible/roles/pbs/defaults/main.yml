@@ -72,3 +72,41 @@ pbs_entra_desired_userids: >-
      | map('lower') | list }}
 # The username claim is fixed at realm creation: a different value stops the role.
 pbs_entra_rotate_client_key: false
+
+# ── Off-site copy: an S3-backed datastore on Cloudflare R2 + a weekly local sync ──────────
+#
+# PBS 4.2 supports S3 object storage as a DATASTORE BACKEND (production support; tech preview in 4.0):
+# `s3 endpoint create` + `datastore create <name> <cache-path> --backend type=s3,...`. The off-site store
+# is a SECOND DATASTORE on this same PBS, and a weekly LOCAL sync job (source = the `qnsc` datastore,
+# no remote needed) copies the latest snapshots into it; the chunks then live in R2.
+#
+# Two consequences that shape the config:
+#   * an S3 datastore needs a LOCAL CACHE ("64 GiB to 128 GiB are recommended"): a ZFS dataset with a
+#     quota, never the root filesystem and never the existing datastore path;
+#   * R2 needs `path-style true` and `region auto`, and Object Lock / versioning must stay OFF on the
+#     bucket (enabling either is the documented way to corrupt an S3 datastore).
+#
+# Client-side encryption (live/onprem-vm backup.tf) is what makes the off-site copy safe: PBS syncs the
+# encrypted chunks as they are, so R2 holds ciphertext. LOSING THE KEY MAKES THE OFF-SITE COPY USELESS.
+#
+# OFF by default: a full playbook run must never start writing to a cloud bucket.
+pbs_offsite_enabled: false
+pbs_offsite_store_name: qnsc-offsite
+pbs_offsite_cache_dataset: backup/pbs-cache
+pbs_offsite_cache_mount: /backup/cache
+pbs_offsite_cache_quota: 128G
+
+# The S3 endpoint (Cloudflare R2). The endpoint HOST is a site value (the account id is in it), so it comes
+# from the local inventory; the two credentials come from the environment of the run, never from argv:
+#   PBS_S3_ACCESS_KEY / PBS_S3_SECRET_KEY   (R2 API token, "Object Read & Write" on the one bucket)
+pbs_offsite_endpoint_id: r2
+pbs_offsite_endpoint_host: ""
+pbs_offsite_bucket: qnsc-pbs-offsite
+pbs_offsite_region: auto
+pbs_s3_access_key: "{{ lookup('ansible.builtin.env', 'PBS_S3_ACCESS_KEY') }}"
+pbs_s3_secret_key: "{{ lookup('ansible.builtin.env', 'PBS_S3_SECRET_KEY') }}"
+
+# Weekly is enough (decision 2026-11-04): the local PBS carries the RPO, this carries the site.
+pbs_offsite_sync_job_id: qnsc-offsite-weekly
+pbs_offsite_sync_schedule: "Sun 05:00"
+pbs_offsite_gc_schedule: "Mon 03:00"
