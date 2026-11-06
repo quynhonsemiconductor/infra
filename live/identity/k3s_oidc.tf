@@ -12,6 +12,10 @@
 # SecurityGroup membership claims (object ids) — the same reason as the Coder app: no Entra ID P1,
 # so ApplicationGroup/display names are unavailable.
 #
+# ONLY SECURITY GROUPS APPEAR in that claim. A Microsoft 365 group (mail-enabled) is never listed, so
+# a group that must grant cluster access has to be `security_enabled` — every group this repo creates
+# is; a group made by hand in the portal is not necessarily.
+#
 # Redirect URIs are kubelogin's own defaults (http://localhost:<port>): 8000, and 18000 which it
 # falls back to when 8000 is taken. Entra treats http://localhost as a native redirect and allows
 # it on a public client.
@@ -74,7 +78,10 @@ resource "azuread_application" "k3s" {
 }
 
 resource "azuread_service_principal" "k3s" {
-  client_id                    = azuread_application.k3s.client_id
+  client_id = azuread_application.k3s.client_id
+  # FALSE on purpose: authorization is the k3s RBAC by group, not an Entra app assignment (group
+  # assignment would need P1 anyway). A non-member still signs in and gets only Kubernetes' default
+  # discovery permissions — no cluster role is bound to their groups.
   app_role_assignment_required = false
   owners                       = [var.owner_operator_object_id, var.second_owner_object_id]
 }

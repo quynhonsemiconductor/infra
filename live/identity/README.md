@@ -567,7 +567,7 @@ OIDC provider; RBAC maps the Entra **groups claim** to cluster roles.
 
   `k3s_oidc_client_id` → `k3s_server_entra_client_id` in the LOCAL Ansible inventory; the two group
   object ids (`grp-qnsc-platform-admins`, `grp-qnsc-developers`) → `k3s_server_entra_platform_admins_group_id`
-  and `..._developers_group_id`; `k3s_server_oidc_entra_tenant_id` is the tenant id.
+  and `..._developers_group_id`; `k3s_server_entra_tenant_id` is the tenant id.
 - The API-server flags and the RBAC bindings are the `k3s_server` Ansible role
   (`k3s_server_entra_auth_enabled=true`), applied in an owner window because they need a k3s restart.
   Setup for a laptop — kubelogin, the kubeconfig stanza, the restart impact and the break-glass rule —
