@@ -1,0 +1,602 @@
+---
+# Cloudflare Access for Infrastructure SSH. The node trusts ONE CA; every
+# login is a short-lived certificate Cloudflare issues after Access checks the
+# Entra group, MFA and the permitted UNIX username.
+#
+# Offboarding is NOT gated on the current list: a node whose last user was
+# removed (or moved to another host) still locks that account and removes its
+# sudoers/principal. An empty CA key revokes the trust AND locks managed
+# accounts (full revoke).
+- name: SSH access inputs are explicit (a typo must not lock everyone)
+  when: not ssh_infra_revoke | bool
+  ansible.builtin.assert:
+    that:
+      - ssh_infra_ca_public_key != ssh_infra_undefined
+      - ssh_infra_admin_users != [ssh_infra_undefined]
+      - ssh_infra_ca_public_key | length > 0
+    fail_msg: >-
+      node_ssh_ca_public_key and node_admin_users must be defined in the LOCAL inventory. To revoke the
+      trust, set node_ssh_ca_public_key: "" and node_admin_users: [] AND ssh_infra_revoke: true.
+    quiet: true
+
+- name: Revoking needs explicit empty inputs
+  when: ssh_infra_revoke | bool
+  ansible.builtin.assert:
+    that:
+      - ssh_infra_ca_public_key | length == 0
+      - ssh_infra_admin_users | length == 0
+    fail_msg: >-
+      ssh_infra_revoke: true requires node_ssh_ca_public_key: "" and node_admin_users: []. An undefined or
+      non-empty value is a configuration error, not a revoke.
+    quiet: true
+
+- name: Select this node's admins
+  ansible.builtin.set_fact:
+    ssh_infra_host_users: >-
+      {{ (ssh_infra_admin_users | selectattr('hosts', 'contains', inventory_hostname) | list)
+         if ssh_infra_enabled | bool else [] }}
+    ssh_infra_desired_names: >-
+      {{ (ssh_infra_admin_users | selectattr('hosts', 'contains', inventory_hostname)
+          | map(attribute='name') | list) if ssh_infra_enabled | bool else [] }}
+  tags: [ssh_infra]
+
+- name: Is there a managed-account marker
+  ansible.builtin.stat:
+    path: "{{ ssh_infra_managed_users_file }}"
+  register: ssh_infra_managed_stat
+  tags: [ssh_infra]
+
+- name: Read the accounts this role managed on the last run
+  ansible.builtin.slurp:
+    src: "{{ ssh_infra_managed_users_file }}"
+  register: ssh_infra_managed_raw
+  when: ssh_infra_managed_stat.stat.exists
+  tags: [ssh_infra]
+
+- name: Keep the accounts this role managed on the last run
+  ansible.builtin.set_fact:
+    ssh_infra_old_names: >-
+      {{ ((ssh_infra_managed_raw.content | default('') | b64decode).splitlines()
+          | map('trim') | select('match', '^[a-z_][a-z0-9_-]{0,31}$') | list)
+         if ssh_infra_managed_stat.stat.exists else [] }}
+  tags: [ssh_infra]
+
+- name: Work out the removed accounts (independent of the current list size)
+  ansible.builtin.set_fact:
+    ssh_infra_removed_names: "{{ ssh_infra_old_names | difference(ssh_infra_desired_names) }}"
+- name: A reserved account may never be removed from the admin group
+  ansible.builtin.set_fact:
+    ssh_infra_reserved_removals: "{{ ssh_infra_removed_names | select('in', ssh_infra_reserved_users) | list }}"
+- name: Fail loud if a reserved account appears in the removal set
+  ansible.builtin.assert:
+    that: (ssh_infra_reserved_removals | default([]) | length) == 0
+    fail_msg: >-
+      {{ ssh_infra_reserved_removals | join(', ') }} is a reserved/operator account but is in the removal
+      set. Refusing to change it; fix node_admin_users/the marker by hand.
+    quiet: true
+  tags: [ssh_infra]
+
+- name: Does this node carry any SSH-access state
+  ansible.builtin.set_fact:
+    ssh_infra_has_state: "{{ (ssh_infra_host_users | length) > 0 or (ssh_infra_old_names | length) > 0 }}"
+  tags: [ssh_infra]
+
+# Only hosts that own (or owned) an account get the state directory/marker.
+- name: State directory for the managed-account marker
+  ansible.builtin.file:
+    path: "{{ ssh_infra_managed_users_file | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: ssh_infra_has_state | bool
+  tags: [ssh_infra]
+
+- name: Remove the Access for Infrastructure trust (explicit revoke)
+  when: ssh_infra_revoke | bool
+  tags: [ssh_infra]
+  block:
+    - name: Remove the CA, the sshd drop-in and the principal files
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ ssh_infra_ca_file }}"
+        - "{{ ssh_infra_sshd_dropin }}"
+        - "{{ ssh_infra_principals_dir }}"
+      notify: ssh_infra_reload_sshd
+
+- name: Cloudflare Access for Infrastructure SSH
+  when:
+    - ssh_infra_enabled | bool
+    - ssh_infra_host_users | length > 0
+  tags: [ssh_infra]
+  block:
+    - name: The CA key and the per-node user list are usable
+      ansible.builtin.assert:
+        that:
+          - ssh_infra_ca_public_key is match('^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256|sk-ssh-ed25519@openssh.com) AAAA')
+          - ssh_infra_admin_users is sequence
+          - ssh_infra_admin_users | selectattr('name', 'defined') | list | length == ssh_infra_admin_users | length
+          - ssh_infra_admin_users | selectattr('name', 'defined') | map(attribute='name')
+            | select('match', '^[a-z_][a-z0-9_-]{0,31}$') | list | length == ssh_infra_admin_users | length
+          - ssh_infra_admin_users | selectattr('name', 'defined') | map(attribute='name')
+            | reject('in', ssh_infra_reserved_users) | list | length == ssh_infra_admin_users | length
+          - ssh_infra_admin_users | selectattr('hosts', 'defined') | list | length == ssh_infra_admin_users | length
+        fail_msg: >-
+          node_ssh_ca_public_key must be the Gateway SSH CA public key
+          (scripts/owner/cloudflare-ssh-ca.sh); node_admin_users entries need a
+          valid name + hosts and may not be a reserved/operator account. Set them
+          in the LOCAL inventory, or leave the key empty to disable this role.
+        quiet: true
+
+    # Refuse to take over an account that existed before this role managed it:
+    # listing `qnsc`, `ubuntu`, root or any operator account must fail the run
+    # rather than strip its keys and lock it later. This runs BEFORE any file
+    # for the accounts is written.
+    - name: Look up each listed account
+      ansible.builtin.command: "getent passwd {{ item.name }}"
+      register: ssh_infra_getent_listed
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      loop: "{{ ssh_infra_host_users }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Refuse a pre-existing account this role did not create
+      ansible.builtin.assert:
+        that: item.rc != 0 or item.item.name in ssh_infra_old_names
+        fail_msg: >-
+          {{ item.item.name }} already exists and was not created by this role: it is an operator/system
+          account. Remove it from node_admin_users.
+        quiet: true
+      loop: "{{ ssh_infra_getent_listed.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+
+    - name: Is there a CA file now
+      ansible.builtin.stat:
+        path: "{{ ssh_infra_ca_file }}"
+      register: ssh_infra_ca_stat
+
+    - name: Snapshot the current CA file
+      ansible.builtin.slurp:
+        src: "{{ ssh_infra_ca_file }}"
+      register: ssh_infra_ca_snapshot
+      when: ssh_infra_ca_stat.stat.exists
+
+    - name: Trust the Cloudflare Gateway SSH CA
+      ansible.builtin.copy:
+        dest: "{{ ssh_infra_ca_file }}"
+        content: "{{ ssh_infra_ca_public_key | trim }}\n"
+        owner: root
+        group: root
+        mode: "0644"
+      notify: ssh_infra_reload_sshd
+
+    # The CA trust goes in before any cert can appear. A certificate principal
+    # must equal the UNIX login: AuthorizedPrincipalsFile lists exactly one
+    # principal per account, so a cert for someone else is refused.
+    - name: Report the sshd drop-in candidate (check mode)
+      ansible.builtin.copy:
+        dest: "{{ ssh_infra_sshd_dropin }}"
+        content: |
+          # Cloudflare Access for Infrastructure (managed by infra/ansible).
+          PubkeyAuthentication yes
+          TrustedUserCAKeys {{ ssh_infra_ca_file }}
+          AuthorizedPrincipalsFile {{ ssh_infra_principals_dir }}/%u
+        owner: root
+        group: root
+        mode: "0644"
+      notify: ssh_infra_reload_sshd
+      when: ansible_check_mode
+
+    # Snapshot the current file, write the candidate, validate the MERGED
+    # configuration, and restore the snapshot on failure: an invalid drop-in
+    # must never be left on disk, and `backup_file` is absent when the content
+    # did not change.
+    - name: Install and validate the sshd drop-in
+      when: not ansible_check_mode
+      block:
+        - name: Is there a drop-in now
+          ansible.builtin.stat:
+            path: "{{ ssh_infra_sshd_dropin }}"
+          register: ssh_infra_dropin_stat
+
+        - name: Snapshot the current drop-in
+          ansible.builtin.slurp:
+            src: "{{ ssh_infra_sshd_dropin }}"
+          register: ssh_infra_dropin_snapshot
+          when: ssh_infra_dropin_stat.stat.exists
+
+        - name: Write the sshd drop-in candidate
+          ansible.builtin.copy:
+            dest: "{{ ssh_infra_sshd_dropin }}"
+            content: |
+              # Cloudflare Access for Infrastructure (managed by infra/ansible).
+              PubkeyAuthentication yes
+              TrustedUserCAKeys {{ ssh_infra_ca_file }}
+              AuthorizedPrincipalsFile {{ ssh_infra_principals_dir }}/%u
+            owner: root
+            group: root
+            mode: "0644"
+          notify: ssh_infra_reload_sshd
+
+        - name: The merged sshd configuration parses
+          ansible.builtin.command: /usr/sbin/sshd -t
+          changed_when: false
+      rescue:
+        - name: Restore the previous drop-in
+          ansible.builtin.copy:
+            dest: "{{ ssh_infra_sshd_dropin }}"
+            content: "{{ ssh_infra_dropin_snapshot.content | b64decode }}"
+            owner: root
+            group: root
+            mode: "0644"
+          when: ssh_infra_dropin_stat.stat.exists
+
+        - name: Remove the candidate when there was no previous drop-in
+          ansible.builtin.file:
+            path: "{{ ssh_infra_sshd_dropin }}"
+            state: absent
+          when: not ssh_infra_dropin_stat.stat.exists
+
+        - name: Restore the previous CA file
+          ansible.builtin.copy:
+            dest: "{{ ssh_infra_ca_file }}"
+            content: "{{ ssh_infra_ca_snapshot.content | b64decode }}"
+            owner: root
+            group: root
+            mode: "0644"
+          when: ssh_infra_ca_stat.stat.exists
+
+        - name: Remove the CA file when there was none before
+          ansible.builtin.file:
+            path: "{{ ssh_infra_ca_file }}"
+            state: absent
+          when: not ssh_infra_ca_stat.stat.exists
+
+        - name: Fail loudly (nothing was reloaded)
+          ansible.builtin.fail:
+            msg: "sshd rejected the candidate; the previous configuration was restored and sshd was not reloaded."
+
+    - name: Principal directory (one principal per account)
+      ansible.builtin.file:
+        path: "{{ ssh_infra_principals_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Only the intended login name is accepted as a certificate principal
+      ansible.builtin.copy:
+        dest: "{{ ssh_infra_principals_dir }}/{{ item.name }}"
+        content: "{{ item.name }}\n"
+        owner: root
+        group: root
+        mode: "0644"
+      loop: "{{ ssh_infra_host_users }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Read the effective sshd configuration (empty-password rule)
+      ansible.builtin.command: /usr/sbin/sshd -T
+      register: ssh_infra_sshd_effective_users
+      changed_when: false
+      check_mode: false
+
+    # The accounts have an EMPTY password hash (cert-only). Empty-password login
+    # must stay impossible; the certificate is the only way in.
+    - name: Password login with an empty password is disabled
+      ansible.builtin.assert:
+        that: "'permitemptypasswords no' in (ssh_infra_sshd_effective_users.stdout | lower)"
+        fail_msg: >-
+          sshd permits empty passwords. The certificate-only accounts have no password hash; set
+          `PermitEmptyPasswords no` before creating them.
+        quiet: true
+
+    # Create with an explicit `*` hash: no password login, and the account is
+    # not in the empty-hash/NULL state that Ubuntu's nullok would accept.
+    - name: Report creating a listed admin (check mode)
+      ansible.builtin.debug:
+        msg: "would create {{ item.name }} (certificate login only, no password hash)"
+      changed_when: true
+      loop: "{{ ssh_infra_host_users }}"
+      when:
+        - ansible_check_mode
+        - ssh_infra_getent_listed.results[ansible_loop.index0].rc != 0
+      loop_control:
+        label: "{{ item.name }}"
+        extended: true
+
+    - name: Create a listed admin on a non-GPU node (cert only)
+      ansible.builtin.command:
+        argv:
+          - useradd
+          - --create-home
+          - --shell
+          - /bin/bash
+          - --password
+          - "*"
+          - "{{ item.name }}"
+      loop: "{{ ssh_infra_host_users }}"
+      when:
+        - not ansible_check_mode
+        - ssh_infra_getent_listed.results[ansible_loop.index0].rc != 0
+        - inventory_hostname not in (groups['k3s_agent_gpu'] | default([]))
+      changed_when: true
+      loop_control:
+        label: "{{ item.name }}"
+        extended: true
+
+    - name: Create a listed admin on the GPU node (video/render groups)
+      ansible.builtin.command:
+        argv:
+          - useradd
+          - --create-home
+          - --shell
+          - /bin/bash
+          - --password
+          - "*"
+          - --groups
+          - video,render
+          - "{{ item.name }}"
+      loop: "{{ ssh_infra_host_users }}"
+      when:
+        - not ansible_check_mode
+        - ssh_infra_getent_listed.results[ansible_loop.index0].rc != 0
+        - inventory_hostname in (groups['k3s_agent_gpu'] | default([]))
+      changed_when: true
+      loop_control:
+        label: "{{ item.name }}"
+        extended: true
+
+    # Re-adding an offboarded account: ONE idempotent command, gated by the
+    # shadow pre-check (the user module strips `!` before comparing, so it would
+    # skip `!*`). `-e -1` clears the expiry; `-p '*'` restores the cert-only
+    # hash. Checked every run, so a changed value converges.
+    - name: Read the shadow entry of each listed account
+      ansible.builtin.command: "getent shadow {{ item.name }}"
+      register: ssh_infra_shadow_listed
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      loop: "{{ ssh_infra_host_users }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Report re-enabling a listed account (check mode)
+      ansible.builtin.debug:
+        msg: "would set {{ item.item.name }} to password '*' and no expiry"
+      changed_when: true
+      loop: "{{ ssh_infra_shadow_listed.results }}"
+      when:
+        - ansible_check_mode
+        - item.rc == 0
+        - >-
+          item.stdout.split(':')[1] != '*'
+          or (item.stdout.split(':')[7] | default('')) not in ['', '-1']
+
+    - name: Re-enable/repair a listed account (password *, no expiry)
+      ansible.builtin.command: "usermod -p '*' -e -1 {{ item.item.name }}"
+      loop: "{{ ssh_infra_shadow_listed.results }}"
+      when:
+        - not ansible_check_mode
+        - item.rc == 0
+        - >-
+          item.stdout.split(':')[1] != '*'
+          or (item.stdout.split(':')[7] | default('')) not in ['', '-1']
+      changed_when: true
+
+    # People SSH ONLY with a short-lived certificate. A personal key left on
+    # the node would outlive offboarding, so it is removed, never managed.
+    - name: No long-lived authorized_keys for a managed account
+      ansible.builtin.file:
+        path: "/home/{{ item.name }}/.ssh/authorized_keys"
+        state: absent
+      loop: "{{ ssh_infra_host_users }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Sudoers directory
+      ansible.builtin.file:
+        path: "{{ ssh_infra_sudoers_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Sudo without a password (identity + MFA happen at Cloudflare)
+      ansible.builtin.copy:
+        dest: "{{ ssh_infra_sudoers_dir }}/qnsc-{{ item.name }}"
+        content: "{{ item.name }} ALL=(ALL) NOPASSWD:ALL\n"
+        owner: root
+        group: root
+        mode: "0440"
+        validate: /usr/sbin/visudo -cf %s
+      loop: "{{ ssh_infra_host_users | selectattr('sudo', 'defined') | selectattr('sudo') | list }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: No sudo for an account not granted it
+      ansible.builtin.file:
+        path: "{{ ssh_infra_sudoers_dir }}/qnsc-{{ item.name }}"
+        state: absent
+      loop: >-
+        {{ (ssh_infra_host_users | rejectattr('sudo', 'defined') | list)
+           + (ssh_infra_host_users | selectattr('sudo', 'defined') | rejectattr('sudo') | list) }}
+      loop_control:
+        label: "{{ item.name }}"
+
+# Offboarding runs on EVERY node, including one whose list is now empty or
+# whose account moved to another host. The managed marker (not the current
+# list) is the source of which accounts this role owns.
+- name: Offboard accounts no longer listed for this node
+  when: ssh_infra_removed_names | length > 0
+  tags: [ssh_infra]
+  block:
+    # absent | offboarded (locked + expired) | active. Already-offboarded
+    # accounts are skipped so a check run never reports "would lock" forever;
+    # they STAY in the marker because the marker is the ownership list.
+    - name: Classify each offboarded account
+      ansible.builtin.command:
+        argv:
+          - /bin/sh
+          - -c
+          - >-
+            if ! getent passwd "$1" >/dev/null; then echo absent; exit 0; fi;
+            s=$(getent shadow "$1" || true); pw=${s#*:}; pw=${pw%%:*};
+            exp=$(printf '%s' "$s" | cut -d: -f8);
+            if [ "${pw#!}" != "${pw}" ] && [ -n "${exp}" ] && [ "${exp}" -le 1 ]; then
+              echo offboarded;
+            else
+              echo active;
+            fi
+          - sh
+          - "{{ item }}"
+      register: ssh_infra_getent_removed
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      loop: "{{ ssh_infra_removed_names }}"
+
+    - name: Read the effective sshd configuration
+      ansible.builtin.command: /usr/sbin/sshd -T
+      register: ssh_infra_sshd_effective
+      changed_when: false
+      check_mode: false
+
+    # Account expiry/lock is enforced by the PAM account step. With UsePAM no,
+    # a locked/expired account could still authenticate by certificate.
+    - name: PAM enforcement is on (account expiry depends on it)
+      ansible.builtin.assert:
+        that: "'usepam yes' in (ssh_infra_sshd_effective.stdout | lower)"
+        fail_msg: >-
+          sshd reports UsePAM=no. Account lock/expiry (the offboarding control) is enforced by PAM;
+          set `UsePAM yes` in the sshd configuration before offboarding anyone.
+        quiet: true
+
+    - name: Report locking an offboarded account (check mode)
+      ansible.builtin.debug:
+        msg: "would lock {{ item.item }} (home kept), kill its sessions and remove its sudo and certificate principal"
+      changed_when: true
+      loop: "{{ ssh_infra_getent_removed.results }}"
+      when:
+        - ansible_check_mode
+        - item.stdout == 'active'
+
+    # ignore_errors keeps the play going; the marker keeps every offboarded
+    # name (ownership), and a name whose lock failed is retried next run.
+    - name: Lock an offboarded account (home kept)
+      ansible.builtin.user:
+        name: "{{ item.item }}"
+        expires: 1
+        password_lock: true
+        state: present
+      loop: "{{ ssh_infra_getent_removed.results }}"
+      when:
+        - not ansible_check_mode
+        - item.stdout == 'active'
+      register: ssh_infra_lock_results
+      ignore_errors: true
+
+    - name: End any active session of an offboarded account
+      ansible.builtin.command: "pkill -KILL -u {{ item.item }}"
+      loop: "{{ ssh_infra_getent_removed.results }}"
+      when:
+        - not ansible_check_mode
+        - item.stdout == 'active'
+      failed_when: false
+      changed_when: true
+
+    - name: Remove sudo and the certificate principal of an offboarded account
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop: >-
+        {{ (ssh_infra_removed_names | map('regex_replace', '^', ssh_infra_sudoers_dir ~ '/qnsc-') | list)
+           + (ssh_infra_removed_names | map('regex_replace', '^', ssh_infra_principals_dir ~ '/') | list) }}
+
+# Sweep the two per-account artefacts against the DESIRED names: this does not
+# trust the marker to be complete (a lost/edited marker must not leave a
+# sudoers file or principal behind).
+- name: Is there a sudoers directory
+  ansible.builtin.stat:
+    path: "{{ ssh_infra_sudoers_dir }}"
+  register: ssh_infra_sudoers_stat
+  tags: [ssh_infra]
+
+- name: Find managed sudoers files
+  ansible.builtin.find:
+    paths: "{{ ssh_infra_sudoers_dir }}"
+    patterns: "qnsc-*"
+    file_type: file
+  register: ssh_infra_sudoers_files
+  when: ssh_infra_sudoers_stat.stat.exists
+  tags: [ssh_infra]
+
+- name: Remove sudo from accounts not listed for this node
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ ssh_infra_sudoers_files.files | default([]) }}"
+  when: (item.path | basename | regex_replace('^qnsc-', '')) not in ssh_infra_desired_names
+  loop_control:
+    label: "{{ item.path | basename }}"
+  tags: [ssh_infra]
+
+- name: Is there a principal directory
+  ansible.builtin.stat:
+    path: "{{ ssh_infra_principals_dir }}"
+  register: ssh_infra_principals_stat
+  tags: [ssh_infra]
+
+- name: Find certificate principal files
+  ansible.builtin.find:
+    paths: "{{ ssh_infra_principals_dir }}"
+    file_type: file
+  register: ssh_infra_principal_files
+  when: ssh_infra_principals_stat.stat.exists
+  tags: [ssh_infra]
+
+- name: Remove the principal file of an account not listed for this node
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ ssh_infra_principal_files.files | default([]) }}"
+  when: (item.path | basename) not in ssh_infra_desired_names
+  loop_control:
+    label: "{{ item.path | basename }}"
+  tags: [ssh_infra]
+
+# Failed locks (for the red-run assert). The marker itself keeps EVERY name
+# this role owns, desired or offboarded: it is the ONLY takeover allow-list.
+- name: Work out which offboarded accounts still need a lock retry
+  ansible.builtin.set_fact:
+    ssh_infra_failed_locks: >-
+      {{ (ssh_infra_lock_results.results | default([]))
+         | selectattr('failed', 'defined') | selectattr('failed')
+         | map(attribute='item.item') | list }}
+  tags: [ssh_infra]
+
+- name: Record the accounts this role still owns on this node
+  ansible.builtin.copy:
+    dest: "{{ ssh_infra_managed_users_file }}"
+    content: "{{ ((ssh_infra_desired_names + ssh_infra_removed_names) | unique | sort | join('\n')) ~ '\n' }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when: ssh_infra_has_state | bool
+  tags: [ssh_infra]
+
+# The run stays RED until every lock succeeded; failed names remain in the marker for a retry.
+- name: Every offboarded lock must succeed
+  ansible.builtin.assert:
+    that: (ssh_infra_failed_locks | default([]) | length) == 0
+    fail_msg: >-
+      {{ ssh_infra_failed_locks | join(', ') }} could not be locked. The marker keeps the name(s);
+      fix the cause and re-run. The play fails until the lock succeeds.
+    quiet: true
+  when: ssh_infra_has_state | bool
+  tags: [ssh_infra]
