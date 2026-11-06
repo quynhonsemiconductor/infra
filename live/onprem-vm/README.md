@@ -182,7 +182,7 @@ Order for a whole new site: `docs/runbooks/site-from-zero.md`.
 ## ai-01 — the GPU agent node (§9.1)
 
 Same stack, second VM: `ai-01` (101), cloned from template 9000, 12 vCPU,
-28 GiB after the re-balance (was 8 vCPU, 12 GiB) with ballooning off,
+24 GiB after the re-balance (was 8 vCPU, 12 GiB) with ballooning off,
 40 GiB system disk + 300 GiB model-cache disk, the
 RTX 5060 Ti via the `gpu-rtx5060ti` mapping, and only the `ai` namespace by
 taint. k3s-01 keeps 28 vCPU and is not resized.
@@ -259,13 +259,13 @@ to ai-01; vlsi-01 shrinks until the VLSI team starts.
 | VM | now | after |
 |---|---|---|
 | `k3s-01` (100) | 24 GiB, 28 vCPU | **unchanged** |
-| `ai-01` (101) | 12 GiB, 8 vCPU, GPU | **28 GiB, 12 vCPU**, GPU (pinned, no ballooning) |
+| `ai-01` (101) | 12 GiB, 8 vCPU, GPU | **24 GiB, 12 vCPU**, GPU (pinned, no ballooning) |
 | `vlsi-01` (102) | 20 GiB, 12 vCPU | **4 GiB, 4 vCPU** |
 
-Totals: 56 GiB of the host's 62 GiB (24 + 28 + 4) — the same total as today, so the host's headroom
-(~6 GiB for itself and the ZFS ARC) is unchanged by this re-balance. 44 vCPUs are assigned across 32
+Totals: 52 GiB of the host's 60.5 GiB (24 + 24 + 4), leaving ~8.5 GiB for the host and the ZFS ARC.
+44 vCPUs are assigned across 32
 host threads — time-sliced, not a hard limit. Inside k3s the shape is Burstable (requests ~p95, limits
-higher); nothing is ballooned. Capping `zfs_arc_max` is a separate small PR.
+higher); nothing is ballooned.
 
 **Exactly TWO in-place VM updates; k3s-01 shows no line at all.** ai-01 and vlsi-01 both need a
 stop/start for dedicated memory and cores, so their new size lands at the next boot.
@@ -287,7 +287,7 @@ Owner window (TEI / kb search is down ~2-3 min while ai-01 boots; k3s-01 and eve
 
    ```
    ~ cpu    { cores = 8 -> 12 }          # ai-01
-   ~ memory { dedicated = 12288 -> 28672 }
+   ~ memory { dedicated = 12288 -> 24576 }
    ~ cpu    { cores = 12 -> 4 }          # vlsi-01
    ~ memory { dedicated = 20480 -> 4096 }
    ```

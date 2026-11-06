@@ -51,7 +51,7 @@ variable "vlsi01_cores" {
 variable "vlsi01_memory_mb" {
   type = number
   # 4 GiB (4096 MiB), down from 20 GiB: the workspaces have no users yet, and ai-01 takes the
-  # spare. With k3s-01 24 + ai-01 28 + vlsi-01 4 = 56 GiB the host keeps ~6 GiB for itself and
+  # spare. With k3s-01 24 + ai-01 24 + vlsi-01 4 = 52 GiB the host keeps ~8.5 GiB for itself and
   # the ZFS ARC.
   default     = 4096
   description = "4 GiB after the re-balance (was 20 GiB), ballooning off (like the other nodes: predictable, and k3s counts on the memory it sees). Stop/start applies it."
