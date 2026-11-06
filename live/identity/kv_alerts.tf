@@ -36,6 +36,22 @@
 # Scope note: the CI read identity holds Key Vault READER (metadata only) and
 # never appears in a secret-value read, so it is deliberately absent.
 
+# ── Notification address ──────────────────────────────────────────────────
+# This repository is PUBLIC. The alert recipient is therefore an input, not a
+# literal: the owner kit reads IDENTITY_KV_AUDIT_EMAIL from the owner's shell
+# and exports TF_VAR_kv_audit_email (scripts/owner/identity-env). No default —
+# a plan without it fails instead of silently routing alerts nowhere.
+variable "kv_audit_email" {
+  type        = string
+  description = "Recipient for Key Vault audit alerts. Supplied by the owner kit from IDENTITY_KV_AUDIT_EMAIL; never committed (public repo)."
+  sensitive   = false
+
+  validation {
+    condition     = can(regex("^[^@[:space:]]+@[^@[:space:]]+\\.[^@[:space:]]+$", var.kv_audit_email))
+    error_message = "kv_audit_email must be a single email address, e.g. user@example.invalid."
+  }
+}
+
 locals {
   kv_audit_allowed_app_ids = [for app in azuread_application.eso : app.client_id]
   kv_audit_allowed_object_ids = concat(
@@ -74,16 +90,18 @@ resource "azurerm_monitor_action_group" "kv_audit" {
   tags                = local.tags
 
   email_receiver {
-    name                    = "devops"
-    email_address           = "devops@qnsc.vn"
+    name                    = "audit"
+    email_address           = var.kv_audit_email
     use_common_alert_schema = true
   }
 }
 
-# ── Data plane: three scheduled-query rules ───────────────────────────────
+# ── Data plane: three scheduled-query rules (+ the silence check below) ───
 # `time_aggregation_method = "Count"` with `threshold = 0` fires on ANY row
 # the query returns; the queries already aggregate per identity/client, so a
-# single row is one event class, not one log line.
+# single row is one event class, not one log line. (`kv-audit-silent` at the
+# end uses Maximum/LessThan instead, because its query returns exactly one
+# numeric row.)
 
 # 1. Any secret/key/certificate deletion. Soft delete makes it recoverable,
 #    but on a vault that holds deploy credentials it is never routine.
@@ -139,9 +157,15 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "kv_denied_spike" {
     query                   = <<-KQL
       AzureDiagnostics
       | where Category == "AuditEvent" and ResourceType == "VAULTS"
-      | where ResultType != "Success"
+      | where httpStatusCode_d in (401, 403)
+      // A 401 on the Authentication operation is the SDK's normal first
+      // unauthenticated probe, not a denied access (Microsoft's own Key Vault
+      // workbook excludes exactly this pair). ResultType is NOT usable here:
+      // it reads "Success" even for a Forbidden/403 row — the log entry was
+      // written successfully, the operation was not.
+      | where not(OperationName == "Authentication" and httpStatusCode_d == 401)
       | extend objectId = tostring(identity_claim_http_schemas_microsoft_com_identity_claims_objectidentifier_g), appId = tostring(identity_claim_appid_g)
-      | summarize denied = count() by Resource, objectId, appId, CallerIPAddress, ResultType, bin(TimeGenerated, 15m)
+      | summarize denied = count() by Resource, objectId, appId, CallerIPAddress, ResultSignature, httpStatusCode_d, bin(TimeGenerated, 15m)
       | where denied >= 5
     KQL
     time_aggregation_method = "Count"
@@ -176,7 +200,7 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "kv_unknown_principal"
       let allowedObjectIds = dynamic(${local.kv_audit_allowed_oids_json});
       AzureDiagnostics
       | where Category == "AuditEvent" and ResourceType == "VAULTS"
-      | where OperationName in ("SecretGet", "KeyGet", "CertificateGet")
+      | where OperationName in ("SecretGet", "SecretList", "SecretListVersions", "KeyGet", "KeyList", "KeyListVersions", "CertificateGet", "CertificateList", "CertificateListVersions")
       | extend objectId = tostring(identity_claim_http_schemas_microsoft_com_identity_claims_objectidentifier_g), appId = tostring(identity_claim_appid_g)
       | where not(set_has_element(allowedAppIds, appId)) and not(set_has_element(allowedObjectIds, objectId))
       | summarize reads = count() by Resource, objectId, appId, CallerIPAddress, bin(TimeGenerated, 15m)
@@ -258,10 +282,11 @@ resource "azurerm_monitor_activity_log_alert" "kv_rbac_changed" {
   name                = "kv-activity-rbac-changed"
   resource_group_name = azurerm_resource_group.platform.name
   location            = "global"
-  # The platform RG: every Key Vault and every role assignment this stack
-  # creates lives under it, so a vault-scoped RBAC write appears here.
-  scopes      = [azurerm_resource_group.platform.id]
-  description = "A role assignment was written in rg-qnsc-platform — the scope that carries Key Vault Secrets Officer/User."
+  # SUBSCRIPTION scope, not the platform RG: a role assignment on a vault, a
+  # managed identity, or anything this stack owns is caught, and moving a
+  # future vault to another RG does not quietly take it out of view.
+  scopes      = ["/subscriptions/${var.subscription_id}"]
+  description = "A role assignment was written in the subscription — includes every Key Vault Secrets Officer/User grant."
   enabled     = true
   tags        = local.tags
 
@@ -272,5 +297,82 @@ resource "azurerm_monitor_activity_log_alert" "kv_rbac_changed" {
 
   action {
     action_group_id = azurerm_monitor_action_group.kv_audit.id
+  }
+}
+
+# ── Blind-pipe coverage ────────────────────────────────────────────────────
+# Everything above assumes audit events reach the workspace. These three
+# alerts watch the pipe itself: a diagnostic setting removed or rewritten, and
+# a full day with no AuditEvent at all.
+
+resource "azurerm_monitor_activity_log_alert" "kv_diagnostic_settings_written" {
+  name                = "kv-activity-diagnostic-settings-written"
+  resource_group_name = azurerm_resource_group.platform.name
+  location            = "global"
+  scopes              = ["/subscriptions/${var.subscription_id}"]
+  description         = "A diagnostic setting was written — someone changed where Key Vault audit events go."
+  enabled             = true
+  tags                = local.tags
+
+  criteria {
+    category       = "Administrative"
+    operation_name = "Microsoft.Insights/diagnosticSettings/write"
+  }
+
+  action {
+    action_group_id = azurerm_monitor_action_group.kv_audit.id
+  }
+}
+
+resource "azurerm_monitor_activity_log_alert" "kv_diagnostic_settings_deleted" {
+  name                = "kv-activity-diagnostic-settings-deleted"
+  resource_group_name = azurerm_resource_group.platform.name
+  location            = "global"
+  scopes              = ["/subscriptions/${var.subscription_id}"]
+  description         = "A diagnostic setting was DELETED — Key Vault audit events may no longer be recorded."
+  enabled             = true
+  tags                = local.tags
+
+  criteria {
+    category       = "Administrative"
+    operation_name = "Microsoft.Insights/diagnosticSettings/delete"
+  }
+
+  action {
+    action_group_id = azurerm_monitor_action_group.kv_audit.id
+  }
+}
+
+# No AuditEvent in the last 24 h. `summarize count()` returns one row (0) on
+# empty input, so this rule can fire on silence — a plain "no results" query
+# could not. One evaluation per hour is enough: ESO refreshes its stores well
+# inside a day, so a day of total silence means the pipe is blind, not quiet.
+resource "azurerm_monitor_scheduled_query_rules_alert_v2" "kv_audit_silent" {
+  name                  = "kv-audit-silent"
+  resource_group_name   = azurerm_resource_group.platform.name
+  location              = azurerm_resource_group.platform.location
+  scopes                = [azurerm_log_analytics_workspace.kv_audit.id]
+  description           = "No Key Vault AuditEvent has reached the workspace for 24 hours — the audit pipe is blind."
+  severity              = 2
+  enabled               = true
+  evaluation_frequency  = "PT1H"
+  window_duration       = "P1D"
+  skip_query_validation = false
+  tags                  = local.tags
+
+  criteria {
+    query                   = <<-KQL
+      AzureDiagnostics
+      | where Category == "AuditEvent" and ResourceType == "VAULTS"
+      | summarize events = count()
+    KQL
+    time_aggregation_method = "Maximum"
+    metric_measure_column   = "events"
+    operator                = "LessThan"
+    threshold               = 1
+  }
+
+  action {
+    action_groups = [azurerm_monitor_action_group.kv_audit.id]
   }
 }
