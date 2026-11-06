@@ -5,13 +5,13 @@
 # series copies in main.tf were removed (S-H3); the billable meter is the one
 # whose breach drops series at ingestion. Two tiers:
 #
-#   WARNING (> 9,000, email only): no `env` label on purpose — the same
+#   WARNING (> 8,000 sustained 6 h, email only): no `env` label on purpose — the same
 #   pattern as every other platform rule — so the notification policy's root
-#   (devops@) handles it and the Teams child (env=production) never matches.
-#   The threshold was 8,000, which the meter sits at in steady state (7.5-8.2k
-#   measured 2026-11-06), so the warning fired chronically and trained people
-#   to ignore it. 9,000 keeps ~1,000 of headroom before the 10,000 cap — the
-#   critical tier owns the actual breach; the warning now means "rising".
+#   (devops@) handles it and the Teams child (env=prod) never matches. The
+#   threshold stays 8,000 — but the rule now needs 6 h ABOVE it. The meter sits
+#   at 7.5-8.2k in steady state, so the old instant/15m check fired chronically;
+#   a 6-hour `for` keeps the same early warning line (no lead-time lost: the
+#   critical still fires at 10,000 with `for` 1 h) while ending the chronic page.
 #
 #   CRITICAL (> 10,000, Teams + devops@, `for` 1 h): ALWAYS ARMED since
 #   2026-11-04. The former `billable_critical_enabled` gate was dropped with
@@ -45,7 +45,7 @@ resource "grafana_rule_group" "billable_series" {
   rule {
     name           = "org-billable-series-warning"
     condition      = "B"
-    for            = "15m"
+    for            = "6h"
     no_data_state  = "Alerting"
     exec_err_state = "Error"
 
@@ -88,7 +88,7 @@ resource "grafana_rule_group" "billable_series" {
           {
             evaluator = {
               type   = "gt"
-              params = [9000]
+              params = [8000]
             }
           }
         ]
@@ -103,7 +103,7 @@ resource "grafana_rule_group" "billable_series" {
     }
 
     annotations = {
-      summary = "Org billable series is above 9,000, closing on the Free tier's 10,000 cap. Series are at risk of being dropped at ingestion; the recorded reductions (Adaptive Metrics rules, infra#213) bring this back down — re-measure 48 h after they apply."
+      summary = "Org billable series has stayed above 8,000 for 6 hours, closing on the Free tier's 10,000 cap. Series are at risk of being dropped at ingestion; the recorded reductions (Adaptive Metrics rules, infra#213) bring this back down — re-measure 48 h after they apply."
     }
   }
 
@@ -112,7 +112,7 @@ resource "grafana_rule_group" "billable_series" {
 # CRITICAL tier — ALWAYS ARMED (2026-11-04). It used to sit behind
 # `billable_critical_enabled` until a re-measure; the S-H3 series cuts give it
 # headroom, and a breach is exactly the state where series are being dropped
-# at ingestion. env=production routes it to Teams as well; `for` 1 h keeps a
+# at ingestion. env=prod routes it to Teams as well; `for` 1 h keeps a
 # single ingest spike from paging.
 resource "grafana_rule_group" "billable_series_critical" {
   name             = "platform (usage — breach)"
@@ -178,7 +178,7 @@ resource "grafana_rule_group" "billable_series_critical" {
 
     labels = {
       product  = "platform"
-      env      = "production"
+      env      = "prod"
       severity = "critical"
     }
 

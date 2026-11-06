@@ -35,7 +35,7 @@
 # those read `kube_pod_status_ready` from kube-state-metrics, an independent
 # signal for the same pods.
 # data-dev is deliberately outside it: the exporter-down alert is
-# env=production (Teams + devops@), and pg-dev stays email-only through the
+# env=prod (Teams + devops@), and pg-dev stays email-only through the
 # dev rules.
 #
 # ── DAY-0 (`immediate: true`) ──────────────────────────────────────────────
@@ -232,7 +232,7 @@ resource "grafana_rule_group" "prod_cnpg_backup_age" {
 
       labels = {
         product  = r.value.product
-        env      = "production" # matches the notification policy matcher, NOT "prod"
+        env      = "prod"
         severity = r.value.severity
       }
 

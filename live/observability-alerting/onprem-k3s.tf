@@ -9,7 +9,7 @@
 #
 # DORMANT-SHAPE: rules whose SIGNAL is absence (node down) use no_data_state
 # = "Alerting" (a vanished series IS the alert); presence rules use
-# no_data_state = "OK". All carry env=production (Teams child) +
+# no_data_state = "OK". All carry env=prod (Teams child) +
 # product=platform, and exec_err_state = KeepLast (a Loki/pipeline fault
 # must not page — same decision as the fail-open rules).
 #
@@ -102,7 +102,7 @@ resource "grafana_rule_group" "onprem_node_down" {
 
     labels = {
       product  = "platform"
-      env      = "production"
+      env      = "prod"
       severity = "critical"
     }
 
@@ -178,8 +178,11 @@ resource "grafana_rule_group" "onprem_fs" {
 
     labels = {
       product  = "platform"
-      env      = "production"
+      env      = "prod"
       severity = "warning"
+      # Real today (/, 82.7%): keep paging even though warnings are email
+      # only after the 2026-11-06 severity split.
+      paging = "teams"
     }
 
     annotations = {
@@ -243,7 +246,7 @@ resource "grafana_rule_group" "onprem_fs" {
 
     labels = {
       product  = "platform"
-      env      = "production"
+      env      = "prod"
       severity = "critical"
     }
 
@@ -318,7 +321,7 @@ resource "grafana_rule_group" "onprem_cnpg" {
 
     labels = {
       product  = "platform"
-      env      = "production"
+      env      = "prod"
       severity = "critical"
     }
 
@@ -385,7 +388,7 @@ resource "grafana_rule_group" "onprem_cnpg" {
 
     labels = {
       product  = "platform"
-      env      = "production"
+      env      = "prod"
       severity = "warning"
     }
 

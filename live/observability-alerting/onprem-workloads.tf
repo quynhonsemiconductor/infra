@@ -16,8 +16,8 @@
 # CNPG's and our own jobs out (pg-rova-dump-<n>-<hash>, pg-*-role-timeouts-*).
 #
 # ── ROUTING ────────────────────────────────────────────────────────────────
-# prod rules carry env=production (Teams + devops@ via the root policy). dev
-# rules carry env=development + paging=teams (uptime-dev.tf's policy child) —
+# prod rules carry env=prod (Teams + devops@ via the root policy). dev
+# rules carry env=dev + paging=teams (uptime-dev.tf's policy child) —
 # today a dev crash loop would otherwise only reach email, and the owner asked
 # for Teams on the fast track.
 #
@@ -99,7 +99,7 @@ resource "grafana_rule_group" "onprem_crashloop_prod" {
 
     labels = {
       product  = "platform"
-      env      = "production"
+      env      = "prod"
       severity = "warning"
     }
 
@@ -181,7 +181,7 @@ resource "grafana_rule_group" "onprem_crashloop_dev" {
 
     labels = {
       product  = "platform"
-      env      = "development"
+      env      = "dev"
       paging   = "teams"
       severity = "warning"
     }
@@ -199,12 +199,14 @@ resource "grafana_rule_group" "onprem_crashloop_dev" {
 # not for today's absence.
 resource "grafana_rule_group" "onprem_pg_rova_ready" {
   count            = local.onprem_live ? 1 : 0
-  name             = "onprem (postgres — pg-rova)"
+  name             = "onprem (postgres — prod)"
   folder_uid       = grafana_folder.alerts.uid
   interval_seconds = 60
 
   rule {
-    name           = "k3s-pg-rova-not-ready"
+    # Renamed from k3s-pg-rova-not-ready: it matches every pg-* pod in
+    # data-prod (all three clusters), not just rova (audit 2026-11-06).
+    name           = "k3s-pg-prod-not-ready"
     condition      = "B"
     for            = "2m"
     no_data_state  = "OK"
@@ -263,13 +265,13 @@ resource "grafana_rule_group" "onprem_pg_rova_ready" {
     }
 
     labels = {
-      product  = "rova"
-      env      = "production"
+      product  = "platform"
+      env      = "prod"
       severity = "critical"
     }
 
     annotations = {
-      summary = "Prod Postgres pod {{ $labels.pod }} has not been Ready for 2 minutes — the prod database is down or starting (ONPREM-PLAN §12)."
+      summary = "Prod Postgres pod {{ $labels.pod }} ({{ $labels.namespace }}) has not been Ready for 2 minutes — a prod database is down or starting (ONPREM-PLAN §12)."
     }
   }
 }
@@ -340,7 +342,7 @@ resource "grafana_rule_group" "onprem_pg_dev_ready" {
 
     labels = {
       product  = "platform"
-      env      = "development"
+      env      = "dev"
       paging   = "teams"
       severity = "warning"
     }

@@ -24,7 +24,11 @@ locals {
   prod_app_telemetry = {
     rova   = { job = "rova/rova-api" }
     opshub = { job = "opshub/opshub-api" }
-    kb     = { job = "kb/kb-api" }
+    # kb intentionally ABSENT: no target_info{deployment_environment_name="prod"}
+    # exists for kb/kb-api yet (kb-prod.tf records that prod series only arrived
+    # with the launch), so arming it would page immediately. Add it when
+    # `count by (job) (target_info{job="kb/kb-api", deployment_environment_name="prod"})`
+    # returns 1.
   }
 }
 
@@ -95,7 +99,7 @@ resource "grafana_rule_group" "app_telemetry_silent" {
 
       labels = {
         product  = app.key
-        env      = "production"
+        env      = "prod"
         severity = "critical"
       }
 
