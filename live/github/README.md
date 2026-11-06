@@ -1,11 +1,13 @@
 # live/github — GitHub organisation config as code
 
-Repository **rulesets** (43: 39 imported — the 42 that existed on 2026-11-02 across 17 repositories,
-minus the three `mcp-tools` rulesets forgotten when that repo was retired on 2026-11-06 — plus the
-`main-protection`/`tag-protection` pair for `code-review` and `opc`, created 2026-11-06), the
-**merge settings** of the 18 active repos this stack manages, and the **environment** (`production`)
-of `infra`. The 42 existing rulesets, the repositories and the environment were imported exactly as
+Repository **rulesets** (45: 43 imported or previously created — 39 imported on 2026-11-02, the
+`main-protection`/`tag-protection` pair for `code-review` and `opc` created on 2026-11-06 — plus the
+pair for `qnsc-eda`, created by this stack), the **merge settings** of the 19 repos this stack manages,
+the **team access and CODEOWNERS** of `qnsc-eda`, and the **environment** (`production`) of `infra`.
+The 42 existing rulesets, the 18 pre-existing repositories and the environment were imported exactly as
 they were on 2026-11-02 (the 12 product/lane repos added on 2026-11-06 were imported as-is too).
+`qnsc-eda` (2026-11-06) is the first repository this stack **creates**, and the first whose team access
+and CODEOWNERS it manages; see `qnsc-eda.tf`.
 State: Azure `stqnsctfstate`, key `infra/github/terraform.tfstate`.
 Provider `integrations/github` `~> 6.13` (6.13.0, latest stable at the time).
 
@@ -28,7 +30,8 @@ and its `moved` blocks are inert and can be removed in a cleanup.
 | file | resources | notes |
 |---|---|---|
 | `rulesets.tf` | `github_repository_ruleset.this` (43 entries: 39 imported, 4 created for `code-review` and `opc`, for_each over a data map) | every ruleset, bypass actors included (team `merge-bypass`, app `qnsc-automation`, team `vlsi-leads`). `prevent_destroy` stays on; the three retired `mcp-tools` objects move to an empty `retired` resource for their destroy (see below). |
-| `repos.tf` | `github_repository.this` (18: the six platform repos, plus `attendance-lock-firmware`, `chipgraph`, `code-review`, `opc`, `opshub`, `pidc-landing`, `product-docs`, `qnsc-kb-backend`, `qnsc-kb-frontend`, `qnsc-landing`, `rova`, `vlsi_deep_training`) | merge methods, auto-merge, delete-branch-on-merge, commit titles, wiki/issues/projects visibility. Live values, `prevent_destroy`. |
+| `repos.tf` | `github_repository.this` (19: the six platform repos, plus `attendance-lock-firmware`, `chipgraph`, `code-review`, `opc`, `opshub`, `pidc-landing`, `product-docs`, `qnsc-eda`, `qnsc-kb-backend`, `qnsc-kb-frontend`, `qnsc-landing`, `rova`, `vlsi_deep_training`) | merge methods, auto-merge, delete-branch-on-merge, commit titles, wiki/issues/projects visibility. Live values, `prevent_destroy`. `qnsc-eda` has `create = true` (made by this stack, skipped by the import block) and `auto_init` (needs a default branch for its file and rulesets). |
+| `qnsc-eda.tf` | `github_team_repository.qnsc_eda` (4) and `github_repository_file.qnsc_eda_codeowners` (1) | team access (platform + vlsi write, vlsi-leads maintain, merge-bypass read) and CODEOWNERS for the repo this stack creates. The ruleset resource depends on the file, so protection is created after the CODEOWNERS commit. |
 | `repos.tf` | `github_repository_environment` + deployment policy (infra: `production`) | required reviewer + branch policy `main`. (`shared` and `develop` were deleted on 2026-11-02, empty and unreferenced.) |
 
 Adding a repo to `repos.tf` or a ruleset to `rulesets.tf` is one map entry. The
@@ -111,8 +114,10 @@ read-only; exits non-zero and prints the fix on a mismatch). Two things to know:
     `WARP_EXTRA_EXCLUDES`; environment `production` holds the write tokens;
   - organisation variables (e.g. `AWS_ACCOUNT_ID`) are **not** in this stack and must not be
     recreated from it. Nothing here reads or writes a variable.
-- **Team and app repository access.** `github_team_repository` would be clean, but the full
-  matrix (13 teams, ~20 repos, app installations "selected") is not worth owning yet.
+- **Team and app repository access.** Not managed org-wide: the full matrix (13 teams,
+  ~20 repos, app installations "selected") is not worth owning. The exception is `qnsc-eda`,
+  whose four team grants are in `qnsc-eda.tf` because the repository is created here and must
+  be usable the moment it exists.
   Snapshot: team `platform` has write on `.github`, `infra`, `ci`, `tf-modules`,
   `infra-template`, `app-platform`, `gitops`, `qnsc-landing` and read elsewhere; team
   `merge-bypass` has read on every non-archived repo (its only job is the ruleset bypass).
@@ -157,12 +162,34 @@ same pin as our other repos) and GitHub revokes it when the job ends.
 
 | app | manifest | permissions | used by |
 |---|---|---|---|
-| `qnsc-iac-read` | `apps/qnsc-iac-read.json` | Administration **read**, Environments **read**, Metadata read | PR plans of this stack (`-refresh=false`) |
-| `qnsc-iac-apply` | `apps/qnsc-iac-apply.json` | Administration **read/write**, Environments **read/write**, Metadata read | the `apply-github` job only (environment `production`) |
+| `qnsc-iac-read` | `apps/qnsc-iac-read.json` | Administration **read**, Contents **read**, Environments **read**, Members **read**, Metadata read | PR plans of this stack (`-refresh=false`), drift |
+| `qnsc-iac-apply` | `apps/qnsc-iac-apply.json` | Administration **read/write**, Contents **write**, Environments **read/write**, Members **read**, Metadata read | the `apply-github` job only (environment `production`) |
+
+Contents is required by `qnsc-eda.tf`: the CODEOWNERS commit is a repository-file write, which
+Administration alone does not cover. Members read is required to grant the four teams access to
+the new repository (the endpoint needs the caller to be able to see the team). **Existing
+installations need both permissions added by the owner** (see the owner checklist below);
+changing the manifest file alone does not change the live app.
 
 Both: no webhook, no subscribed events, **not public** (installable only on this
-account), installed on **All repositories** (the stack manages 17 of them, and a new repo
+account), installed on **All repositories** (the stack manages 19 of them, and a new repo
 would otherwise need an app change).
+
+### Contents and Members permissions on the existing apps (owner, required before the qnsc-eda apply)
+
+Raising an app's permissions is an owner action; the manifest in this repo is the desired
+state, not something an apply can push into GitHub. Before the `apply-github` job runs:
+
+1. `https://github.com/settings/apps/qnsc-iac-apply` → **Permissions & events** →
+   **Repository permissions** → **Contents** → **Read and write**; and
+   **Organisation permissions** → **Members** → **Read-only** → **Save changes**.
+2. Approve the increase for the installation: **Organisation settings → GitHub Apps →
+   `qnsc-iac-apply` → Configure → review the request → Approve**. (Without this the installation
+   token still lacks the permission.)
+3. Repeat for `qnsc-iac-read`, with the same two permissions at **read** level (plans and drift
+   refresh the file and the team grants).
+
+No key changes: the next workflow run mints a token with the new permissions.
 
 Where the credentials live (names the workflows read):
 
@@ -243,7 +270,7 @@ Merging before step 1 makes `apply-github` fail loudly (no app credentials); not
 ## Local run (read-only)
 
 ```sh
-export GITHUB_TOKEN=...           # any token with Administration + Environments read; from your own shell, never argv or Git
+export GITHUB_TOKEN=...           # any token with Administration, Contents and Environments read; from your own shell, never argv or Git
 cd live/github
 tofu init -backend=false          # local state; the real state is on Azure
 tofu plan                         # imports + adds on an empty state; phantom `~` on every repo, see above

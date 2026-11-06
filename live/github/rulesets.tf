@@ -532,6 +532,42 @@ locals {
       rules   = ["deletion"]
     }
 
+    # ── qnsc-eda ────────────────────────────────────────────────────
+    # Created by this stack (no `id`): the repository does not exist yet.
+    "qnsc-eda/main-protection" = {
+      repo    = "qnsc-eda"
+      name    = "main-protection"
+      target  = "branch"
+      include = ["~DEFAULT_BRANCH"]
+      bypass  = [{ id = local.team_merge_bypass, type = "Team", mode = "pull_request" }]
+      rules   = ["deletion", "non_fast_forward"]
+      pull_request = {
+        approvals          = 1
+        dismiss_stale      = true
+        code_owner_review  = true
+        last_push_approval = true
+        thread_resolution  = true
+        merge_methods      = ["squash"]
+      }
+      status_checks = {
+        strict                   = true
+        do_not_enforce_on_create = true
+        checks = [
+          { context = "Image build (pull request)" },
+          { context = "PR title (conventional commits)" },
+          { context = "actions-security / Workflow security (actionlint, zizmor)", integration_id = local.app_github_actions_id },
+        ]
+      }
+    }
+    "qnsc-eda/tag-protection" = {
+      repo    = "qnsc-eda"
+      name    = "tag-protection"
+      target  = "tag"
+      include = ["~ALL"]
+      bypass  = [{ id = local.team_merge_bypass, type = "Team", mode = "always" }]
+      rules   = ["deletion", "update"]
+    }
+
     # ── qnsc-kb-backend ─────────────────────────────────────────────
     "qnsc-kb-backend/main-protection" = {
       repo    = "qnsc-kb-backend"
@@ -826,6 +862,11 @@ resource "github_repository_ruleset" "this" {
   name        = each.value.name
   target      = each.value.target
   enforcement = "active"
+
+  # qnsc-eda is created by this stack. Its CODEOWNERS commit must land on the
+  # default branch BEFORE branch protection exists, or the file write (a direct
+  # commit, not a PR) is blocked by the very ruleset being created.
+  depends_on = [github_repository_file.qnsc_eda_codeowners]
 
   conditions {
     ref_name {

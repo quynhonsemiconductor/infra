@@ -71,6 +71,17 @@ locals {
       # repo's description must not be copied into it. `ignore_changes =
       # [description]` below leaves the live description in place.
     }
+    # The VLSI platform's toolchain image. This is the first repository the
+    # stack CREATES (the others already existed and were imported): `create =
+    # true` keeps it out of the import block, and `auto_init` gives it a default
+    # branch so the CODEOWNERS commit and the rulesets can follow in the same
+    # apply, before the protection exists.
+    "qnsc-eda" = {
+      auto_merge  = false, merge_commit = false, rebase_merge = false, delete_branch = true
+      description = "Open-source EDA toolchain image for the QNSC VLSI platform: pinned OSS CAD Suite, Verilator, Yosys, cocotb, Verible and Surfer. Published to GHCR."
+      create      = true
+      auto_init   = true
+    }
     "qnsc-kb-backend" = {
       auto_merge = false, merge_commit = false, rebase_merge = true, delete_branch = true
       has_wiki   = false
@@ -107,6 +118,10 @@ resource "github_repository" "this" {
   description  = try(each.value.description, null)
   homepage_url = try(each.value.homepage, null)
   visibility   = try(each.value.visibility, "public")
+  # Creation-time input; ignored on update, so harmless for the imported
+  # repositories. A new repository needs a default branch before a file or a
+  # ruleset can target it.
+  auto_init = try(each.value.auto_init, false)
 
   has_issues      = try(each.value.has_issues, true)
   has_wiki        = try(each.value.has_wiki, true)
@@ -146,7 +161,9 @@ resource "github_repository" "this" {
 }
 
 import {
-  for_each = local.repos
+  # Only the repositories that already exist. A `create = true` entry is made
+  # by this stack; importing it would fail on the empty state before the create.
+  for_each = { for k, v in local.repos : k => v if !try(v.create, false) }
   to       = github_repository.this[each.key]
   id       = each.key
 }
