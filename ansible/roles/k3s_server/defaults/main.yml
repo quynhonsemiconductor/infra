@@ -20,10 +20,12 @@ k3s_server_entra_tenant_id: ""
 k3s_server_entra_client_id: ""
 k3s_server_entra_platform_admins_group_id: ""
 k3s_server_entra_developers_group_id: ""
-# Claim mapping. `preferred_username` is the UPN/email in an Entra v2 ID token; the username prefix
-# keeps an OIDC user from ever looking like a built-in (`system:...`). No groups prefix: the claim
-# carries GUIDs, which cannot collide with anything, and RBAC then reads the id verbatim.
-k3s_server_entra_username_claim: preferred_username
+# Claim mapping. `oid` is the user's IMMUTABLE object id: a UPN (`preferred_username`) changes when
+# someone is renamed, and Entra can reuse a freed UPN for a new account — an audit log that says
+# "alice@company" is then ambiguous, while the object id never is. RBAC is by group, so the username
+# shape matters only for audit and for `kubectl auth whoami`. The prefix keeps an OIDC user from ever
+# looking like a built-in (`system:...`). No groups prefix: the claim carries GUIDs, already unique.
+k3s_server_entra_username_claim: oid
 k3s_server_entra_username_prefix: "oidc:"
 
 # kube-controller-manager: keep at most this many terminated pods cluster-wide (upstream default 12500).
