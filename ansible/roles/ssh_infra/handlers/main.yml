@@ -1,0 +1,8 @@
+---
+# Reload only: an sshd restart drops in-flight sessions. The drop-in is
+# validated with `sshd -t` before any notify reaches this handler.
+- name: Reload sshd
+  ansible.builtin.service:
+    name: ssh
+    state: reloaded
+  listen: ssh_infra_reload_sshd

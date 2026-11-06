@@ -73,8 +73,8 @@ variable "vm_memory_mb" {
   type = number
   # UNCHANGED 24 GiB (24576 MiB) in the re-balance. k3s-01's memory requests are ~16.4 GiB
   # with kb prod plus the 2 GiB systemReserved, so shrinking it is no longer safe. The
-  # re-balance moves ai-01 to 28 GiB and vlsi-01 to 4 GiB; the three VMs total 56 GiB of
-  # the host's 62 GiB, leaving ~6 GiB for the host and the ZFS ARC.
+  # re-balance moves ai-01 to 24 GiB and vlsi-01 to 4 GiB; the three VMs total 52 GiB of
+  # the host's 60.5 GiB, leaving ~8.5 GiB for the host and the ZFS ARC.
   default     = 24576
   description = "Dedicated memory in MiB (24 GiB, unchanged by the re-balance). Ballooning stays off (floating = 0)."
 }
