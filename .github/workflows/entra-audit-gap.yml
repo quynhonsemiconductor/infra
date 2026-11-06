@@ -36,9 +36,9 @@ concurrency:
 jobs:
   gap:
     name: Newest audit blob under 72 h
-    # Same enablement gate as the export: nothing to watch before the owner sets
-    # the client id. Once set, this job is what complains if the export dies.
-    if: ${{ vars.AZURE_CLIENT_ID_ENTRA_AUDIT != '' }}
+    # Deliberately NO job-level skip. An unset AZURE_CLIENT_ID_ENTRA_AUDIT means
+    # nothing is being exported, and that must be a red run with an issue, not a
+    # green skip that looks like health (review round 3). The first step decides.
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -51,10 +51,23 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Is the export configured?
+        id: configured
+        env:
+          CLIENT_ID: ${{ vars.AZURE_CLIENT_ID_ENTRA_AUDIT }}
+        run: |
+          if [ -z "${CLIENT_ID:-}" ]; then
+            echo "::error title=Entra audit export is not configured::Repository variable AZURE_CLIENT_ID_ENTRA_AUDIT is unset, so no directory audit log is being exported. Microsoft keeps them 7 days. After the identity apply: tofu output entra_audit_export_client_id, then gh variable set AZURE_CLIENT_ID_ENTRA_AUDIT -R ${GITHUB_REPOSITORY}."
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "configured=true" >> "$GITHUB_OUTPUT"
+
       # Collects both signals and never fails on its own: the record step must
       # run whatever happens here, and the final step decides the exit code.
       - name: Collect state and blob age
         id: check
+        if: ${{ steps.configured.outputs.configured == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -129,6 +142,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          CONFIGURED: ${{ steps.configured.outputs.configured }}
           OK: ${{ steps.check.outputs.ok }}
           STATE: ${{ steps.check.outputs.state }}
           AGE_HOURS: ${{ steps.check.outputs.age_hours }}
@@ -136,7 +150,13 @@ jobs:
         run: |
           set -euo pipefail
           gh label create entra-audit-gap -R "$REPO" --color B60205 --description "Entra audit export is stale or disabled" 2>/dev/null || true
-          if [ "${OK:-0}" != "1" ]; then
+          if [ "${CONFIGURED:-false}" != "true" ]; then
+            body="Not configured: repository variable AZURE_CLIENT_ID_ENTRA_AUDIT is unset, so no audit log is exported. Run: ${RUN_URL}. Set it from tofu output entra_audit_export_client_id (infra live/identity), then re-run this check."
+            n="$(gh issue list -R "$REPO" --label entra-audit-gap --state open --json number --jq '.[0].number // empty')"
+            if [ -n "$n" ]; then gh issue comment "$n" -R "$REPO" --body "$body"; else
+              gh issue create -R "$REPO" --title "Entra audit export is not configured" --label entra-audit-gap --body "$body"
+            fi
+          elif [ "${OK:-0}" != "1" ]; then
             body="Newest blob: ${NEWEST:-none} (${AGE_HOURS:-unknown} h old). Export workflow state: ${STATE:-unknown}. Run: ${RUN_URL}. Microsoft keeps directory audit logs 7 days, so a gap longer than that cannot be recovered."
             n="$(gh issue list -R "$REPO" --label entra-audit-gap --state open --json number --jq '.[0].number // empty')"
             if [ -n "$n" ]; then gh issue comment "$n" -R "$REPO" --body "$body"; else
@@ -148,12 +168,13 @@ jobs:
             done
           fi
 
-      - name: Fail when stale, disabled or unreadable
+      - name: Fail when unconfigured, stale, disabled or unreadable
         if: ${{ always() }}
         env:
+          CONFIGURED: ${{ steps.configured.outputs.configured }}
           OK: ${{ steps.check.outputs.ok }}
         run: |
-          if [ "${OK:-0}" != "1" ]; then
+          if [ "${CONFIGURED:-false}" != "true" ] || [ "${OK:-0}" != "1" ]; then
             echo "::error::Entra audit export check failed; see the issue and the step above."
             exit 1
           fi

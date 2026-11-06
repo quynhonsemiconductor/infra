@@ -61,12 +61,25 @@ az storage blob download --account-name stqnsckvaudit --container-name entra-aud
 gzip -dc /tmp/a.jsonl.gz | jq -c 'select(.activityDisplayName|test("role|consent|application";"i"))'
 ```
 
-**IRREVERSIBLE — read before the first apply.** The container's WORM policy is
-created with `locked = true`: it can never be weakened or removed, by OpenTofu,
-the portal or a subscription owner, and its blobs cannot be changed or deleted
-for 365 days. Retention may only be increased. The stack also sets
-`prevent_destroy`, so destroying `live/identity` fails instead of taking the
-trail with it. Confirm you accept both before applying.
+**IRREVERSIBLE — a gate, not a comment.** The container's WORM policy is created
+with `locked = true`: it can never be weakened or removed, by OpenTofu, the
+portal or a subscription owner, and its blobs cannot be changed or deleted for
+365 days. Retention may only be increased. `prevent_destroy` also makes
+destroying `live/identity` fail rather than take the trail with it.
+
+The apply refuses to create the policy without an explicit confirmation:
+
+```bash
+# Only after reading the paragraph above and agreeing with the owner:
+export TF_VAR_confirm_worm_irreversible=true
+# then the usual plan + apply (the kit does NOT set this variable)
+scripts/owner/identity-env/identity-env.sh -- tofu plan -out=tfplan
+scripts/owner/identity-env/identity-env.sh -- tofu apply tfplan
+```
+
+Without it the plan stops at the policy's precondition. Later applies are not
+blocked: the precondition is evaluated only when that resource is planned for a
+change.
 
 First enablement (owner, once — identity is owner-applied only):
 

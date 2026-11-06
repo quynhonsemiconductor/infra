@@ -33,6 +33,15 @@ locals {
   entra_audit_container = "entra-audit"
 }
 
+# Gate, not a comment. The policy below is locked on creation and can never be
+# weakened; this variable must be set explicitly for the apply that creates it.
+# It has no default, is not built by the owner kit, and is never committed.
+variable "confirm_worm_irreversible" {
+  type        = bool
+  default     = false
+  description = "Set TF_VAR_confirm_worm_irreversible=true ONLY after reading the IRREVERSIBLE note in live/identity/entra_audit_export.tf and agreeing with the owner. The locked WORM policy on the entra-audit container cannot be removed or shortened afterwards. Enforced by a precondition on the policy, so unrelated applies are not blocked once it exists."
+}
+
 # The container the export workflow writes into. Private; no SAS is issued.
 resource "azurerm_storage_container" "entra_audit" {
   # checkov:skip=CKV2_AZURE_21:the account's own diagnostic destination is Azure Monitor; blob read logging into the same account would loop
@@ -61,6 +70,15 @@ resource "azurerm_storage_container_immutability_policy" "entra_audit" {
   immutability_period_in_days           = 365
   protected_append_writes_enabled       = false
   locked                                = true
+
+  lifecycle {
+    # The real gate: the plan/apply stops here until the owner has explicitly
+    # confirmed the irreversible policy (variable above).
+    precondition {
+      condition     = var.confirm_worm_irreversible
+      error_message = "Refusing to create a LOCKED 365-day WORM policy without confirmation. Read the IRREVERSIBLE note at the top of the entra-audit policy and set TF_VAR_confirm_worm_irreversible=true for the apply that creates it."
+    }
+  }
 }
 
 # The export identity: no client secret, ever. Graph application permission
