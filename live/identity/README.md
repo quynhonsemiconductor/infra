@@ -549,6 +549,30 @@ Pilot check before the team lands: sign in once as a member (works) and once as 
 non-member (Coder refuses with "Not a member of an allowed group"), and confirm from a
 non-member's WARP client that `coder.qnsc.vn` does not resolve.
 
+## kubectl through Entra (`k3s_oidc.tf`): app "QNSC k3s"
+
+Admins and developers sign `kubectl` in with Entra instead of sharing long-lived admin kubeconfig
+files. kubelogin (`kubectl oidc-login`) obtains an ID token; the k3s API server verifies it as an
+OIDC provider; RBAC maps the Entra **groups claim** to cluster roles.
+
+- "QNSC k3s": single tenant, **public client** (no secret — it runs on a laptop), SecurityGroup
+  membership claims, id-token claims `groups`/`email`/`preferred_username`, delegated
+  openid/profile/email. Redirect URIs are kubelogin's defaults: `http://localhost:8000` and
+  `http://localhost:18000`.
+- Nothing secret is created. The owner applies this stack and records the outputs:
+
+  ```sh
+  tofu output -json | jq '{k3s_oidc_client_id, k3s_oidc_issuer_url}'
+  ```
+
+  `k3s_oidc_client_id` → `k3s_server_entra_client_id` in the LOCAL Ansible inventory; the two group
+  object ids (`grp-qnsc-platform-admins`, `grp-qnsc-developers`) → `k3s_server_entra_platform_admins_group_id`
+  and `..._developers_group_id`; `k3s_server_oidc_entra_tenant_id` is the tenant id.
+- The API-server flags and the RBAC bindings are the `k3s_server` Ansible role
+  (`k3s_server_entra_auth_enabled=true`), applied in an owner window because they need a k3s restart.
+  Setup for a laptop — kubelogin, the kubeconfig stanza, the restart impact and the break-glass rule —
+  is `docs/runbooks/kubectl-entra-login.md` in the infra repo.
+
 ## Proxmox VE + PBS login (`proxmox.tf`): app "QNSC Proxmox", plan, secret
 
 Adds the Entra half of the Proxmox VE and Proxmox Backup Server OpenID realms;
