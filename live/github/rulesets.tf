@@ -404,57 +404,6 @@ locals {
       rules   = ["deletion", "update"]
     }
 
-    # ── mcp-tools ───────────────────────────────────────────────────
-    "mcp-tools/main-protection" = {
-      repo    = "mcp-tools"
-      id      = 22875978
-      name    = "main-protection"
-      target  = "branch"
-      include = ["~DEFAULT_BRANCH"]
-      bypass  = [{ id = local.team_merge_bypass, type = "Team", mode = "pull_request" }]
-      rules   = ["deletion", "non_fast_forward"]
-      pull_request = {
-        approvals          = 1
-        dismiss_stale      = true
-        code_owner_review  = true
-        last_push_approval = true
-        thread_resolution  = true
-        merge_methods      = ["squash"]
-      }
-      status_checks = {
-        strict                   = true
-        do_not_enforce_on_create = true
-        checks = [
-          { context = "typecheck" },
-          { context = "lint" },
-          { context = "PR title (conventional commits)" },
-          { context = "Analyze (javascript-typescript)" },
-          { context = "test" },
-          { context = "build" },
-          { context = "security / Security scans (Gitleaks, osv-scanner, Semgrep)", integration_id = local.app_github_actions_id },
-          { context = "actions-security / Workflow security (actionlint, zizmor)", integration_id = local.app_github_actions_id },
-        ]
-      }
-    }
-    "mcp-tools/tag-creation-release-only" = {
-      repo    = "mcp-tools"
-      id      = 22876000
-      name    = "tag-creation-release-only"
-      target  = "tag"
-      include = ["refs/tags/v*"]
-      bypass  = [{ id = local.app_qnsc_automation, type = "Integration", mode = "always" }, { id = local.team_merge_bypass, type = "Team", mode = "always" }]
-      rules   = ["creation"]
-    }
-    "mcp-tools/tag-protection" = {
-      repo    = "mcp-tools"
-      id      = 22875998
-      name    = "tag-protection"
-      target  = "tag"
-      include = ["~ALL"]
-      bypass  = [{ id = local.team_merge_bypass, type = "Team", mode = "always" }]
-      rules   = ["deletion", "update"]
-    }
-
     # ── opc ─────────────────────────────────────────────────────────
     # Created 2026-11-06 (no `id`): the repo had no ruleset and no branch
     # protection. NO required status checks yet: opc has no workflow files, and
@@ -933,6 +882,45 @@ resource "github_repository_ruleset" "this" {
   lifecycle {
     prevent_destroy = true
   }
+}
+
+# mcp-tools retirement (owner decision 2026-11-06). The three rulesets left
+# `local.rulesets`; the `moved` blocks below hand their state to this empty
+# resource, which has NO prevent_destroy, so the plan destroys them while the
+# guard above stays in place. The placeholders are never created (`for_each`
+# is empty); once applied, the resource and the three `moved` blocks are inert
+# and can be deleted in a cleanup.
+resource "github_repository_ruleset" "retired" {
+  for_each = {}
+
+  repository  = "mcp-tools"
+  name        = "retired"
+  target      = "branch"
+  enforcement = "active"
+
+  conditions {
+    ref_name {
+      include = ["~ALL"]
+      exclude = []
+    }
+  }
+
+  rules {
+    deletion = true
+  }
+}
+
+moved {
+  from = github_repository_ruleset.this["mcp-tools/main-protection"]
+  to   = github_repository_ruleset.retired["mcp-tools/main-protection"]
+}
+moved {
+  from = github_repository_ruleset.this["mcp-tools/tag-creation-release-only"]
+  to   = github_repository_ruleset.retired["mcp-tools/tag-creation-release-only"]
+}
+moved {
+  from = github_repository_ruleset.this["mcp-tools/tag-protection"]
+  to   = github_repository_ruleset.retired["mcp-tools/tag-protection"]
 }
 
 # Imports: the live rulesets are adopted, never recreated. `repository:id` is the
