@@ -84,7 +84,7 @@ jobs:
             printf '%s\n' "$out"; exit 1
           fi
           printf '%s\n' "$out"
-          state=$(passwd -S qnsc-test-admin | awk '{print $2}')
+          state=$(sudo passwd -S qnsc-test-admin | awk '{print $2}')
           [ "$state" != "L" ] || { echo "qnsc-test-admin is still locked"; exit 1; }
-          chage -l qnsc-test-admin | grep -qi '^Account expires.*never' \
-            || { chage -l qnsc-test-admin; echo "expiry was not cleared"; exit 1; }
+          sudo chage -l qnsc-test-admin | grep -qi '^Account expires.*never' \
+            || { sudo chage -l qnsc-test-admin; echo "expiry was not cleared"; exit 1; }
