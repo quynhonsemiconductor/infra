@@ -54,7 +54,9 @@ jobs:
       # Offline unit check of the PVE Entra offboarding selectors (match vs
       # search: a realm user must actually be selected). No host, no cloud.
       - name: PVE Entra membership selector unit check
-        run: ansible-playbook -i localhost, -c local tests/pve_base_entra_membership.yml
+        run: >-
+          ansible-playbook -i localhost, -c local
+          tests/pve_base_entra_membership.yml tests/pve_base_entra_gate.yml tests/pbs_entra_gate.yml
       # The LAST listed account being removed must still be offboarded. Uses a
       # throwaway account (never a system account) and --check only.
 
