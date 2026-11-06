@@ -138,7 +138,7 @@ jobs:
           else
             CHANGED="$(git diff --name-only "$BEFORE" "$AFTER")"
             echo "Changed files:"; echo "$CHANGED"
-            if echo "$CHANGED" | grep -qE '^\.github/(workflows/infra-apply\.yml|scripts/plan-fingerprint\.sh)$'; then
+            if echo "$CHANGED" | grep -qE '^\.github/(workflows/infra-apply\.yml|scripts/(plan-fingerprint|ssh-targets-guard)\.sh)$'; then
               sel="$DEFAULT"
             else
               for s in $KNOWN; do
@@ -220,23 +220,45 @@ jobs:
         env:
           AM_URL: ${{ vars.AM_METRICS_URL }}
 
+      # edge carries private SSH target values in state; the guard masks them and refuses an empty secret
+      # over a non-empty state. Shared with infra-plan.yml and drift-detection.yml (one implementation).
+      - name: SSH targets guard (edge)
+        if: matrix.stack == 'edge'
+        working-directory: live/edge
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/ssh-targets-guard.sh"
+        env:
+          SSH_INFRA_TARGETS: ${{ secrets.SSH_INFRA_TARGETS }}
+          # READ identity, exactly as the init and plan steps in THIS job: the write
+          # identity's federated credential is bound to environment:production, and this job
+          # deliberately has no environment, so a write id here fails the token exchange
+          # (AADSTS700213, subject ref:refs/heads/main). Fix: keep the two in step.
+          ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID_READ }}
+          ARM_TENANT_ID: ${{ vars.ENTRA_TENANT_ID }}
+          ARM_USE_OIDC: 'true'
+
       - name: tofu plan
         id: plan
         working-directory: live/${{ matrix.stack }}
         run: |
           # Lock-free: the read identity cannot take the state lease, and a plan never mutates state.
           # The plan text is NOT printed on success (the summary lists addresses only); on an error it
-          # is printed with UUIDs redacted so the failure can be read.
+          # is printed with UUIDs redacted so the failure can be read. edge is the exception: it prints
+          # NOTHING from the plan file — its `╷ … ╵` error boxes only (the body carries SSH targets).
           set +e
           tofu plan -input=false -lock=false -no-color -detailed-exitcode -out=tfplan > plan.txt 2>&1
           ec=$?
           set -e
           if [ "$ec" = "1" ]; then
-            sed -E 's/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/<redacted>/g' plan.txt
+            if [ "$STACK" = "edge" ]; then
+              sed -n '/^╷/,/^╵/p' plan.txt
+            else
+              cat plan.txt
+            fi | sed -E 's/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/<redacted>/g' >&2
             exit 1
           fi
           echo "exitcode=$ec" >> "$GITHUB_OUTPUT"
         env:
+          STACK: ${{ matrix.stack }}
           ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID_READ }}
           ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
           ARM_USE_OIDC:        'true'
@@ -271,6 +293,7 @@ jobs:
           TF_VAR_healthchecks_api_token: ${{ matrix.stack == 'observability-alerting' && secrets.HEALTHCHECKS_API_TOKEN_READONLY || '' }}
           TF_VAR_admin_private_cidr:     ${{ contains(fromJSON('["onprem","edge"]'), matrix.stack) && secrets.ADMIN_PRIVATE_CIDR || '' }}
           TF_VAR_warp_extra_excludes:    ${{ matrix.stack == 'edge' && secrets.WARP_EXTRA_EXCLUDES || '[]' }}
+          TF_VAR_ssh_infra_targets:      ${{ matrix.stack == 'edge' && secrets.SSH_INFRA_TARGETS || '{}' }}
 
       - name: Summary and fingerprint
         id: fp
@@ -279,12 +302,22 @@ jobs:
         env:
           STACK: ${{ matrix.stack }}
           EXIT_CODE: ${{ steps.plan.outputs.exitcode }}
+          # edge: addresses carry the private SSH target keys — print TYPES only. The fingerprint still
+          # hashes the full addresses, so the apply stage compares like for like.
+          HIDE_ADDRESSES: ${{ matrix.stack == 'edge' }}
+          # edge: an HMAC keyed by the secret, so the published fingerprint cannot be used as an
+          # oracle over the node names in the address lines. Both stages use the same key.
+          FP_HMAC_KEY: ${{ matrix.stack == 'edge' && secrets.SSH_INFRA_TARGETS || '' }}
           FP_JSON: ${{ runner.temp }}/fp-${{ matrix.stack }}.json
           ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID_READ }}
           ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
           ARM_USE_OIDC:        'true'
 
       # Only {stack, has_changes, fingerprint}: three short fields, no plan, no values.
+      # The glob is ONE file in the runner's temp dir — NOT the workspace — so live/edge's
+      # plan.txt, apply.txt, tfplan and refresh.txt are never uploaded. A future upload of
+      # `live/**` or `.` would leak every edge plan and must not be added without the same
+      # edge treatment (no text, counts + keyed fingerprint only).
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: fp-${{ matrix.stack }}
@@ -443,6 +476,15 @@ jobs:
           ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
           ARM_USE_OIDC:        'true'
 
+      - name: SSH targets guard (edge)
+        working-directory: live/edge
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/ssh-targets-guard.sh"
+        env:
+          SSH_INFRA_TARGETS: ${{ secrets.SSH_INFRA_TARGETS }}
+          ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ vars.ENTRA_TENANT_ID }}
+          ARM_USE_OIDC: 'true'
+
       - name: tofu plan
         id: plan
         working-directory: live/edge
@@ -473,11 +515,17 @@ jobs:
             fi
           fi
           set +e
-          tofu plan -input=false -detailed-exitcode -out tfplan -no-color 2>&1 | tee plan.txt
-          ec=${PIPESTATUS[0]}   # tofu's real exit, independent of the tee pipe
+          # NEVER printed: this stack's plan carries the private SSH target map. File only; counts,
+          # fingerprint and types are published by "Verify the plan is the one that was approved".
+          tofu plan -input=false -detailed-exitcode -out tfplan -no-color > plan.txt 2>&1
+          ec=$?
           echo "tofu plan detailed exit code: $ec (0=no change, 2=changes, 1=error)"
           echo "exitcode=$ec" >> "$GITHUB_OUTPUT"
-          if [ "$ec" = "1" ]; then exit 1; fi
+          if [ "$ec" = "1" ]; then
+            # Diagnostics only: the `╷ … ╵` error boxes, never the plan body (values masked by the guard).
+            sed -n '/^╷/,/^╵/p' plan.txt >&2
+            exit 1
+          fi
         env:
           ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID }}
           ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
@@ -493,6 +541,7 @@ jobs:
           # Extra WARP split-tunnel excludes (partner VPN endpoints), JSON list of {address, description}.
           # A secret, not a var: partner addresses must not print in public logs.
           TF_VAR_warp_extra_excludes: ${{ secrets.WARP_EXTRA_EXCLUDES || '[]' }}
+          TF_VAR_ssh_infra_targets: ${{ secrets.SSH_INFRA_TARGETS || '{}' }}
           TF_VAR_tunnels_exist: ${{ vars.TUNNELS_EXIST }}
           # MCP hub (live/edge/variables.mcp_hub.tf): flag and ids are repo variables (`|| 'false'`: an empty value breaks the
           # bool); the two OAuth client secrets are ENVIRONMENT secrets of `production`, so only this job has them.
@@ -515,12 +564,17 @@ jobs:
       # APPROVE WHAT YOU SAW: the plan above ran with the write credentials; its fingerprint (sha256 of the sorted
       # "<address> <action>" lines) must equal the one the plan stage showed for approval, else nothing is applied.
       # No approved fingerprint (a legacy stack) means the plan made just now is applied, as before this flow.
+      # Also the ONLY place this job publishes plan detail: counts, fingerprint and changed TYPES (no addresses,
+      # so no SSH target name/address/login), never the plan body.
       - name: Verify the plan is the one that was approved
         if: steps.plan.outputs.exitcode != '1'
         working-directory: live/edge
         run: bash "$GITHUB_WORKSPACE/.github/scripts/plan-fingerprint.sh" check edge
         env:
           EXPECTED_FP: ${{ fromJson(needs.gate.outputs.fingerprints)['edge'] }}
+          HIDE_ADDRESSES: 'true'
+          FP_HMAC_KEY: ${{ secrets.SSH_INFRA_TARGETS }}
+          PLAN_TITLE: 'Applying: live/edge — counts, fingerprint and changed resource types only (the plan carries private SSH targets)'
           ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID }}
           ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
           ARM_USE_OIDC:        'true'
@@ -538,7 +592,19 @@ jobs:
       - name: tofu apply
         if: steps.plan.outputs.exitcode == '2'
         working-directory: live/edge
-        run: tofu apply -input=false tfplan
+        run: |
+          # The apply echoes the same private plan text, so it goes to a file, never the log. The counts
+          # and fingerprint above are the evidence; on failure only the `╷ … ╵` error boxes are printed
+          # (values masked by the guard).
+          set +e
+          tofu apply -input=false -no-color tfplan > apply.txt 2>&1
+          ec=$?
+          if [ "$ec" != "0" ]; then
+            sed -n '/^╷/,/^╵/p' apply.txt >&2
+            echo "::error::edge apply failed (exit $ec); apply text withheld because it carries private SSH targets" >&2
+            exit "$ec"
+          fi
+          echo "edge apply: done (text withheld because it carries private SSH targets)"
         env:
           ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID }}
           ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
@@ -875,6 +941,9 @@ jobs:
           owner: quynhonsemiconductor
           permission-administration: write
           permission-environments: write
+          # The team grants for qnsc-eda: the endpoint needs repo admin (above)
+          # and the ability to see the team. Nothing else is requested.
+          permission-members: read
 
       - name: tofu init
         working-directory: live/github

@@ -66,6 +66,9 @@ jobs:
           owner: quynhonsemiconductor
           permission-administration: write
           permission-environments: write
+          # Refresh the qnsc-eda team grants in the drift plan (repo admin +
+          # seeing the team); the same minimum as the apply.
+          permission-members: read
 
       - name: tofu init
         working-directory: live/github
