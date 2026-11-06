@@ -35,11 +35,19 @@ Sources: <https://learn.microsoft.com/en-us/entra/fundamentals/licensing#microso
 
 - IaC: `live/identity/entra_audit_export.tf` — app `QNSC Entra Audit Export`
   (secret-less, GitHub OIDC `ref:refs/heads/main` only), Graph **application**
-  permission `AuditLog.Read.All`, `Storage Blob Data Contributor` on
-  `stqnsckvaudit` only, container `entra-audit` with a **locked 365-day WORM**
-  policy, plus a 365-day lifecycle rule in `live/identity/audit_logs.tf`.
+  permission `AuditLog.Read.All`, `Storage Blob Data Contributor` scoped to the
+  **`entra-audit` container** (never the account, so it cannot write the Key
+  Vault trail), container with a **locked 365-day WORM** policy, plus a 365-day
+  lifecycle rule in `live/identity/audit_logs.tf`.
 - Job: `.github/workflows/entra-audit-export.yml`, nightly 01:23 UTC, 72-hour
-  window (`scripts/entra_audit_export.py`).
+  window (`scripts/entra_audit_export.py`). The script sends the bearer token
+  only to `https://graph.microsoft.com/` and re-checks the host on every
+  `@odata.nextLink` before following it.
+- Watchdog: `.github/workflows/entra-audit-gap.yml`, weekly Monday. Fails and
+  opens an issue when the export workflow is **disabled**, the container is
+  empty, or the newest blob is older than **72 h**. It is a separate workflow on
+  purpose: disabling the export must not silence the check that notices. The
+  issue emails the watchers; the next green run closes it.
 - Layout: `entra-audit/YYYY/MM/DD/audit-YYYYMMDDTHHMMSSZ.jsonl.gz`, one line per
   record. Runs overlap by design; de-duplicate on the record `id` when reading.
 - The job **skips green** until repo variable `AZURE_CLIENT_ID_ENTRA_AUDIT` is
@@ -52,6 +60,13 @@ az storage blob download --account-name stqnsckvaudit --container-name entra-aud
   --name 2026/11/06/audit-20261106T012315Z.jsonl.gz --auth-mode login --file /tmp/a.jsonl.gz
 gzip -dc /tmp/a.jsonl.gz | jq -c 'select(.activityDisplayName|test("role|consent|application";"i"))'
 ```
+
+**IRREVERSIBLE — read before the first apply.** The container's WORM policy is
+created with `locked = true`: it can never be weakened or removed, by OpenTofu,
+the portal or a subscription owner, and its blobs cannot be changed or deleted
+for 365 days. Retention may only be increased. The stack also sets
+`prevent_destroy`, so destroying `live/identity` fails instead of taking the
+trail with it. Confirm you accept both before applying.
 
 First enablement (owner, once — identity is owner-applied only):
 

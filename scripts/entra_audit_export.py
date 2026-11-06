@@ -37,6 +37,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 GRAPH = "https://graph.microsoft.com/v1.0"
+GRAPH_HOST = "graph.microsoft.com"
 PAGE_SIZE = 1000  # directoryAudits caps $top at 1000
 
 
@@ -60,7 +61,21 @@ def graph_token() -> str:
     return token
 
 
+def require_graph_url(url: str) -> None:
+    """The bearer token goes to graph.microsoft.com and nowhere else.
+
+    `@odata.nextLink` is server-controlled; a compromised or misconfigured
+    response must not be able to redirect the token to another host (the
+    classic `https://graph.microsoft.com@evil.example/` shape included:
+    urlsplit reads the host as evil.example).
+    """
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme != "https" or parts.hostname != GRAPH_HOST:
+        raise ExportError(f"refusing to send the token to {parts.scheme}://{parts.hostname or '?'}")
+
+
 def fetch_json(url: str, token: str) -> dict:
+    require_graph_url(url)
     request = urllib.request.Request(
         url,
         headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
@@ -90,6 +105,9 @@ def collect(since_iso: str, token: str, fetch=fetch_json) -> list[dict]:
             seen.add(record_id)
             records.append(record)
         url = page.get("@odata.nextLink")
+        if url:
+            # fetch_json checks too; this keeps the contract testable with a fake.
+            require_graph_url(url)
     return records
 
 

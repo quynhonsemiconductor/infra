@@ -115,8 +115,9 @@ resource "azurerm_storage_container_immutability_policy" "kv_audit" {
   locked                                = true
 }
 
-# 1-year retention. The rule runs daily and removes blobs under the audit
-# container only; nothing else ever lives in this account.
+# 1-year retention, one rule per container: the Key Vault trail and, since
+# 2026-11-06, the Entra directory-audit export (entra_audit_export.tf). Nothing
+# else lives in this account.
 resource "azurerm_storage_management_policy" "kv_audit" {
   storage_account_id = azurerm_storage_account.kv_audit.id
 

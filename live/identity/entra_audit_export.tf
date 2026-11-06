@@ -50,6 +50,12 @@ resource "azurerm_storage_container" "entra_audit" {
 # immutability expires. Protected append writes are therefore off (nothing
 # appends), unlike the Key Vault container next door, which Azure Monitor writes
 # as append blobs.
+#
+# IRREVERSIBLE: `locked = true` means this policy can never be weakened or
+# removed — not by OpenTofu, not by the portal, not by a subscription owner.
+# Retention may only be raised. Before the first apply, the owner confirms that
+# destroying the identity stack must NOT destroy this trail (prevent_destroy
+# above makes the stack fail rather than delete it).
 resource "azurerm_storage_container_immutability_policy" "entra_audit" {
   storage_container_resource_manager_id = azurerm_storage_container.entra_audit.id
   immutability_period_in_days           = 365
@@ -97,10 +103,11 @@ resource "azuread_app_role_assignment" "entra_audit_export_graph" {
   resource_object_id  = data.azuread_service_principal.msgraph.object_id
 }
 
-# Write access is scoped to the audit account only — the same store the Key
-# Vault trail uses, never the state account and never the whole subscription.
+# Write access is scoped to the `entra-audit` CONTAINER, not the account: the
+# same account holds the Key Vault trail, which this identity must never be able
+# to write to. Containers support role assignments at container scope.
 resource "azurerm_role_assignment" "entra_audit_export_blob" {
-  scope                = azurerm_storage_account.kv_audit.id
+  scope                = azurerm_storage_container.entra_audit.id
   role_definition_name = "Storage Blob Data Contributor"
   principal_id         = azuread_service_principal.entra_audit_export.object_id
 }

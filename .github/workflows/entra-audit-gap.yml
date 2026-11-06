@@ -1,0 +1,159 @@
+# =============================================================================
+# Entra audit export · freshness watchdog — weekly
+#
+# The export job (entra-audit-export.yml) can stop silently: disabled by hand, a
+# broken federated credential, a Graph or storage outage, or simply never
+# enabled after the identity apply. Microsoft keeps directory audit logs for
+# 7 days, so a gap longer than that is unrecoverable data loss, not a delay.
+#
+# This is deliberately a SEPARATE workflow: disabling the export does not
+# disable the thing that notices.
+#
+#   * FAIL (red + issue, which emails the watchers) when the export workflow is
+#     not active, when the newest blob is older than 72 h, or when the container
+#     has no readable blob;
+#   * GREEN closes the issue it opened.
+#
+# Reads: container `entra-audit` (list only) and the export workflow's state, with
+# the same secret-less app as the export. The role is scoped to the container.
+# =============================================================================
+name: Entra audit export gap
+
+on:
+  schedule:
+    # Monday 02:41 UTC = 09:41 Asia/Ho_Chi_Minh, after the nightly export and
+    # before the workday. Offset from the other scheduled jobs on purpose.
+    - cron: '41 2 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: entra-audit-gap
+  cancel-in-progress: false
+
+jobs:
+  gap:
+    name: Newest audit blob under 72 h
+    # Same enablement gate as the export: nothing to watch before the owner sets
+    # the client id. Once set, this job is what complains if the export dies.
+    if: ${{ vars.AZURE_CLIENT_ID_ENTRA_AUDIT != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write     # Azure OIDC
+      issues: write       # open/close the gap issue
+      actions: read       # read the export workflow's state
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Collects both signals and never fails on its own: the record step must
+      # run whatever happens here, and the final step decides the exit code.
+      - name: Collect state and blob age
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID_ENTRA_AUDIT }}
+          AZURE_TENANT_ID: ${{ vars.ENTRA_TENANT_ID }}
+        run: |
+          set -uo pipefail
+          ok=1
+
+          state="$(gh api "repos/$REPO/actions/workflows/entra-audit-export.yml" --jq .state 2>/dev/null || echo unknown)"
+          if [ "$state" != "active" ]; then
+            ok=0
+            echo "::error title=Entra audit export is disabled::Workflow entra-audit-export.yml state is '$state'. Re-enable: gh workflow enable entra-audit-export.yml -R $REPO"
+          fi
+
+          token="$(curl -fsS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange" | jq -r .value 2>/dev/null || true)"
+          if [ -z "$token" ] || [ "$token" = "null" ]; then
+            ok=0
+            echo "::error::no federated token; cannot read the audit container"
+          else
+            az login --service-principal --username "$AZURE_CLIENT_ID" --tenant "$AZURE_TENANT_ID" \
+              --federated-token "$token" --allow-no-subscriptions --output none || ok=0
+          fi
+
+          if ! az storage blob list --account-name stqnsckvaudit --container-name entra-audit \
+               --auth-mode login --only-show-errors --query "[].name" -o tsv > names.txt 2>/dev/null; then
+            ok=0
+            echo "::error::cannot list container entra-audit (role, network or account)"
+            : > names.txt
+          fi
+
+          read -r age_hours newest < <(python3 - <<'PY'
+          import datetime as dt
+          import re
+
+          names = [n.strip() for n in open("names.txt", encoding="utf-8") if n.strip()]
+          stamps = [
+              dt.datetime.strptime(m.group(1), "%Y%m%dT%H%M%SZ").replace(tzinfo=dt.timezone.utc)
+              for m in (re.search(r"audit-(\d{8}T\d{6}Z)\.jsonl\.gz$", n) for n in names)
+              if m
+          ]
+          if not stamps:
+              print("9999 none")
+          else:
+              newest = max(stamps)
+              age = (dt.datetime.now(dt.timezone.utc) - newest) / dt.timedelta(hours=1)
+              print(f"{age:.1f} {newest:%Y-%m-%dT%H:%M:%SZ}")
+          PY
+          )
+
+          age_hours="${age_hours:-9999}"
+          age_int="${age_hours%%.*}"
+          [ "$age_int" -le 72 ] || ok=0
+          if [ "$age_int" -gt 72 ]; then
+            echo "::error title=Entra audit export gap::The newest exported audit blob is ${age_hours} h old (limit 72 h). Microsoft keeps directory audit logs 7 days; act before that window closes."
+          fi
+
+          {
+            echo "ok=$ok"
+            echo "state=$state"
+            echo "age_hours=$age_hours"
+            echo "newest=$newest"
+          } >> "$GITHUB_OUTPUT"
+          echo "state=$state age_hours=$age_hours newest=$newest ok=$ok"
+
+      # One issue per failure, closed by the next green run (same shape as the
+      # drift alert). The issue emails the repository watchers; that is the alert.
+      - name: Record the result
+        if: ${{ always() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          OK: ${{ steps.check.outputs.ok }}
+          STATE: ${{ steps.check.outputs.state }}
+          AGE_HOURS: ${{ steps.check.outputs.age_hours }}
+          NEWEST: ${{ steps.check.outputs.newest }}
+        run: |
+          set -euo pipefail
+          gh label create entra-audit-gap -R "$REPO" --color B60205 --description "Entra audit export is stale or disabled" 2>/dev/null || true
+          if [ "${OK:-0}" != "1" ]; then
+            body="Newest blob: ${NEWEST:-none} (${AGE_HOURS:-unknown} h old). Export workflow state: ${STATE:-unknown}. Run: ${RUN_URL}. Microsoft keeps directory audit logs 7 days, so a gap longer than that cannot be recovered."
+            n="$(gh issue list -R "$REPO" --label entra-audit-gap --state open --json number --jq '.[0].number // empty')"
+            if [ -n "$n" ]; then gh issue comment "$n" -R "$REPO" --body "$body"; else
+              gh issue create -R "$REPO" --title "Entra audit export is stale or disabled" --label entra-audit-gap --body "$body"
+            fi
+          else
+            for n in $(gh issue list -R "$REPO" --label entra-audit-gap --state open --json number --jq '.[].number'); do
+              gh issue close "$n" -R "$REPO" --comment "Newest export is ${AGE_HOURS} h old in ${RUN_URL}. Closing; it reopens if the export goes stale again."
+            done
+          fi
+
+      - name: Fail when stale, disabled or unreadable
+        if: ${{ always() }}
+        env:
+          OK: ${{ steps.check.outputs.ok }}
+        run: |
+          if [ "${OK:-0}" != "1" ]; then
+            echo "::error::Entra audit export check failed; see the issue and the step above."
+            exit 1
+          fi

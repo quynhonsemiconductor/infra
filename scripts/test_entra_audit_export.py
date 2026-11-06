@@ -31,7 +31,7 @@ class Collect(unittest.TestCase):
         def fetch(url, token):
             calls.append(url)
             if len(calls) == 1:
-                return page([{"id": "a"}, {"id": "b"}], "https://graph.example/next")
+                return page([{"id": "a"}, {"id": "b"}], "https://graph.microsoft.com/v1.0/auditLogs/directoryAudits?$skiptoken=abc")
             return page([{"id": "b"}, {"id": "c"}])
 
         records = ex.collect("2026-11-05T00:00:00Z", "token", fetch=fetch)
@@ -100,6 +100,39 @@ class Main(unittest.TestCase):
 
     def test_rejects_windows_longer_than_retention(self):
         self.assertEqual(ex.main(["--hours", "200"]), 2)
+
+
+class GraphOnly(unittest.TestCase):
+    def test_accepts_graph(self):
+        ex.require_graph_url("https://graph.microsoft.com/v1.0/auditLogs/directoryAudits?$top=1")
+
+    def test_rejects_another_host(self):
+        with self.assertRaises(ex.ExportError):
+            ex.require_graph_url("https://evil.example/collect")
+
+    def test_rejects_userinfo_spoof(self):
+        # urlsplit reads the host here as evil.example, not graph.microsoft.com.
+        with self.assertRaises(ex.ExportError):
+            ex.require_graph_url("https://graph.microsoft.com@evil.example/collect")
+
+    def test_rejects_plain_http_and_subdomains(self):
+        for url in ("http://graph.microsoft.com/v1.0/x",
+                    "https://graph.microsoft.com.evil.example/x",
+                    "https://evilgraph.microsoft.com/x"):
+            with self.subTest(url=url), self.assertRaises(ex.ExportError):
+                ex.require_graph_url(url)
+
+    def test_collect_refuses_a_foreign_next_link(self):
+        def fetch(url, token):
+            return {"value": [{"id": "a"}], "@odata.nextLink": "https://evil.example/next"}
+
+        with self.assertRaises(ex.ExportError):
+            ex.collect("2026-11-05T00:00:00Z", "t", fetch=fetch)
+
+    def test_fetch_json_validates_before_requesting(self):
+        with mock.patch.object(ex.urllib.request, "urlopen") as urlopen, self.assertRaises(ex.ExportError):
+            ex.fetch_json("https://evil.example/collect", "t")
+        urlopen.assert_not_called()
 
 
 if __name__ == "__main__":
