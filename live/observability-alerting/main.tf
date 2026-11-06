@@ -109,8 +109,8 @@ resource "grafana_folder" "slos" {
   title             = "SLOs"
 }
 
-# Rally's own subfolder — created HERE, ONCE, not inside rally's own stack
-# module. A real bug this shipped as: rally's develop and prod environments
+# rova's own subfolder — created HERE, ONCE, not inside rova's own stack
+# module. A real bug this shipped as: rova's develop and prod environments
 # are separate Terraform ROOT MODULES with separate state files, so each
 # one's `grafana_folder.product_dashboards` independently created its OWN
 # "Rally" folder the moment prod applied for the first time — two real,
@@ -118,17 +118,27 @@ resource "grafana_folder" "slos" {
 # only that one environment's dashboards. Centralizing it here is the same
 # fix as `alerts_folder_uid`/`dashboards_folder_uid` already being resolved
 # once and passed DOWN as a plain UID input, not re-derived per environment.
-resource "grafana_folder" "rally_dashboards" {
+#
+# RENAMED 2026-11-06: the product has been rova since long before this
+# folder was created; "Rally" was the old name. The UID is kept by the
+# `moved` block at the end of this file, so dashboards inside never move and
+# the product's own stack keeps working with the same folder UID.
+resource "grafana_folder" "rova_dashboards" {
   parent_folder_uid = grafana_folder.dashboards.uid
-  title             = "Rally"
+  title             = "rova"
 }
 
-# opshub's own subfolder — same centralization as rally_dashboards above, done
-# up front this time instead of discovered via a duplicate-folder incident.
-resource "grafana_folder" "opshub_dashboards" {
-  parent_folder_uid = grafana_folder.dashboards.uid
-  title             = "Opshub"
+moved {
+  from = grafana_folder.rally_dashboards
+  to   = grafana_folder.rova_dashboards
 }
+
+# The empty "Opshub" dashboard subfolder was REMOVED (audit 2026-11-06): it was
+# created up front like rova's, but nothing ever populated it — opshub has no
+# dashboards of its own here. Product RED is covered by the shared
+# "Products (RED)" dashboard in dashboards.tf, so an empty per-product folder
+# is dead structure. If opshub later ships its own detailed dashboard, create
+# the folder in the same PR that fills it.
 
 # Resolved directly, not via a dashboard template variable: a Grafana
 # dashboard template var of type "datasource" needs a populated `current`
@@ -196,8 +206,8 @@ resource "grafana_dashboard" "system_overview" {
         gridPos    = { h = 8, w = 12, x = 0, y = 0 }
         datasource = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
         targets = [{
-          expr         = "sum(rate(http_server_requests_total[5m])) by (service_namespace, deployment_environment_name)"
-          legendFormat = "{{service_namespace}} ({{deployment_environment_name}})"
+          expr         = "sum(rate(http_server_duration_milliseconds_count[5m])) by (job, deployment_environment_name)"
+          legendFormat = "{{job}} ({{deployment_environment_name}})"
           refId        = "A"
         }]
       },
@@ -222,14 +232,14 @@ resource "grafana_dashboard" "system_overview" {
         targets = [{
           expr = join("", [
             "(",
-            "sum(rate(http_server_errors_total[5m])) by (service_namespace, deployment_environment_name)",
+            "sum(rate(http_server_duration_milliseconds_count{status_class=~\"5xx\"}[5m])) by (job, deployment_environment_name)",
             " or ",
-            "sum(rate(http_server_requests_total[5m])) by (service_namespace, deployment_environment_name) * 0",
+            "sum(rate(http_server_duration_milliseconds_count[5m])) by (job, deployment_environment_name) * 0",
             ")",
             " / ",
-            "sum(rate(http_server_requests_total[5m])) by (service_namespace, deployment_environment_name)",
+            "sum(rate(http_server_duration_milliseconds_count[5m])) by (job, deployment_environment_name)",
           ])
-          legendFormat = "{{service_namespace}} ({{deployment_environment_name}})"
+          legendFormat = "{{job}} ({{deployment_environment_name}})"
           refId        = "A"
         }]
       },
@@ -241,8 +251,8 @@ resource "grafana_dashboard" "system_overview" {
         datasource  = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
         fieldConfig = { defaults = { unit = "ms" } }
         targets = [{
-          expr         = "histogram_quantile(0.99, sum(rate(http_server_duration_milliseconds_bucket[5m])) by (le, service_namespace, deployment_environment_name))"
-          legendFormat = "{{service_namespace}} ({{deployment_environment_name}})"
+          expr         = "histogram_quantile(0.99, sum(rate(http_server_duration_milliseconds_bucket[5m])) by (le, job, deployment_environment_name))"
+          legendFormat = "{{job}} ({{deployment_environment_name}})"
           refId        = "A"
         }]
       },
@@ -555,16 +565,6 @@ import {
 import {
   to = grafana_folder.slos
   id = "0:ffwpy0lokzcw0e"
-}
-
-import {
-  to = grafana_folder.rally_dashboards
-  id = "0:cfwpy0n7xqcqoc"
-}
-
-import {
-  to = grafana_folder.opshub_dashboards
-  id = "0:cfwqtc9gtooowd"
 }
 
 import {

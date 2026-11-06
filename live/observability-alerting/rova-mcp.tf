@@ -54,7 +54,7 @@ locals {
 }
 
 resource "grafana_dashboard" "rova_mcp" {
-  folder    = grafana_folder.rally_dashboards.uid
+  folder    = grafana_folder.rova_dashboards.uid
   overwrite = true
 
   config_json = jsonencode({
