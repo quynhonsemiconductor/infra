@@ -25,7 +25,7 @@ Priority: **P1** wave 1 (in `ansible/` now), **P2** wave 2 (next), **P3** later,
 | VM template 9000 build | `scripts/owner/pve-template-9000.sh` | Ansible role `pve_template` (qm commands, idempotent) | P2 | stays a script until then; an image rebuild is a deliberate act, not drift |
 | ai-01: NVIDIA driver + toolkit + k3s agent join | `scripts/owner/qnsc-k3s-agent-join.sh` | Ansible `k3s_agent_gpu` | P1 | the join token comes from 1Password through the environment of the run, never a vars file |
 | k3s server config and version pin | (was `live/onprem-vm/files/k3s/`) | Ansible `k3s_server` + `group_vars/k3s.yml` | done | ONE source; the files/ copy was deleted (it lacked the ESO issuer lines). OIDC issuer is a site value, default off |
-| kubelet reservations, eviction and graceful shutdown (all nodes) | hand-written `90-qnsc.conf` on k3s-01 only | Ansible `kubelet` (drop-in `/var/lib/rancher/k3s/agent/etc/kubelet.conf.d/90-qnsc.conf`) | P1 | profiles server (1 CPU/2 Gi), gpu (1 CPU/2 Gi) and vlsi (500m/1 Gi), recomputed for the VLSI rollout (2026-11-06); shutdown 120 s/60 s; image GC 336 h; restart gated |
+| kubelet reservations, eviction and graceful shutdown (all nodes) | hand-written `90-qnsc.conf` on k3s-01 only | Ansible `kubelet` (drop-in `/var/lib/rancher/k3s/agent/etc/kubelet.conf.d/90-qnsc.conf`) | P1 | profiles server (1 CPU/2 Gi), gpu (1 CPU/2 Gi) and vlsi (500m/1 Gi), recomputed for the VLSI rollout (2026-11-06); shutdown 120 s/60 s; image GC age 336 h and watermarks 70 %/60 % (upstream 85/80 let k3s-01's image store reach ~91 GiB of 120 GiB); restart gated |
 | Azure state account preflight | `scripts/owner/bootstrap-state.sh` | keep | keep | a one-time Azure bootstrap run from a laptop with `az`; chicken-and-egg with OpenTofu |
 | Exchange mailbox scoping (PowerShell) | `scripts/owner/mail-prod-tenant/` | keep (no provider for Exchange RBAC) | keep | documented in live/identity README |
 | Read-only kubeconfig for the operator | `scripts/owner/kubeconfig-ro.sh` | keep | keep | secret handling into 1Password |
@@ -48,7 +48,8 @@ Priority: **P1** wave 1 (in `ansible/` now), **P2** wave 2 (next), **P3** later,
 | HDD mirror pool `backup` | server-setup.md 4 | keep | keep | destroys disks: created once by hand, Ansible only creates the dataset on it |
 | UPS (NUT) | server-setup.md 5 | Ansible `pve_nut` | P2 | |
 | PBS install, datastore, prune/GC/verify, user and token | server-setup.md 11 | Ansible `pbs` | P1 | the PBS user token secret goes to 1Password through stdin, never to a log |
-| PVE side of PBS (storage, nightly job) | server-setup.md 11.3 | OpenTofu `proxmox_storage_pbs` + `proxmox_backup_job` (`live/onprem-vm/backup.tf`) | done | no client-side encryption while the datastore is on the same host; add it with the off-site copy (key created once, kept in 1Password) |
+| PBS off-site copy (S3 datastore on R2 + weekly local sync) | — | Ansible `pbs --tags pbs_offsite`; bucket in `live/onprem/backups.tf` | done | `pbs_offsite_enabled` off by default; R2 token owner-created, from 1Password; restore drill is `docs/runbooks/pbs-offsite.md` §3 |
+| PVE side of PBS (storage, nightly job) | server-setup.md 11.3 | OpenTofu `proxmox_storage_pbs` + `proxmox_backup_job` (`live/onprem-vm/backup.tf`) | done | client-side encryption ON since 2026-11-06 (key in 1Password + paper + USB; a restore without it fails) |
 | Backup restore test | server-setup.md 11.4 | keep (quarterly runbook) | keep | a human checks the VM boots |
 | k3s-01: k3s install and config | server-setup.md 10 | Ansible `k3s_server` | P1 | restart is gated by a variable (default: report, do not restart) |
 | Ubuntu base of the VMs (users, sshd, unattended upgrades) | server-setup.md 10, cloud-init | cloud-init stays minimal; the rest Ansible `vm_base` | P2 | |
@@ -56,7 +57,10 @@ Priority: **P1** wave 1 (in `ansible/` now), **P2** wave 2 (next), **P3** later,
 | Template 9000 | server-setup.md 7 | see A | P2 | |
 | Remote access, tunnels, Access | server-setup.md 12 | OpenTofu `live/onprem`, `live/edge` | done | |
 | Cluster bootstrap (ESO credentials, CA, ArgoCD) | server-setup.md 14 | gitops `cluster.sh` | done | |
-| Monthly maintenance (updates, scrub, SMART) | server-setup.md 15 | Ansible `--check --diff` as a drift report; apt upgrades stay a deliberate window | P2 | |
+| Monthly maintenance (updates, scrub, SMART) | server-setup.md 15 | Ansible `--check --diff` as a drift report; apt upgrades stay a deliberate window | P2 | the SMART part is automated: `pve_base` writes smartd's `S/../.././01` (short) and `L/../01/./03` (long) on the 1st |
+| journald disk limits | (was unset on every host) | Ansible role `journald` (a dependency of `pve_base` and `vm_guest`): `/etc/systemd/journald.conf.d/90-qnsc.conf` | P1 | `SystemMaxUse=500M`, `SystemKeepFree=1G` on pve01 and all three VMs; restarting systemd-journald applies it, workloads untouched |
+| pod log size | kubelet defaults (10 MiB per file, unbounded files) | Ansible role `kubelet` drop-in: `containerLogMaxSize 10Mi`, `containerLogMaxFiles 3` | P1 | bounds each container at ~30 MiB; same window/restart gate as the other kubelet changes |
+| Disk self-test result and staleness | — | `pve_monitoring` exports `pve_disk_self_test_{failed,age_hours}`; alerts `pve-disk-self-test-failed` / `-stale` in `live/observability-alerting/onprem-host.tf` | P1 | no mail on the host: the alert path is the same Grafana one as every other host signal; stale = the test stopped running |
 | Key Vault secret values, token values | MANUAL-STEPS.md | keep | keep | by design |
 | Laptop `known_hosts`, WARP client | owner steps of 2026-11-02 | Fleet | later | |
 | GitHub variables/rulesets | MANUAL-STEPS.md | OpenTofu `live/github` (merged) | done | |

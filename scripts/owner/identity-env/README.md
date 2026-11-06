@@ -8,13 +8,15 @@ export IDENTITY_SECOND_OWNER_UPN='<second owner UPN>'
 # redirect URI https://<host>/ is registered for each admin door
 export IDENTITY_PROXMOX_HOST='<Proxmox VE admin host>'
 export IDENTITY_PBS_HOST='<Proxmox Backup Server admin host>'
+# recipient for the Key Vault audit alerts (kv_alerts.tf); required, never committed
+export IDENTITY_KV_AUDIT_EMAIL='<audit alert recipient>'
 # optional: extra owners for DEV sign-in apps only, comma-separated app=MemberUPN
 export IDENTITY_DEV_APP_EXTRA_OWNERS='opshub_dev=<developer UPN>'
 scripts/owner/identity-env/identity-env.sh                            # names + lengths only
 scripts/owner/identity-env/identity-env.sh -- tofu plan -out=tfplan   # runs in live/identity, env only in the child
 ```
 
-All three of the first are required: both admin doors are registered on the ONE "QNSC Proxmox" app (runbook
+The first four are required (the audit recipient is one of them): both admin doors are registered on the ONE "QNSC Proxmox" app (runbook
 server-setup §3.2.1), so a missing `IDENTITY_PBS_HOST` stops the kit before any plan. Each value is a bare
 hostname; the kit builds `TF_VAR_proxmox_redirect_uris` with the trailing slash azuread 3.10 requires.
 

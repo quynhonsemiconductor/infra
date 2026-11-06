@@ -1,0 +1,15 @@
+---
+# Journal disk limits for every host we own (retention round, owner 2026-11-06).
+#
+# systemd-journald keeps its own store under /var/log/journal and grows until something stops it:
+# on the NUC-class hardware the estate runs on, one crashed container restarting in a loop can write
+# gigabytes of journal in an hour, and on k3s-01 that disk is the one holding every product's PVCs.
+#
+# SystemMaxUse is the hard cap; SystemKeepFree makes journald stop before the FILESYSTEM is full,
+# which matters more than the cap on a small disk — the journal must never be the reason a node fills.
+# 500 MiB is ~2 weeks of normal boot/service chatter on these hosts and still leaves room for the
+# window an incident needs. Journald's own default is 10 % of the filesystem (no absolute cap).
+journald_system_max_use: "500M"
+journald_system_keep_free: "1G"
+journald_conf_dir: /etc/systemd/journald.conf.d
+journald_conf_file: "{{ journald_conf_dir }}/90-qnsc.conf"

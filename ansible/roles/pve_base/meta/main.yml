@@ -9,4 +9,7 @@ galaxy_info:
       versions: [all]
     - name: Ubuntu
       versions: [all]
-dependencies: []
+# The journald limits are part of "this host is configured", and every host runs exactly one of
+# vm_guest (the three VMs) or pve_base (pve01) — a dependency is the one place that cannot be forgotten.
+dependencies:
+  - role: journald

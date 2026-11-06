@@ -63,13 +63,26 @@
 #          token in the dashboard. The cert-manager solver reads the Secret on each
 #          issuance, so no restart is needed.
 #
-# Route shape notes (Cloudflare docs, 2026-11):
-#   - a single `*` is allowed and MUST be a whole label: the wildcard route covers
-#     ONE label below it and does NOT cover the apex; hence one route per name;
-#   - the docs also say a wildcard route is "saved as" its parent name, so the
-#     first apply must confirm the API accepts the pair. If it answers 409, keep
-#     *.coder.qnsc.vn and serve the control plane on the same wildcard semantics
-#     the API reports — do NOT drop the wildcard, the workspace apps need it.
+# ONE route, not two (finding from the first apply, run 42205180725).
+#
+# Cloudflare stores a private hostname route under its PARENT name: a route entered
+# as `*.coder.qnsc.vn` is "saved as" `coder.qnsc.vn`, and the stored entry matches
+# the name and one label below it (`*.internal.local` is saved as `internal.local`,
+# "will match all subdomains at the wildcard level", covers `foo.internal.local` but
+# not `foo.bar.internal.local" — Cloudflare Zero Trust docs, "Connect a private
+# hostname", wildcard section). The first apply created `coder.qnsc.vn` and the API
+# answered 409 for `*.coder.qnsc.vn`: the same stored object, under the other
+# spelling. Creating both is therefore impossible, not merely redundant.
+#
+# So this file keeps the name the API kept — `coder.qnsc.vn` — and relies on that
+# entry matching both the control plane and the workspace apps at ONE label
+# (`ws1.coder.qnsc.vn`). That is also what a wildcard entry would have done.
+#
+# If the pilot shows the apex resolving but a workspace app not, the fix is to
+# recreate the route from the dashboard with the `*.` spelling (Cloudflare must
+# accept it once the plain name is gone) and import it under the same key:
+#   tofu import 'cloudflare_zero_trust_network_hostname_route.coder["coder.qnsc.vn"]' <route id>
+# Do not add a second resource for the same name.
 #
 # Route records are additive and idempotent; prevent_destroy so a bad plan can
 # never silently drop the only door to the platform.
@@ -77,7 +90,7 @@
 locals {
   # Gated on the tunnels exactly like every other edge object: the route carries a
   # tunnel id, and live/onprem creates the tunnels.
-  coder_private_hostnames = var.tunnels_exist ? toset(["coder.qnsc.vn", "*.coder.qnsc.vn"]) : toset([])
+  coder_private_hostnames = var.tunnels_exist ? toset(["coder.qnsc.vn"]) : toset([])
 }
 
 resource "cloudflare_zero_trust_network_hostname_route" "coder" {
@@ -110,12 +123,22 @@ resource "cloudflare_zero_trust_network_hostname_route" "coder" {
 # whole private network the tunnels and the device profile expose: the office LAN,
 # the k8s API, every other route. L4 (network) policies are the firewall for that
 # traffic, evaluated before anything reaches a tunnel. They are IDENTITY policies:
-# `identity.groups.id` is the Entra group object id carried in the WARP identity.
+# `identity.groups.id` is an ARRAY of the Entra group object ids carried in the WARP identity, so it is
+# always tested with `any(...[*] in {...})` — an `==` against it is a wirefilter type error at the API
+# ("cannot perform this operation on type Array(Bytes)", 2026-11-06).
 #
-#   90  allow  platform admins             — today's access, stated explicitly so a
+# AND it goes in the policy's `identity` attribute, never inside `traffic`: the API rejects an identity
+# field in a traffic expression with 400 code 2091 "expression contains fields that are not allowed for
+# rule-type traffic" (same day, third failure on this resource). live/edge/tests/static.sh enforces both.
+#
+# THIRD RULE, same family of mistake: whether a selector takes `[*]` depends on ITS type, and the types
+# differ inside one policy — `identity.groups.id` and `net.sni.domains` are Array(Bytes), `net.dst.ip` is
+# a scalar Ip ("cannot access index MapEach for type Ip"). Array form ONLY where the field is an array.
+#
+#   900 allow  platform admins             — today's access, stated explicitly so a
 #                                            later blanket rule cannot take it away
-#   100 allow  grp-qnsc-vlsi → Coder hosts — the only private destination it needs
-#   110 block  grp-qnsc-vlsi → private IPs  — LAN, k8s, any route added later. SCOPED to
+#   910 allow  grp-qnsc-vlsi → Coder hosts — the only private destination it needs
+#   920 block  grp-qnsc-vlsi → private IPs  — LAN, k8s, any route added later. SCOPED to
 #                                            the private ranges on purpose, see below.
 #
 # SNI, not IP, for the ALLOW: the hostname route resolves to a synthetic address from the
@@ -125,9 +148,9 @@ resource "cloudflare_zero_trust_network_hostname_route" "coder" {
 #
 # THE BLOCK MUST BE DESTINATION-SCOPED. The device profile is split tunnel in **Exclude**
 # mode: everything NOT in the exclude list — the public internet included — is sent through
-# WARP and therefore evaluated by Gateway. An unscoped `identity.groups.id == vlsi` block
+# WARP and therefore evaluated by Gateway. An unscoped identity-only block for the VLSI group
 # would cut a VLSI engineer off the public internet: no login.microsoftonline.com (Coder's
-# own OIDC sign-in), no cloudflareaccess.com, nothing. So 110 matches the private ranges
+# own OIDC sign-in), no cloudflareaccess.com, nothing. So 920 matches the private ranges
 # only, and public traffic falls through to the default (allow, unchanged from today).
 #
 # DNS is NOT affected by an L4 block: DNS filtering is its own Gateway policy type
@@ -138,19 +161,87 @@ resource "cloudflare_zero_trust_network_hostname_route" "coder" {
 # so the group can never be half-guarded. Plan availability: Gateway L4 network policies
 # with identity selectors are part of the Zero Trust plans (Free included — see the PR
 # body for the citations); the owner confirms the account's plan before the first apply.
+#
+# Precedences are 900/910/920, not the low numbers a hand-made rule usually carries, and the
+# plan reads every policy on the account and refuses to apply when one of them is taken or
+# when the stale "Default deny for private traffic" rule is still there.
 locals {
   coder_access_enabled = var.tunnels_exist && var.grp_vlsi_id != ""
+
+  # Precedences deliberately far above the low numbers a hand-made rule tends to sit on, and
+  # checked against the account below: Cloudflare requires a unique precedence per policy, and a
+  # silent renumber would reorder the rules without anyone reading a diff.
+  gateway_policy_names = [
+    "platform-admins-allow-l4",
+    "vlsi-allow-coder",
+    "vlsi-block-other-private",
+  ]
+  gateway_precedences = [900, 910, 920]
+
+  # The private destinations the tunnels can expose, as a TRAFFIC expression. RFC 1918 + CGNAT; the
+  # synthetic IP a private hostname resolves to (172.64.128.0/20) is outside every one of them, which is
+  # why the Coder allow below matches on SNI instead.
+  #
+  # `net.dst.ip` is a SCALAR (type Ip): the API rejects `net.dst.ip[*]` with
+  #   400 Filter parsing error (1:15): cannot access index MapEach for type Ip
+  # (2026-11-06). Field types are per selector, not per family — identity.groups.id and
+  # net.sni.domains ARE arrays and keep `[*]`; net.dst.ip is not and must not.
+  private_l4_traffic = "net.dst.ip in {10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10}"
+}
+
+# Every L4 policy on the account, read at plan time. Two facts the plan must have before it
+# creates anything: our precedences are free, and the stale hand-made rule is gone (see the
+# precondition below).
+data "cloudflare_zero_trust_gateway_policies" "existing" {
+  account_id = var.cloudflare_account_id
+  max_items  = 1000
 }
 
 resource "cloudflare_zero_trust_gateway_policy" "admin_allow_private" {
   account_id  = var.cloudflare_account_id
   name        = "platform-admins-allow-l4"
   description = "Platform admins keep today's access ahead of any group-specific rule (live/edge coder.tf)"
-  precedence  = 90
+  precedence  = 900
   enabled     = true
   action      = "allow"
   filters     = ["l4"]
-  traffic     = "identity.groups.id == \"${var.grp_platform_admins_id}\""
+  # IDENTITY AND TRAFFIC ARE SEPARATE FIELDS (Cloudflare API: `traffic` = traffic matching expression,
+  # `identity` = identity matching expression, `device_posture` = posture). Putting an identity selector
+  # in `traffic` is rejected at the API with
+  #   400 code 2091 "Invalid expression: expression contains fields that are not allowed for rule-type traffic".
+  identity = "any(identity.groups.id[*] in {\"${var.grp_platform_admins_id}\"})"
+  traffic  = local.private_l4_traffic
+
+  lifecycle {
+    # A rule about the account this file does not own, proven before anything is created: our
+    # precedences must be free — a number already in use would reorder the chain silently. (The stale
+    # hand-made policy is a `check` below: a warning on every plan, not a plan blocker.)
+    precondition {
+      condition = alltrue([
+        for p in data.cloudflare_zero_trust_gateway_policies.existing.result : (
+          contains(local.gateway_policy_names, p.name) ||
+          p.precedence == null ||
+          !contains(local.gateway_precedences, tonumber(tostring(p.precedence)))
+        )
+      ])
+      error_message = "A Gateway L4 policy already uses precedence 900, 910 or 920 (or one of this file's names is taken). Renumber this file's policies and re-plan; do not let two rules share a number."
+    }
+
+  }
+}
+
+# The stale hand-made rule is a WARNING, not a gate: it is disabled, it does not collide with any
+# precedence this file uses, and a plan that cannot run until an owner clicks Delete would block every
+# unrelated edge change. It must still be deleted, and the plan says so every time (check output is in
+# the plan log and the step summary).
+check "stale_gateway_policy_removed" {
+  assert {
+    condition = alltrue([
+      for p in data.cloudflare_zero_trust_gateway_policies.existing.result :
+      p.name != "Default deny for private traffic"
+    ])
+    error_message = "The hand-made Gateway policy \"Default deny for private traffic\" (Block, DISABLED since 2026-07-09, never in IaC) should be deleted: Gateway → Firewall policies → that rule → Delete. It duplicates the per-group block this file creates, its expression was never reviewed here, and a disabled block rule in the same list is a trap for whoever enables it next. Deleting a disabled rule changes no traffic."
+  }
 }
 
 resource "cloudflare_zero_trust_gateway_policy" "vlsi_allow_coder" {
@@ -159,11 +250,12 @@ resource "cloudflare_zero_trust_gateway_policy" "vlsi_allow_coder" {
   account_id  = var.cloudflare_account_id
   name        = "vlsi-allow-coder"
   description = "grp-qnsc-vlsi reaches only the Coder hostnames (live/edge coder.tf)"
-  precedence  = 100
+  precedence  = 910
   enabled     = true
   action      = "allow"
   filters     = ["l4"]
-  traffic     = "identity.groups.id == \"${var.grp_vlsi_id}\" and any(net.sni.domains[*] == \"coder.qnsc.vn\")"
+  identity    = "any(identity.groups.id[*] in {\"${var.grp_vlsi_id}\"})"
+  traffic     = "any(net.sni.domains[*] == \"coder.qnsc.vn\")"
 }
 
 resource "cloudflare_zero_trust_gateway_policy" "vlsi_block_private" {
@@ -172,7 +264,7 @@ resource "cloudflare_zero_trust_gateway_policy" "vlsi_block_private" {
   account_id  = var.cloudflare_account_id
   name        = "vlsi-block-other-private"
   description = "grp-qnsc-vlsi: no other private destination (LAN, k8s, other routes) (live/edge coder.tf)"
-  precedence  = 110
+  precedence  = 920
   enabled     = true
   action      = "block"
   filters     = ["l4"]
@@ -183,5 +275,6 @@ resource "cloudflare_zero_trust_gateway_policy" "vlsi_block_private" {
   # above already claims the one public-looking destination the group needs (the Coder
   # hostname, matched on SNI before this rule). Only the allow needs to be there: a request
   # that reaches Coder matches 100 first, everything else private matches here.
-  traffic = "identity.groups.id == \"${var.grp_vlsi_id}\" and any(net.dst.ip[*] in {10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10})"
+  identity = "any(identity.groups.id[*] in {\"${var.grp_vlsi_id}\"})"
+  traffic  = local.private_l4_traffic
 }

@@ -5,7 +5,9 @@
 # plane (who changed what) is Azure Activity, not the data plane (who READ
 # which secret). This file writes the data-plane AuditEvent stream to a small
 # storage account with a one-year retention, which is the cheapest destination
-# available (no Log Analytics workspace: ~cents/month at this volume).
+# available (no Log Analytics workspace at the start): ~cents/month at this
+# volume. A workspace was added later, in kv_alerts.tf, as the QUERY surface
+# for the alert rules; the storage copy above remains the immutable record.
 #
 # Scope, deliberately: the three purge-protected vaults and kv-qnsc-dev. Every
 # secret VALUE stays out of this stream — Key Vault never logs secret contents,
@@ -115,8 +117,9 @@ resource "azurerm_storage_container_immutability_policy" "kv_audit" {
   locked                                = true
 }
 
-# 1-year retention. The rule runs daily and removes blobs under the audit
-# container only; nothing else ever lives in this account.
+# 1-year retention, one rule per container: the Key Vault trail and, since
+# 2026-11-06, the Entra directory-audit export (entra_audit_export.tf). Nothing
+# else lives in this account.
 resource "azurerm_storage_management_policy" "kv_audit" {
   storage_account_id = azurerm_storage_account.kv_audit.id
 
@@ -138,17 +141,43 @@ resource "azurerm_storage_management_policy" "kv_audit" {
       }
     }
   }
+
+  # The Entra directory-audit export (entra_audit_export.tf) writes here. Same
+  # 365-day age as its WORM policy, so a blob becomes deletable exactly when
+  # its immutability expires.
+  rule {
+    name    = "expire-entra-audit-logs"
+    enabled = true
+
+    filters {
+      blob_types   = ["blockBlob"]
+      prefix_match = ["entra-audit"]
+    }
+
+    actions {
+      base_blob {
+        delete_after_days_since_modification_greater_than = 365
+      }
+    }
+  }
 }
 
 # One diagnostic setting per vault. AuditEvent is the data-plane category
 # (secret/key/certificate reads, writes, deletes); it is the only category a
 # Key Vault exposes.
+#
+# TWO DESTINATIONS, one setting: the storage account is the immutable 365-day
+# record, and the Log Analytics workspace (kv_alerts.tf) is the QUERY surface
+# the alert rules run against — Azure Monitor alert rules cannot read blobs.
+# Keeping them in one setting means a vault can never be added to one trail
+# and forgotten in the other.
 resource "azurerm_monitor_diagnostic_setting" "kv_audit" {
   for_each = local.audit_vaults
 
-  name               = "audit-to-storage"
-  target_resource_id = each.value
-  storage_account_id = azurerm_storage_account.kv_audit.id
+  name                       = "audit-to-storage"
+  target_resource_id         = each.value
+  storage_account_id         = azurerm_storage_account.kv_audit.id
+  log_analytics_workspace_id = azurerm_log_analytics_workspace.kv_audit.id
 
   enabled_log {
     category = "AuditEvent"
