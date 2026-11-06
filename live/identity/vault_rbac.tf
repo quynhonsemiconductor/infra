@@ -12,20 +12,9 @@
 #                              (dev, prod, platform). Nothing on kv-qnsc-admin
 #                              — no store reads it (§7.1).
 #
-# The group arrives by variable: grp-qnsc-platform-admins is hand-created (it
-# is also the Cloudflare Access door-2 group, §7.2) and assigning the role
-# needs only its object id — an identifier, not a credential, but it is
-# operator-supplied all the same (TF_VAR_, never committed).
-
-variable "platform_admins_object_id" {
-  type        = string
-  description = "Object id of the existing grp-qnsc-platform-admins Entra group. TF_VAR_platform_admins_object_id, never committed."
-
-  validation {
-    condition     = can(regex("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", var.platform_admins_object_id))
-    error_message = "platform_admins_object_id must be an Entra object id (GUID)."
-  }
-}
+# The group is adopted in groups.tf (azuread_group.platform_admins, imported
+# from its live object id), so the assignment reads the resource directly —
+# whatever id the import captured is the id the role lands on.
 
 locals {
   # The four vaults under one map: the three purge-protected ones plus dev.
@@ -40,7 +29,7 @@ resource "azurerm_role_assignment" "admins_secrets_officer" {
 
   scope                = each.value # a vault resource id — never the RG or subscription
   role_definition_name = "Key Vault Secrets Officer"
-  principal_id         = var.platform_admins_object_id
+  principal_id         = azuread_group.platform_admins.object_id
   principal_type       = "Group" # tolerate replication lag between group creation and this assignment
 }
 

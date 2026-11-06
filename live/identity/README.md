@@ -155,13 +155,20 @@ Owner steps:
    sh live/identity/tests/static.sh
    ```
 
-2. Export the group id (an identifier, not a credential — it is
-   operator-supplied all the same, so it is never committed):
+2. Export the group ids (identifiers, not credentials — operator-supplied all
+   the same, so they are never committed). The apply kit does this for every
+   plan/apply; by hand they are:
 
    ```sh
-   export TF_VAR_platform_admins_object_id=$(
+   export TF_VAR_grp_platform_admins_object_id=$(
      az ad group show --group grp-qnsc-platform-admins --query id -o tsv)
+   export TF_VAR_grp_developers_object_id=$(
+     az ad group show --group grp-qnsc-developers --query id -o tsv)
    ```
+
+   Both groups are ADOPTED (`groups.tf`, import), not created: the plan shows
+   two imports with no change, and membership/description stay managed in
+   Entra (`ignore_changes`). An update or a replace on either is NO-GO.
 
 3. Plan and apply as above (owner-local only). The plan adds 3 applications,
    3 service principals, 3 federated identity credentials, 4 Secrets Officer
@@ -1572,7 +1579,8 @@ product-docs), so the owner reads the rest from Entra or `az` as shown.
 | `TF_VAR_budget_period_start` / `_end` | RFC3339 UTC | `az consumption budget list`, the live budget (README "First apply" step 3) |
 | `TF_VAR_break_glass_upn_domain` | tenant primary domain | Entra admin center, Overview, Primary domain |
 | `TF_VAR_office_ip` | office /32, optional (empty disables allowlists) | GitHub repo variable `TF_VAR_office_ip` |
-| `TF_VAR_platform_admins_object_id` | group object id | `az ad group show --group grp-qnsc-platform-admins --query id -o tsv` |
+| `TF_VAR_grp_platform_admins_object_id` | group object id (import) | `az ad group show --group grp-qnsc-platform-admins --query id -o tsv` |
+| `TF_VAR_grp_developers_object_id` | group object id (import) | `az ad group show --group grp-qnsc-developers --query id -o tsv` |
 | `TF_VAR_existing_object_ids` | JSON, 4 sign-in app object ids | `*-app.json` `.id` from the sign-in export |
 | `TF_VAR_existing_sp_object_ids` | JSON, 4 sign-in SP object ids | `*-sp.json` `.id` from the sign-in export |
 | `TF_VAR_existing_identifier_uris` | JSON map; default `{}` | sign-in export shows none; leave default |
