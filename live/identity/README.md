@@ -534,9 +534,15 @@ Owner steps:
    pod through ESO from `kv-qnsc-platform`, not through a values file.
 
 4. Add the VLSI engineers to **grp-qnsc-vlsi** in the Entra admin center. Anyone not
-   in it is refused by Coder after a successful Entra sign-in.
+   in it is refused by Coder after a successful Entra sign-in. The same group is what
+   live/edge enrolls in WARP (`ENTRA_GRP_VLSI_ID`) — membership is the single switch for
+   both halves.
 
+Pilot check before the team lands: sign in once as a member (works) and once as a
+non-member (Coder refuses with "Not a member of an allowed group"), and confirm from a
+non-member's WARP client that `coder.qnsc.vn` does not resolve.
 
+## Proxmox VE + PBS login (`proxmox.tf`): app "QNSC Proxmox", plan, secret
 
 Adds the Entra half of the Proxmox VE and Proxmox Backup Server OpenID realms;
 ONE app backs both, so there is one client id, one client secret, one
