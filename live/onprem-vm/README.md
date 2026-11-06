@@ -361,18 +361,21 @@ Owner window (TEI / kb search is down ~2-3 min while ai-01 boots; k3s-01 and eve
 
 5. `tofu apply tfplan`. The provider updates the stopped VM and **starts it at the end of the apply**
    (`started = true` is the desired state), so do NOT run `qm start` for a VM it already started:
-   check `qm status 101`, `qm status 102` and start only what is still stopped. Then wait for both nodes
-   Ready, `kubectl uncordon ai-01` and `kubectl uncordon vlsi-01`, and confirm `nvidia-smi` on ai-01 and
-   the TEI pod healthy.
-6. Mount vlsi-01's data disk **before anything schedules there** (`v-vlsi` PVs would otherwise land on the
-   40 GiB root and evict): the disk is blank and nothing is at the mount path, so this is the simple path
-   of docs/runbooks/agent-data-disks.md — `ansible-playbook k3s-agent.yml --tags k3s_data_disk
+   check `qm status 101`, `qm status 102` and start only what is still stopped. Wait for both nodes to
+   report Ready — they come back **cordoned** (step 2 drained them) and stay that way until step 8.
+6. Mount vlsi-01's data disk **before anything can schedule there**, i.e. while the node is still cordoned:
+   the disk is blank and nothing is at the mount path, so this is the simple path of
+   docs/runbooks/agent-data-disks.md — `ansible-playbook k3s-agent.yml --tags k3s_data_disk
    -e k3s_data_disk_enabled=true -e k3s_data_disk_device=/dev/disk/by-id/<the 300G id>
    -e k3s_data_disk_format=true` (`--check --diff` first). It mounts at `/var/lib/rancher/k3s/storage`
-   and restarts k3s-agent on that node only. Do it while vlsi-01 is still cordoned.
-7. Apply the kubelet drop-ins in the same window on ai-01 and vlsi-01
+   and restarts k3s-agent on that node only. Uncordoning first is the mistake this step exists to prevent:
+   a single `/home` PVC created on the 40 GiB root fills it and evicts the workspaces.
+7. Apply the kubelet drop-ins in the same window on ai-01 and vlsi-01 (also while cordoned)
    (`ansible-playbook k3s-agent-gpu.yml -e kubelet_allow_restart=true` and
    `k3s-agent.yml -e kubelet_allow_restart=true`; a drop-in change restarts k3s on that agent only).
    Profiles: gpu 1 CPU / 2 Gi, vlsi 500m / 1 Gi. k3s-01's drop-in does not change.
+8. NOW uncordon: `kubectl uncordon ai-01`, `kubectl uncordon vlsi-01`. Then the smoke checks: `nvidia-smi`
+   on ai-01, the TEI pod healthy, `findmnt --mountpoint /var/lib/rancher/k3s/storage` on vlsi-01 (a ~300 G
+   filesystem, not the 40 G root).
 
 **Rollback:** the same four values in reverse and the same window; nothing else in this stack moves.
