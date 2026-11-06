@@ -212,15 +212,20 @@ resource "cloudflare_pages_project" "landing" {
 
   lifecycle {
     prevent_destroy = true # destroying the Pages project deletes its deployments and detaches its custom domains: the landing site goes down
-    # PERPETUAL DIFF, fixed 2026-11-06: every plan, including the one right after an apply, showed
+    # PERPETUAL DIFF, 2026-11-06. Every plan, including the one right after an apply, showed
     #   ~ resource "cloudflare_pages_project" "landing" { + build_image_auto_upgrade = (known after apply) }
-    # because the attribute is optional+computed and the provider has no state-preserving plan modifier for it
-    # (cloudflare/terraform-provider-cloudflare#7288, #7262; the same class as build_config above). It is NOT in
-    # config, so the provider proposes to "compute" it on every plan. Setting a value here would CHANGE the live
-    # Pages build-image setting (an auto-upgrade flag we did not choose), so it is ignored instead: the API value
-    # is kept and the nightly edge drift stops reporting a red stack. Revisit when the provider gains
-    # UseStateForUnknown on this attribute — then drop this line.
-    ignore_changes = [build_image_auto_upgrade]
+    # Provider 5.27+ added build_image_auto_upgrade as Computed-only. When a change in
+    # deployment_configs is detected (config omits it, core proposes null, state holds the defaults),
+    # the framework marks every computed-null attribute unknown; Pages' ModifyPlan restores the
+    # others from state but has no clause for this one, and state itself holds null
+    # (cloudflare/terraform-provider-cloudflare#7449; related #7308/#7288/#7262).
+    #
+    # Naming it is impossible (Computed-only: tofu validate warns and has no effect), and a named
+    # ignore_changes is the same warning. `all` is the only lever the resource has left: this project's
+    # configuration is static (name, production branch, build_config above — the build_config values are
+    # already the API's own), so nothing else here is expected to change. Remove `all` and keep only
+    # prevent_destroy when the provider restores this attribute from state (follow #7449).
+    ignore_changes = all
   }
 }
 
