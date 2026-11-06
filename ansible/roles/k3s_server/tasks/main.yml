@@ -107,8 +107,11 @@
   retries: 30
   delay: 5
   changed_when: false
+  # Same gate as the config write: applying RBAC the API server does not yet trust Entra for is a
+  # half-apply. Without the restart flag the run stops after reporting, like every other k3s change.
   when:
     - k3s_server_entra_auth_enabled | bool
+    - k3s_server_allow_restart | bool
     - not ansible_check_mode
   tags: [k3s_server_rbac]
 
@@ -117,9 +120,13 @@
     argv: [k3s, kubectl, apply, -f, -]
     stdin: "{{ lookup('ansible.builtin.template', 'entra-rbac.yaml.j2') }}"
   register: k3s_server_entra_rbac
-  changed_when: "'unchanged' not in k3s_server_entra_rbac.stdout"
+  # `kubectl apply` prints one line per object: "configured"/"created" when it changed something,
+  # "unchanged" when it did not. A mixed result (one created, one unchanged) must count as changed —
+  # testing for the absence of "unchanged" would report a fresh create as no-op.
+  changed_when: k3s_server_entra_rbac.stdout is search('(created|configured)')
   when:
     - k3s_server_entra_auth_enabled | bool
+    - k3s_server_allow_restart | bool
     - not ansible_check_mode
   tags: [k3s_server_rbac]
 
