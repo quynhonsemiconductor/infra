@@ -77,11 +77,11 @@ outside the office — same door as every other admin endpoint.
 
    ```sh
    KUBECONFIG=~/.kube/qnsc-onprem-entra.yaml kubectl auth whoami
-   # Username: oidc:<you>@<company>  Groups: [<grp-qnsc-platform-admins object id> system:authenticated]
+   # Username: oidc:<your Entra object id>  Groups: [<grp-qnsc-platform-admins object id> system:authenticated]
    ```
 
-   The group in `Groups:` must be the **object id** of `grp-qnsc-platform-admins` — that is what the binding
-   matches. If it is missing: the app's `groups` claim is not being emitted (check SecurityGroup claims on the
+   Both are **object ids**: the API server names the user `oidc:<object id>` (the `oid` claim — immutable,
+   unlike a UPN) and the group is that group's object id, which is what the binding matches. If it is missing: the app's `groups` claim is not being emitted (check SecurityGroup claims on the
    app) or you are not in the group.
 
 5. Make it the default: `export KUBECONFIG=~/.kube/qnsc-onprem-entra.yaml` in the shell profile, and delete
