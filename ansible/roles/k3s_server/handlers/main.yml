@@ -4,10 +4,3 @@
     name: k3s
     state: restarted
   when: k3s_server_allow_restart | bool
-
-- name: Report that k3s needs a restart
-  ansible.builtin.debug:
-    msg: >-
-      /etc/rancher/k3s/config.yaml changed. k3s was NOT restarted (a restart interrupts every workload on the node).
-      Restart it in a window, or re-run with -e k3s_server_allow_restart=true.
-  when: not (k3s_server_allow_restart | bool)

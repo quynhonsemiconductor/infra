@@ -1,13 +1,26 @@
 write-kubeconfig-mode: "0640"
 disable: [traefik, servicelb]
 secrets-encryption: true
-{% if k3s_server_oidc_issuer_enabled | bool %}
+{% if k3s_server_oidc_issuer_enabled | bool or k3s_server_entra_auth_enabled | bool %}
 kube-apiserver-arg:
+{% if k3s_server_oidc_issuer_enabled | bool %}
   # ESO workload identity (live/identity/eso.tf, live/onprem-oidc): k3s SIGNS with the first issuer, the URL Entra
   # trusts and live/onprem-oidc publishes; the second is the old default, accepted and never issued, so tokens minted
   # before the restart keep working. Both must stay listed until every pod has restarted or its token has rotated.
   - service-account-issuer={{ k3s_server_oidc_issuer }}
   - service-account-issuer={{ k3s_server_oidc_issuer_old }}
+{% endif %}
+{% if k3s_server_entra_auth_enabled | bool %}
+  # kubectl through Entra (role defaults explain why this is NOT the block above): the API server
+  # verifies the ID token kubelogin obtained; the groups claim carries Entra group object ids, which
+  # the RBAC bindings below map to cluster roles.
+  - oidc-issuer-url=https://login.microsoftonline.com/{{ k3s_server_entra_tenant_id }}/v2.0
+  - oidc-client-id={{ k3s_server_entra_client_id }}
+  - oidc-username-claim={{ k3s_server_entra_username_claim }}
+  - oidc-username-prefix={{ k3s_server_entra_username_prefix }}
+  - oidc-groups-claim=groups
+  - oidc-signing-algs=RS256
+{% endif %}
 {% endif %}
 kube-controller-manager-arg:
   # Terminated pods (Succeeded/Failed) are garbage-collected once the cluster holds more than this many, oldest
