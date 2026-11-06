@@ -879,15 +879,48 @@ resource "github_repository_ruleset" "this" {
 
   # A ruleset deleted by a typo in this file would drop branch protection on
   # a live repo. Removing one is a deliberate two-step: lift this, apply.
-  #
-  # LIFTED 2026-11-06 for the mcp-tools retirement: the apply destroys the three
-  # mcp-tools rulesets while the repo is still writable (GitHub makes an archived
-  # repository read-only, so a later delete could never succeed). RESTORE THIS
-  # GUARD in a follow-up PR as soon as `apply-github` has run for this change;
-  # until then, a typo that removes a map entry would destroy that live ruleset.
-  # lifecycle {
-  #   prevent_destroy = true
-  # }
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+# mcp-tools retirement (owner decision 2026-11-06). The three rulesets left
+# `local.rulesets`; the `moved` blocks below hand their state to this empty
+# resource, which has NO prevent_destroy, so the plan destroys them while the
+# guard above stays in place. The placeholders are never created (`for_each`
+# is empty); once applied, the resource and the three `moved` blocks are inert
+# and can be deleted in a cleanup.
+resource "github_repository_ruleset" "retired" {
+  for_each = {}
+
+  repository  = "mcp-tools"
+  name        = "retired"
+  target      = "branch"
+  enforcement = "active"
+
+  conditions {
+    ref_name {
+      include = ["~ALL"]
+      exclude = []
+    }
+  }
+
+  rules {
+    deletion = true
+  }
+}
+
+moved {
+  from = github_repository_ruleset.this["mcp-tools/main-protection"]
+  to   = github_repository_ruleset.retired["mcp-tools/main-protection"]
+}
+moved {
+  from = github_repository_ruleset.this["mcp-tools/tag-creation-release-only"]
+  to   = github_repository_ruleset.retired["mcp-tools/tag-creation-release-only"]
+}
+moved {
+  from = github_repository_ruleset.this["mcp-tools/tag-protection"]
+  to   = github_repository_ruleset.retired["mcp-tools/tag-protection"]
 }
 
 # Imports: the live rulesets are adopted, never recreated. `repository:id` is the

@@ -18,15 +18,16 @@ resources, No changes`, and a one-value mutation shows up as a change.
 `mcp-tools` was retired by owner decision on 2026-11-06. Its merge settings were never
 imported, and its three rulesets left the map. The apply **destroys** those live rulesets,
 which is why it must run before the owner archives the repo: GitHub makes an archived
-repository read-only, so a delete after archiving would fail with 403. `prevent_destroy` is
-lifted (commented out in `rulesets.tf`) for exactly this apply and must be restored in a
-follow-up PR immediately after `apply-github` succeeds.
+repository read-only, so a delete after archiving would fail with 403. The guard stays: the
+three objects move (`moved` blocks) to an empty `github_repository_ruleset.retired` resource
+that has no `prevent_destroy`, so only those three are destroyed. Once applied, that resource
+and its `moved` blocks are inert and can be removed in a cleanup.
 
 ## What is managed
 
 | file | resources | notes |
 |---|---|---|
-| `rulesets.tf` | `github_repository_ruleset.this` (43 entries: 39 imported, 4 created for `code-review` and `opc`, for_each over a data map) | every ruleset, bypass actors included (team `merge-bypass`, app `qnsc-automation`, team `vlsi-leads`). `prevent_destroy` is lifted for the mcp-tools retirement apply only (see below). |
+| `rulesets.tf` | `github_repository_ruleset.this` (43 entries: 39 imported, 4 created for `code-review` and `opc`, for_each over a data map) | every ruleset, bypass actors included (team `merge-bypass`, app `qnsc-automation`, team `vlsi-leads`). `prevent_destroy` stays on; the three retired `mcp-tools` objects move to an empty `retired` resource for their destroy (see below). |
 | `repos.tf` | `github_repository.this` (18: the six platform repos, plus `attendance-lock-firmware`, `chipgraph`, `code-review`, `opc`, `opshub`, `pidc-landing`, `product-docs`, `qnsc-kb-backend`, `qnsc-kb-frontend`, `qnsc-landing`, `rova`, `vlsi_deep_training`) | merge methods, auto-merge, delete-branch-on-merge, commit titles, wiki/issues/projects visibility. Live values, `prevent_destroy`. |
 | `repos.tf` | `github_repository_environment` + deployment policy (infra: `production`) | required reviewer + branch policy `main`. (`shared` and `develop` were deleted on 2026-11-02, empty and unreferenced.) |
 
