@@ -1,0 +1,76 @@
+# RBAC for kubectl-through-Entra (applied by this role; rendered with the group object ids from the
+# local inventory, so the ids never enter the repo).
+#
+# Subjects are GROUP subjects whose name is the `groups` claim value verbatim: the API server was
+# started WITHOUT --oidc-groups-prefix, so the claim's GUID is the group name.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: qnsc-k8s-developer-readonly
+  labels:
+    app.kubernetes.io/managed-by: ansible
+    qnsc.vn/purpose: entra-developers
+rules:
+  # Read-only, and deliberately WITHOUT secrets AND WITHOUT configmaps: both hold credentials in this
+  # cluster (a chart's config file is not less sensitive than a Secret, it is only less typed). If a
+  # team genuinely needs a configmap, that is a namespaced RoleBinding decided on its own — not a
+  # widening of this cluster-wide role. `pods/log` stays: it is the first thing anyone debugging asks for.
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "services", "endpoints", "events",
+                "namespaces", "nodes", "persistentvolumeclaims", "replicationcontrollers"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets", "replicasets", "controllerrevisions"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses", "networkpolicies", "ingressclasses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods", "nodes"]
+    verbs: ["get", "list"]
+  - apiGroups: ["argoproj.io"]
+    resources: ["applications", "appprojects"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: qnsc-k8s-platform-admins
+  labels:
+    app.kubernetes.io/managed-by: ansible
+    qnsc.vn/purpose: entra-platform-admins
+# cluster-admin for the platform-admins Entra group. That group must stay SMALL: the owner plus the
+# second platform admin, no one else (kubectl is not the only thing it opens — it is the whole cluster).
+# No binding here names system:authenticated or an open group; the only subjects are the two Entra
+# group object ids, so a signed-in non-member keeps nothing but Kubernetes' own default discovery.
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: Group
+    name: "{{ k3s_server_entra_platform_admins_group_id }}"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: qnsc-k8s-developers
+  labels:
+    app.kubernetes.io/managed-by: ansible
+    qnsc.vn/purpose: entra-developers
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: qnsc-k8s-developer-readonly
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: Group
+    name: "{{ k3s_server_entra_developers_group_id }}"

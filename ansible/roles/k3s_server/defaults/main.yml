@@ -6,6 +6,28 @@ k3s_server_oidc_issuer_enabled: false
 k3s_server_oidc_issuer: ""
 k3s_server_oidc_issuer_old: "https://kubernetes.default.svc.cluster.local"
 
+# ── kubectl through Entra (owner plan item 2026-11-06) ───────────────────────────────────────────
+# USER authentication for the API server, completely separate from the service-account issuer above:
+# that flag makes k3s SIGN workload tokens for ESO, these make k3s VERIFY Entra ID tokens for people.
+# They share no URL and neither can replace the other.
+#
+# OFF until the owner has the values in the inventory; with it off the template renders exactly as
+# before, so a normal run cannot disturb a live cluster.
+k3s_server_entra_auth_enabled: false
+# Site values (git-ignored local inventory): tenant id, the "QNSC k3s" app's client id, and the two
+# Entra group OBJECT ids (the `groups` claim carries ids, not names — no Entra ID P1 in this tenant).
+k3s_server_entra_tenant_id: ""
+k3s_server_entra_client_id: ""
+k3s_server_entra_platform_admins_group_id: ""
+k3s_server_entra_developers_group_id: ""
+# Claim mapping. `oid` is the user's IMMUTABLE object id: a UPN (`preferred_username`) changes when
+# someone is renamed, and Entra can reuse a freed UPN for a new account — an audit log that says
+# "alice@company" is then ambiguous, while the object id never is. RBAC is by group, so the username
+# shape matters only for audit and for `kubectl auth whoami`. The prefix keeps an OIDC user from ever
+# looking like a built-in (`system:...`). No groups prefix: the claim carries GUIDs, already unique.
+k3s_server_entra_username_claim: oid
+k3s_server_entra_username_prefix: "oidc:"
+
 # kube-controller-manager: keep at most this many terminated pods cluster-wide (upstream default 12500).
 k3s_server_terminated_pod_gc_threshold: 100
 
