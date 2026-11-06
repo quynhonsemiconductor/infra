@@ -1,0 +1,115 @@
+---
+# Real lifecycle test (create -> offboard -> re-add), all through the ROLE.
+# Every path is under /tmp; the role runs with become: true. CI removes the
+# scratch account and /tmp/qnsc-ssh-cycle afterwards.
+- name: Create the cert-only account through the role
+  hosts: localhost
+  connection: local
+  become: true
+  gather_facts: false
+  vars:
+    ssh_infra_ca_public_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITESTKEYONLY test@example"
+    node_admin_users:
+      - name: qnsc-test-admin
+        sudo: true
+        hosts: [localhost]
+    ssh_infra_managed_users_file: /tmp/qnsc-ssh-cycle/marker
+    ssh_infra_ca_file: /tmp/qnsc-ssh-cycle/ca.pub
+    ssh_infra_sshd_dropin: /tmp/qnsc-ssh-cycle/10-qnsc-test.conf
+    ssh_infra_principals_dir: /tmp/qnsc-ssh-cycle/principals
+    ssh_infra_sudoers_dir: /tmp/qnsc-ssh-cycle/sudoers
+  roles:
+    - role: ssh_infra
+  tasks:
+    - name: Read the new account's shadow entry
+      ansible.builtin.command: getent shadow qnsc-test-admin
+      register: sim_create_shadow
+      changed_when: false
+
+    - name: Created with the cert-only hash and no expiry
+      ansible.builtin.assert:
+        that:
+          - sim_create_shadow.stdout.split(':')[1] == '*'
+          - (sim_create_shadow.stdout.split(':')[7] | default('')) in ['', '-1']
+        quiet: true
+
+- name: Offboard the account through the role (empty list)
+  hosts: localhost
+  connection: local
+  become: true
+  gather_facts: false
+  vars:
+    ssh_infra_ca_public_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITESTKEYONLY test@example"
+    node_admin_users: []
+    ssh_infra_managed_users_file: /tmp/qnsc-ssh-cycle/marker
+    ssh_infra_ca_file: /tmp/qnsc-ssh-cycle/ca.pub
+    ssh_infra_sshd_dropin: /tmp/qnsc-ssh-cycle/10-qnsc-test.conf
+    ssh_infra_principals_dir: /tmp/qnsc-ssh-cycle/principals
+    ssh_infra_sudoers_dir: /tmp/qnsc-ssh-cycle/sudoers
+  pre_tasks:
+    - name: Start a session owned by the account
+      ansible.builtin.command:
+        argv: [runuser, -u, qnsc-test-admin, --, setsid, -f, sleep, "300"]
+      changed_when: false
+  roles:
+    - role: ssh_infra
+  tasks:
+    - name: Read the offboarded account's shadow entry
+      ansible.builtin.command: getent shadow qnsc-test-admin
+      register: sim_off_shadow
+      changed_when: false
+
+    - name: Check the account session and artefacts
+      ansible.builtin.command: "pgrep -u qnsc-test-admin"
+      register: sim_off_procs
+      changed_when: false
+      failed_when: false
+
+    - name: Stat the per-account artefacts
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: sim_off_files
+      loop:
+        - /tmp/qnsc-ssh-cycle/sudoers/qnsc-qnsc-test-admin
+        - /tmp/qnsc-ssh-cycle/principals/qnsc-test-admin
+
+    - name: Locked (!*), expired, no session, no sudoers/principal
+      ansible.builtin.assert:
+        that:
+          - sim_off_shadow.stdout.split(':')[1] == '!*'
+          - (sim_off_shadow.stdout.split(':')[7] | default('')) | length > 0
+          - (sim_off_shadow.stdout.split(':')[7] | int) <= 1
+          - sim_off_procs.rc != 0
+          - sim_off_files.results | map(attribute='stat.exists') | select | list | length == 0
+        quiet: true
+
+- name: Re-add the offboarded account through the role
+  hosts: localhost
+  connection: local
+  become: true
+  gather_facts: false
+  vars:
+    ssh_infra_ca_public_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITESTKEYONLY test@example"
+    node_admin_users:
+      - name: qnsc-test-admin
+        sudo: true
+        hosts: [localhost]
+    ssh_infra_managed_users_file: /tmp/qnsc-ssh-cycle/marker
+    ssh_infra_ca_file: /tmp/qnsc-ssh-cycle/ca.pub
+    ssh_infra_sshd_dropin: /tmp/qnsc-ssh-cycle/10-qnsc-test.conf
+    ssh_infra_principals_dir: /tmp/qnsc-ssh-cycle/principals
+    ssh_infra_sudoers_dir: /tmp/qnsc-ssh-cycle/sudoers
+  roles:
+    - role: ssh_infra
+  tasks:
+    - name: Read the re-added account's shadow entry
+      ansible.builtin.command: getent shadow qnsc-test-admin
+      register: sim_readd_shadow
+      changed_when: false
+
+    - name: Back to the cert-only hash, no expiry
+      ansible.builtin.assert:
+        that:
+          - sim_readd_shadow.stdout.split(':')[1] == '*'
+          - (sim_readd_shadow.stdout.split(':')[7] | default('')) in ['', '-1']
+        quiet: true

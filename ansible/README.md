@@ -152,6 +152,109 @@ cat /sys/module/zfs/parameters/zfs_arc_max                # 4294967296
 ```
 
 `--check` reports the pending file line and live change; `pve-host.yml --tags pve_base_zfs` converges just this.
+## SSH for people (`ssh_infra`): Cloudflare Access for Infrastructure
+
+No shared passwords and no long-lived personal keys. A platform admin enables
+WARP (`live/edge/warp.tf`), runs `ssh <user>@<node address>`, and Cloudflare's Gateway SSH
+proxy checks Entra + MFA and issues a **short-lived SSH certificate**. The node
+trusts the account's Access SSH CA; the CA public key is the only trust anchor.
+
+**Free-plan check.** Cloudflare's docs list Access for Infrastructure under
+Zero Trust plans **All plans** (<https://developers.cloudflare.com/cloudflare-one/access-controls/applications/non-http/infrastructure-apps/>).
+Confirm it is enabled in the account's Zero Trust dashboard before applying;
+if it is not offered, STOP and report — the fallback is Ansible-managed public
+keys, not a downgrade to passwords.
+
+### 1. Cloudflare (IaC, `live/edge/ssh_infra.tf`)
+
+Targets and usernames come from the `TF_VAR_ssh_infra_targets` JSON (a repo
+secret / owner env file; no address or person name is committed):
+
+```json
+{
+  "<gpu-node>": { "hostname": "<gpu-node>", "ipv4": "<gpu-node address>", "usernames": ["<admin login>"] }
+}
+```
+
+Apply `live/edge`: one `cloudflare_zero_trust_access_infrastructure_target`
+per node and one infrastructure application (SSH/22) per target. Its policy
+allows `grp-qnsc-platform-admins`, requires `amr=mfa`, and restricts the UNIX
+usernames. The provider has no gateway-CA resource, so the account CA is read
+or created once with the owner script:
+
+```sh
+CLOUDFLARE_ACCOUNT_ID=<account-id> CLOUDFLARE_API_TOKEN=<token> \
+  scripts/owner/cloudflare-ssh-ca.sh
+```
+
+The token needs **Access: SSH Auditing — Edit**. The printed public key goes
+into the LOCAL inventory as `node_ssh_ca_public_key` (a public key, not a
+secret; still never committed). The script uses `POST /accounts/<id>/access/gateway_ca`
+only when no CA exists; a per-app `zero_trust_access_short_lived_certificate`
+CA is **not** compatible with the Gateway SSH proxy.
+
+### 2. Nodes (Ansible role `ssh_infra`)
+
+Local inventory (git-ignored; names and addresses stay here):
+
+```yaml
+node_ssh_ca_public_key: "ssh-ed25519 AAAA... "
+node_admin_users:
+  # hosts = VM names in this inventory; sudo = passwordless sudo (identity + MFA happen at Cloudflare)
+  - { name: <admin login>, sudo: true, hosts: ["<gpu-node>"] }
+```
+
+The role (tags `ssh_infra`) is included by the GPU node playbook (`k3s-agent-gpu.yml`) only
+today. A node with no entry and no management history gets no account changes; the sudoers/principal
+sweeps still run wherever those role-owned paths exist. Add the role to another playbook and a target
+in `TF_VAR_ssh_infra_targets` when that node gets users. It writes `/etc/ssh/ca.pub` and a `sshd_config.d` drop-in with
+`TrustedUserCAKeys` plus `AuthorizedPrincipalsFile` (one principal per account,
+`%u`), validates the MERGED config with `sshd -t`, and on failure restores the
+previous drop-in and fails without reloading. For each listed account it creates
+the user with **no password and no authorized_keys**, adds `video,render` on the
+GPU node, writes a `sudoers.d` file when `sudo: true`, and a principal file
+containing exactly the login name. Reserved/operator names (`root`, `qnsc`,
+`ubuntu`, system accounts) are refused, and so is any pre-existing account this
+role did not create. Removed from the list → the account is locked (expiry in
+the past), its active sessions are killed, its sudoers and principal files are
+removed, and the home stays. The marker keeps EVERY name the role owns (desired and offboarded); a
+FAILED lock is retried next run. Creation uses `useradd --password '*'`; re-adding runs `usermod -p '*' -e -1` only
+when the shadow pre-check sees a hash other than `*` or an expiry (the user module strips `!` before
+comparing, so it is not used). `*` means no password login and does not block certificate login under
+UsePAM yes. An undefined `node_ssh_ca_public_key` or `node_admin_users` FAILS the run. Revoking the
+trust requires explicit empty values plus `ssh_infra_revoke: true`; it removes the drop-in,
+`/etc/ssh/ca.pub`, the principal directory and locks every owned account. The break-glass operator
+account is never touched.
+
+```sh
+ansible-playbook k3s-agent-gpu.yml --tags ssh_infra --check --diff   # plan
+ansible-playbook k3s-agent-gpu.yml --tags ssh_infra                  # apply
+```
+
+Re-run the same command: `changed=0`.
+
+**Dry-run a removal** (proves offboarding before it happens): delete one
+`node_admin_users` entry, run `--check --diff`; expect
+`would lock <login> (home kept), kill its sessions and remove its sudo and
+certificate principal`. Re-add the entry to cancel, or run without `--check` to
+complete the offboarding.
+
+### 3. Verify
+
+1. Owner: WARP connected, `warp-cli status`; then `ssh <login>@<gpu-node address>`
+   (no password prompt, no local key prompt).
+2. **Certificate principal:** `ssh -v` shows the offered certificate; run
+   `ssh-keygen -L -f <cert file>` on it and confirm `Principals:` equals the
+   UNIX login exactly (one principal per account, enforced by
+   `AuthorizedPrincipalsFile`). A different name is refused even with a valid
+   Cloudflare signature.
+3. Cloudflare dashboard → Access → Logs shows the SSH session for the user.
+4. On the node: `getent passwd <login>`, `sudo -n true` works for a sudo
+   account, and `nvidia-smi` works on the GPU node. Check the GPU is idle before
+   testing and never start a model just to test access.
+
+`NOPASSWD` sudo is accepted for a certificate-only account: it has no password
+or key, and identity + MFA are checked at Cloudflare before sudo is reachable.
 
 ## PBS API token
 
