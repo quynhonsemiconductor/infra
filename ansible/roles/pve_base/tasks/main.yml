@@ -584,6 +584,55 @@
           it before changing the realm.
         quiet: true
 
+# ── SMART: monthly LONG self-test ──────────────────────────────────────────
+# Written as the ONLY line in smartd.conf (DEVICESCAN) plus the comment that explains it. A host
+# with a hand-written smartd.conf refuses: merging someone else's disk directives by hand is a
+# deliberate act, not a silent overwrite. The failure RESULT is not read from mail (this host has
+# no working MTA): pve_monitoring exports the last self-test result and its age, and
+# live/observability-alerting alerts on both.
+- name: Read the existing smartd configuration
+  ansible.builtin.slurp:
+    src: "{{ pve_base_smartd_conf }}"
+  register: pve_base_smartd_raw
+  failed_when: false
+  tags: [pve_base_smartd]
+
+- name: The existing smartd.conf carries only a DEVICESCAN directive
+  ansible.builtin.assert:
+    that:
+      - pve_base_smartd_directives | length == 0
+        or (pve_base_smartd_directives | length == 1 and pve_base_smartd_directives[0].startswith('DEVICESCAN'))
+    fail_msg: >-
+      {{ pve_base_smartd_conf }} already carries device or DEFAULT lines this role did not write.
+      Merge the schedule by hand ({{ pve_base_smartd_devicescan_line }}), then re-run.
+    quiet: true
+  vars:
+    pve_base_smartd_directives: >-
+      {{ ((pve_base_smartd_raw.content | default('') | b64decode).splitlines()
+          | reject('match', '^\s*(#|$)') | map('trim') | list) }}
+  tags: [pve_base_smartd]
+
+- name: The monthly SHORT and LONG self-test schedule
+  ansible.builtin.copy:
+    dest: "{{ pve_base_smartd_conf }}"
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # Managed by Ansible (infra, role pve_base). One DEVICESCAN line: whatever disks the host
+      # has. SHORT every day at 01:00; LONG on the 1st at 03:00 (after the VM backups). The
+      # result is exported by pve_monitoring and alerted in live/observability-alerting.
+      {{ pve_base_smartd_devicescan_line }}
+  notify: Restart smartd
+  tags: [pve_base_smartd]
+
+- name: Start smartd and enable it at boot
+  ansible.builtin.service:
+    name: "{{ pve_base_smartd_service }}"
+    state: started
+    enabled: true
+  tags: [pve_base_smartd]
+
 # ── ZFS properties ──────────────────────────────────────────────────────────
 - name: ZFS dataset properties
   community.general.zfs:
