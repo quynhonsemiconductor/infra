@@ -53,10 +53,12 @@ variable "vlsi01_cores" {
 
 variable "vlsi01_memory_mb" {
   type = number
-  # 16 GiB (16384 MiB): about 2 GiB goes to the node itself (OS, kubelet, containerd, the 1 GiB
-  # systemReserved) and the rest carries the per-workspace requests (0.5 CPU / 1.5 GiB each)
-  # and up to three concurrent heavy builds at their 6 GiB limits (design §5.1). With k3s-01 24
-  # + ai-01 12 + vlsi-01 16 = 52 GiB, the host keeps ~8.5 GiB for itself and the ZFS ARC.
+  # 16 GiB (16384 MiB): about 1.5 GiB goes to the node itself (OS, kubelet, containerd, the 1 GiB
+  # systemReserved plus the 500Mi eviction floor), so ~14.5 GiB is allocatable. That carries the
+  # per-workspace requests (0.5 CPU / 1.5 GiB each) and at most TWO concurrent heavy builds at
+  # their 6 GiB limits (12 GiB); a third would exceed allocatable and cause node pressure and
+  # evictions, which is why the vlsi-ws quota caps limits.memory at 12 GiB (design §5.1). With
+  # k3s-01 24 + ai-01 12 + vlsi-01 16 = 52 GiB, the host keeps ~8.5 GiB for itself and the ZFS ARC.
   # No RAM purchase: this is a re-split of the existing allocation.
   default     = 16384
   description = "16 GiB (the VLSI pool; ~14 GiB usable by workspaces). Ballooning off (like the other nodes: predictable, and k3s counts on the memory it sees). Stop/start applies it."

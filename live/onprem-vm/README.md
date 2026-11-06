@@ -339,26 +339,38 @@ Owner window (TEI / kb search is down ~2-3 min while ai-01 boots; k3s-01 and eve
    `ssh root@<admin-door host> 'qm config 101 | grep -i hostpci'` and on ai-01 `nvidia-smi`.
 2. Drain both agents so their pods move BEFORE the shutdown, instead of being killed by it:
    `kubectl drain vlsi-01 --ignore-daemonsets --delete-emptydir-data --timeout=300s`, then the same for
-   `ai-01`. (On ai-01 the TEI pod has no other node to go to — it restarts after `qm start`.)
+   `ai-01`. (On ai-01 the TEI pod has no other node to go to — it restarts after the VMs boot.)
 3. Stop the two agent VMs: `qm shutdown 102 --timeout 120`, then `qm shutdown 101 --timeout 180`.
 4. `tofu plan` go/no-go — **`0 to add, 2 to change, 0 to destroy`**, each change in place, no replacement,
-   and **no line for VM 100**:
+   and **no line for VM 100**. Because the VMs are now STOPPED outside tofu and the stack says
+   `started = true`, each of the two resources also shows the start it will perform — that is expected:
 
    ```
-   ~ cpu    { cores = 12 -> 8 }           # ai-01
-   ~ memory { dedicated = 24576 -> 12288 }
-   ~ cpu    { cores = 4 -> 12 }           # vlsi-01
-   ~ memory { dedicated = 4096 -> 16384 }
+   ~ cpu     { cores = 12 -> 8 }              # ai-01
+   ~ memory  { dedicated = 24576 -> 12288 }
+   ~ started { false -> true }                # the apply powers it back on
+   ~ cpu     { cores = 4 -> 12 }              # vlsi-01
+   ~ memory  { dedicated = 4096 -> 16384 }
+   ~ started { false -> true }
    ```
 
-   **All four lines MUST appear.** If only one half of a pair does, `site.tfvars` still pins the other old
-   value (`ai01_cores` / `ai01_memory_mb` / `vlsi01_cores` / `vlsi01_memory_mb`); fix the file and
-   re-plan — never apply a partial shape.
+   **All six lines MUST appear.** If a cores/memory pair is half present, `site.tfvars` still pins the
+   other old value (`ai01_cores` / `ai01_memory_mb` / `vlsi01_cores` / `vlsi01_memory_mb`); fix the file
+   and re-plan — never apply a partial shape. If `started` does NOT appear, the VM was not actually
+   stopped (check `qm status` before applying).
 
-5. `tofu apply tfplan`, then `qm start 101`, `qm start 102`. Wait for both nodes Ready, then
-   `kubectl uncordon ai-01` and `kubectl uncordon vlsi-01`. Confirm `nvidia-smi` on ai-01 and the TEI pod
-   healthy.
-6. Apply the kubelet drop-ins in the same window on ai-01 and vlsi-01
+5. `tofu apply tfplan`. The provider updates the stopped VM and **starts it at the end of the apply**
+   (`started = true` is the desired state), so do NOT run `qm start` for a VM it already started:
+   check `qm status 101`, `qm status 102` and start only what is still stopped. Then wait for both nodes
+   Ready, `kubectl uncordon ai-01` and `kubectl uncordon vlsi-01`, and confirm `nvidia-smi` on ai-01 and
+   the TEI pod healthy.
+6. Mount vlsi-01's data disk **before anything schedules there** (`v-vlsi` PVs would otherwise land on the
+   40 GiB root and evict): the disk is blank and nothing is at the mount path, so this is the simple path
+   of docs/runbooks/agent-data-disks.md — `ansible-playbook k3s-agent.yml --tags k3s_data_disk
+   -e k3s_data_disk_enabled=true -e k3s_data_disk_device=/dev/disk/by-id/<the 300G id>
+   -e k3s_data_disk_format=true` (`--check --diff` first). It mounts at `/var/lib/rancher/k3s/storage`
+   and restarts k3s-agent on that node only. Do it while vlsi-01 is still cordoned.
+7. Apply the kubelet drop-ins in the same window on ai-01 and vlsi-01
    (`ansible-playbook k3s-agent-gpu.yml -e kubelet_allow_restart=true` and
    `k3s-agent.yml -e kubelet_allow_restart=true`; a drop-in change restarts k3s on that agent only).
    Profiles: gpu 1 CPU / 2 Gi, vlsi 500m / 1 Gi. k3s-01's drop-in does not change.

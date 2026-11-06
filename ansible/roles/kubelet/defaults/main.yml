@@ -15,8 +15,10 @@
 #   vlsi     vlsi-01     12 vCPU/16Gi   500m / 1Gi       4.2% / 6.25% ~14.5 Gi  (= the pool's usable RAM, design §5.1)
 # The daemons do not grow with the node, so the absolute values are what matter, not the percentages:
 # 2 Gi covers a 28-core server and a 12 GiB GPU node alike; 1 Gi covers kubelet + containerd + the OS
-# on a workspace node where the memory pressure comes from PODS (three 6 GiB build limits fit in the
-# 14.5 GiB that remains). Reservations are NOT limits: they only reduce allocatable.
+# on a workspace node where the memory pressure comes from PODS: TWO 6 GiB build limits (12 GiB) fit
+# inside the 14.5 GiB that remains; a THIRD would put the node past allocatable and end in node
+# pressure and evictions (limits do not queue). The vlsi-ws ResourceQuota caps limits.memory at
+# 12 GiB for the same reason. Reservations are NOT limits: they only reduce allocatable.
 kubelet_profile: server
 
 kubelet_profiles:
