@@ -37,9 +37,22 @@ laptops do not: they hold a copy of the `QNSC local development` value.
    the final revocation name the right object:
 
    ```sh
-   KB_DEV_APP=$(az ad app list --filter "displayName eq 'KB Dev'" --query '[0].id' -o tsv)
-   az ad app credential list --id "$KB_DEV_APP" \
-     --query '[].{keyId:keyId,name:displayName,expires:endDateTime}' -o table
+   # Exactly one app, or STOP. `[0]` would silently rotate a duplicate's
+   # credential: the kit's fetch_app uses the same length(@)==1 rule. The
+   # guard returns non-zero, so the credential list below it never runs on a
+   # duplicate (or a missing app).
+   kb_dev_creds() {
+     local count
+     count=$(az ad app list --filter "displayName eq 'KB Dev'" --query 'length(@)' -o tsv)
+     if [ "$count" != "1" ]; then
+       echo "STOP: expected exactly one app named 'KB Dev', found $count" >&2
+       return 1
+     fi
+     KB_DEV_APP=$(az ad app list --filter "displayName eq 'KB Dev'" --query '[0].id' -o tsv)
+     az ad app credential list --id "$KB_DEV_APP" \
+       --query '[].{keyId:keyId,name:displayName,expires:endDateTime}' -o table
+   }
+   kb_dev_creds
    ```
 
 2. Create the cluster's credential and land it in the ESO key. This is the
