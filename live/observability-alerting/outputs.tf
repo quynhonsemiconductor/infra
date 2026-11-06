@@ -17,14 +17,16 @@ output "dashboards_folder_uid" {
   description = "The PARENT folder for every product's own dashboards. Each product gets its own SUBFOLDER under this one (Grafana's nested-folder support, `parent_folder_uid`) — unlike alerting_folder_uid, which stays flat: dashboards multiply per product (Overview, Runtime, business KPIs) in a way a rule group per product never does, so a subfolder scales where a title-distinguished flat folder would get crowded."
 }
 
-output "rally_dashboards_folder_uid" {
-  value       = grafana_folder.rally_dashboards.uid
-  description = "Rally's dashboard subfolder — created ONCE here, not per-environment. See the resource's own comment for the real duplicate-folder bug this replaces."
+output "rova_dashboards_folder_uid" {
+  value       = grafana_folder.rova_dashboards.uid
+  description = "rova's dashboard subfolder (renamed from Rally 2026-11-06, same UID) — created ONCE here, not per-environment. See the resource's own comment for the duplicate-folder bug this replaces."
 }
 
-output "opshub_dashboards_folder_uid" {
-  value       = grafana_folder.opshub_dashboards.uid
-  description = "Opshub's dashboard subfolder — created ONCE here, not per-environment. See rally_dashboards_folder_uid for the duplicate-folder bug this avoids from the start."
+# Kept for one release: product CI may still read the old output name. Same
+# UID, so a consumer that switches later changes nothing in Grafana.
+output "rally_dashboards_folder_uid" {
+  value       = grafana_folder.rova_dashboards.uid
+  description = "DEPRECATED alias of rova_dashboards_folder_uid (same UID). Remove after the rova product repo switches names."
 }
 
 output "slos_folder_uid" {
