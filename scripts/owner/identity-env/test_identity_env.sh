@@ -59,6 +59,7 @@ build() { # build the fixture set from scratch
     '{"value":[{id:$a,value:"User.Invite.All"},{id:$b,value:"DeviceManagementManagedDevices.Read.All"},{id:$c,value:"SecurityEvents.Read.All"},{id:$d,value:"User.Read.All"}]}' >"$FX/graph-roles"
   echo "{\"id\":\"$(g 2 1)\"}" >"$FX/group-grp-qnsc-platform-admins"
   echo "{\"id\":\"$(g 2 2)\"}" >"$FX/group-grp-qnsc-dev-users"
+  echo "{\"id\":\"$(g 2 3)\"}" >"$FX/group-grp-qnsc-developers"
   echo "{\"id\":\"$(g 3 1)\"}" >"$FX/me"
   echo "{\"id\":\"$(g 3 2)\"}" >"$FX/user-second@tenant.example"
   echo "{\"id\":\"$(g 3 6)\",\"userType\":\"Member\"}" >"$FX/user-owner@tenant.example"
@@ -181,11 +182,11 @@ expect_stop_extra() { # expect_stop_extra <label> <expected fragment> <IDENTITY_
   leak_scan "$out" "$1"
 }
 
-# 1. happy path: names + lengths, 22 variables, no value anywhere
+# 1. happy path: names + lengths, 23 variables, no value anywhere
 build
 OUT="$T/out.happy"; run bash "$SCRIPT" >"$OUT" 2>&1 || { cat "$OUT"; fail "happy path exited non-zero"; }
-grep -q 'identity env OK: 22 variables' "$OUT" || { cat "$OUT"; fail "variable count"; }
-for v in subscription_id budget_period_start budget_period_end break_glass_upn_domain platform_admins_object_id grp_dev_users_object_id \
+grep -q 'identity env OK: 23 variables' "$OUT" || { cat "$OUT"; fail "variable count"; }
+for v in subscription_id budget_period_start budget_period_end break_glass_upn_domain grp_platform_admins_object_id grp_developers_object_id grp_dev_users_object_id \
   owner_operator_object_id second_owner_object_id platform_admin_object_ids proxmox_redirect_uris existing_object_ids existing_sp_object_ids \
   mail_service_object_ids mail_service_sp_object_ids opshub_dev_app_role_ids mail_service_certificates \
   mail_service_rotated_certificates mail_service_graph_grant_ids signin_delegated_grant_ids signin_delegated_grant_scopes \
@@ -201,7 +202,7 @@ leak_scan "$OUT" happy
 build
 OUT="$T/out.extra"; run env IDENTITY_DEV_APP_EXTRA_OWNERS="opshub_dev=dev@tenant.example" bash "$SCRIPT" >"$OUT" 2>&1 \
   || { cat "$OUT"; fail "extra owners: happy path exited non-zero"; }
-grep -q 'identity env OK: 23 variables' "$OUT" || { cat "$OUT"; fail "extra owners: variable count"; }
+grep -q 'identity env OK: 24 variables' "$OUT" || { cat "$OUT"; fail "extra owners: variable count"; }
 grep -qE 'TF_VAR_dev_app_extra_owner_object_ids +[0-9]+$' "$OUT" || fail "extra owners: map not exported"
 leak_scan "$OUT" "extra owners"
 run env IDENTITY_DEV_APP_EXTRA_OWNERS="opshub_dev=dev@tenant.example" bash "$SCRIPT" -- \
@@ -339,7 +340,7 @@ esofix() { local j=40 p; for p in dev prod platform; do j=$((j+1)); mkcert "eso-
 build; echo 'variable "eso_certificates" {}' >"$T/stack/eso.tf"
 expect_stop "eso app missing" "az lookup empty: eso app dev"
 build; esofix; OUT="$T/out.eso"; run bash "$SCRIPT" >"$OUT" 2>&1 || { cat "$OUT"; fail "eso happy path"; }
-grep -q 'identity env OK: 23 variables' "$OUT" || fail "eso variable count"
+grep -q 'identity env OK: 24 variables' "$OUT" || fail "eso variable count"
 grep -qE 'TF_VAR_eso_certificates +[0-9]+$' "$OUT" || fail "eso variable not built"
 leak_scan "$OUT" "eso happy path"
 # the PEM text uploaded by the provider reaches the child byte for byte (trailing newline included): no replace planned

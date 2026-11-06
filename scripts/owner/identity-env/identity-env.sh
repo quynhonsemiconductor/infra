@@ -76,7 +76,8 @@ put TF_VAR_break_glass_upn_domain "$(jq -r '[.value[0].verifiedDomains[]|select(
 
 grp_id() { local id; id=$(az_json "group $1" ad group show --group "$1" | jq -r '.id // empty'); need_guid "group $1" "$id"; printf '%s' "$id"; }
 ADMINS_GROUP=$(grp_id grp-qnsc-platform-admins)
-put TF_VAR_platform_admins_object_id "$ADMINS_GROUP"
+put TF_VAR_grp_platform_admins_object_id "$ADMINS_GROUP"
+put TF_VAR_grp_developers_object_id "$(grp_id grp-qnsc-developers)"
 put TF_VAR_grp_dev_users_object_id "$(grp_id grp-qnsc-dev-users)"
 
 # --- people --------------------------------------------------------------------------------------
