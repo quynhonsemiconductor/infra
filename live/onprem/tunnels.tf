@@ -77,6 +77,12 @@ locals {
     # /mcp: the opshub-dev MCP Access app (Managed OAuth) is in front; cloudflared checks ITS JWT.
     # MUST precede the catch-all below (first match wins). access_app feeds access_jwt_apps,
     # so the origin check uses THIS app's aud, not the host app's.
+    #
+    # NO rule for the discovery paths on purpose: Access serves them at the EDGE for the MCP app's
+    # destinations (rova prod proves it — same tunnel shape, only ^/mcp routed there):
+    #   /.well-known/oauth-authorization-server            -> 200 JSON, issuer qnsc.cloudflareaccess.com
+    #   /.well-known/cloudflare-access-protected-resource/mcp -> 200 JSON, resource = the MCP URL
+    # (plain /.well-known/oauth-protected-resource is NOT used by clients and falls to the SPA.)
     { hostname = "opshub-dev.qnsc.vn", path = "^/mcp(/|$)", service = "http://api.opshub-dev.svc:3000", access_app = "opshub-dev MCP server" },
     { hostname = "opshub-dev.qnsc.vn", path = null, service = "http://web.opshub-dev.svc:8080" },
 
