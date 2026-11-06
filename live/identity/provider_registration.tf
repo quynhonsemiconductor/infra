@@ -34,9 +34,11 @@
 # `Microsoft.OperationalInsights/register/action` at subscription scope, or
 # this resource must be removed and the prerequisite documented instead.
 #
-# IDEMPOTENT: the owner has already registered the namespace by hand, so the
-# first plan after this merges shows `1 to add` and the API call is a no-op
-# (state gains the address; Azure was already registered).
+# ALREADY EXISTS: the owner registered the namespace by hand right after the
+# 409, so this file IMPORTS the live registration (block at the bottom) rather
+# than creating a second one. The plan is `1 to import, 0 to add`; after the
+# apply the state owns the address and a plain create would no longer be
+# attempted.
 #
 # ORDERING: on a FRESH subscription, apply this resource before the resource
 # that needs it (a targeted apply), or add `depends_on` from the workspace to
@@ -44,6 +46,17 @@
 # a provider registration and a resource of that provider, so a single fresh
 # apply could still race the registration. Irrelevant today: the namespace is
 # already registered.
+
+# IMPORT, not create: the owner registered the namespace by hand immediately
+# after the 409, so the object already exists. Importing the live registration
+# makes the plan `1 to import, 0 to add`; a plain create would fail with
+# "already exists — needs to be imported". The subscription id comes from the
+# same required variable the rest of the stack uses (owner kit / TF_VAR), never
+# a literal in this public repository.
+import {
+  to = azurerm_resource_provider_registration.operational_insights
+  id = "/subscriptions/${var.subscription_id}/providers/Microsoft.OperationalInsights"
+}
 
 resource "azurerm_resource_provider_registration" "operational_insights" {
   name = "Microsoft.OperationalInsights"
