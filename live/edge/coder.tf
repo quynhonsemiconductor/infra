@@ -112,16 +112,27 @@ resource "cloudflare_zero_trust_network_hostname_route" "coder" {
 # traffic, evaluated before anything reaches a tunnel. They are IDENTITY policies:
 # `identity.groups.id` is the Entra group object id carried in the WARP identity.
 #
-#   90  allow  platform admins            — today's access, stated explicitly so a
-#                                           later blanket rule cannot take it away
+#   90  allow  platform admins             — today's access, stated explicitly so a
+#                                            later blanket rule cannot take it away
 #   100 allow  grp-qnsc-vlsi → Coder hosts — the only private destination it needs
-#   110 block  grp-qnsc-vlsi, everything   — the catch-all: LAN, k8s, any route added
-#                                           later. A block here is a local deny, it
-#                                           does not page anyone.
+#   110 block  grp-qnsc-vlsi → private IPs  — LAN, k8s, any route added later. SCOPED to
+#                                            the private ranges on purpose, see below.
 #
-# SNI, not IP: the hostname route resolves to a synthetic address from the tunnel's
-# virtual network, so the destination IP does not identify the service. `net.sni.domains`
-# matches the domain and its subdomains (coder.qnsc.vn covers *.coder.qnsc.vn).
+# SNI, not IP, for the ALLOW: the hostname route resolves to a synthetic address from the
+# tunnel's virtual network, so the destination IP does not identify the service.
+# `net.sni.domains` matches the domain and its subdomains (coder.qnsc.vn covers
+# *.coder.qnsc.vn).
+#
+# THE BLOCK MUST BE DESTINATION-SCOPED. The device profile is split tunnel in **Exclude**
+# mode: everything NOT in the exclude list — the public internet included — is sent through
+# WARP and therefore evaluated by Gateway. An unscoped `identity.groups.id == vlsi` block
+# would cut a VLSI engineer off the public internet: no login.microsoftonline.com (Coder's
+# own OIDC sign-in), no cloudflareaccess.com, nothing. So 110 matches the private ranges
+# only, and public traffic falls through to the default (allow, unchanged from today).
+#
+# DNS is NOT affected by an L4 block: DNS filtering is its own Gateway policy type
+# (allow/block by domain and resolver IP), and this stack creates none. Resolution, including
+# the private hostname route and the OIDC issuer's name, keeps working under the block.
 #
 # Everything is gated on var.grp_vlsi_id: empty = no enrollment (warp.tf) and no policy,
 # so the group can never be half-guarded. Plan availability: Gateway L4 network policies
@@ -165,8 +176,12 @@ resource "cloudflare_zero_trust_gateway_policy" "vlsi_block_private" {
   enabled     = true
   action      = "block"
   filters     = ["l4"]
-  # Identity only, on purpose: the allow above already covers the one destination the
-  # group needs, so anything left is exactly what must not be reachable. Public internet
-  # is not routed through Gateway by the device profile (Exclude split tunnel).
-  traffic = "identity.groups.id == \"${var.grp_vlsi_id}\""
+  # SCOPED to the private ranges: the split tunnel is Exclude mode, so PUBLIC traffic also
+  # passes through Gateway, and an unscoped block here would take away the internet — and
+  # with it Coder's OIDC sign-in (login.microsoftonline.com) and cloudflareaccess.com.
+  # RFC 1918 + CGNAT covers every private destination the tunnels can expose; the allow
+  # above already claims the one public-looking destination the group needs (the Coder
+  # hostname, matched on SNI before this rule). Only the allow needs to be there: a request
+  # that reaches Coder matches 100 first, everything else private matches here.
+  traffic = "identity.groups.id == \"${var.grp_vlsi_id}\" and any(net.dst.ip[*] in {10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10})"
 }
