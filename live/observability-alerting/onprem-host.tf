@@ -469,6 +469,151 @@ resource "grafana_rule_group" "onprem_pve_risk" {
   # itself runs out, the OOM killer takes the largest QEMU process, which is
   # k3s-01 — all of prod. 2 GiB is the floor where PVE, PBS verify/GC and KSM
   # can still work; the 2026-11-04 measurement was 13.0 GiB available.
+  # Self-tests (smartd, Ansible pve_base): `S/../.././01` SHORT daily at 01:00, `L/../01/./03` LONG on
+  # the 1st at 03:00. A failed test is the earliest signal a drive gives — before the critical-warning
+  # flag the rules above watch. Codes matter: pve_monitoring counts ONLY the newest COMPLETED test, so an
+  # NVMe "Aborted: Self-test command" (result 1-4, 8, 9) or a test still running — exactly what pve01 showed
+  # on 2026-11-06 — emits nothing and cannot page, and a later pass clears an earlier failure. The stale rule
+  # catches the other failure: smartd that stopped running produces no test at all, and silence is not health
+  # — which is why ITS no_data_state is Alerting.
+  # Two rules, not one `or`, for the same reason as the NVMe group above: both branches carry the
+  # SAME `device` label set, and PromQL `or` returns only the left-hand series when label sets match.
+  rule {
+    name           = "pve-disk-self-test-failed"
+    condition      = "B"
+    for            = "1h"
+    no_data_state  = "OK"
+    exec_err_state = "KeepLast"
+
+    data {
+      ref_id         = "A"
+      query_type     = "instant"
+      datasource_uid = data.grafana_data_source.prometheus.uid
+
+      relative_time_range {
+        from = 900
+        to   = 0
+      }
+
+      model = jsonencode({
+        refId         = "A"
+        datasource    = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
+        expr          = "max by (device) (pve_disk_self_test_failed{job=\"pve-host\"}) > 0"
+        instant       = true
+        range         = false
+        intervalMs    = 1000
+        maxDataPoints = 43200
+      })
+    }
+
+    data {
+      ref_id         = "B"
+      datasource_uid = "__expr__"
+
+      relative_time_range {
+        from = 0
+        to   = 0
+      }
+
+      model = jsonencode({
+        refId      = "B"
+        type       = "threshold"
+        datasource = { type = "__expr__", uid = "__expr__" }
+        expression = "A"
+        conditions = [
+          {
+            evaluator = {
+              type   = "gt"
+              params = [0]
+            }
+          }
+        ]
+        intervalMs    = 1000
+        maxDataPoints = 43200
+      })
+    }
+
+    labels = {
+      product  = "platform"
+      env      = "production"
+      severity = "warning"
+    }
+
+    annotations = {
+      summary = "Disk {{ $labels.device }} on pve01 FAILED its self-test ({{ $value }}). The drive is telling you before the critical-warning flag does: run `smartctl -a /dev/{{ $labels.device }}`, confirm the PBS off-site copy (docs/runbooks/pbs-offsite.md), and plan the replacement."
+    }
+  }
+
+  # Two rules, not one `or`, for the same reason as the NVMe group above: both branches carry the
+  # SAME `device` label set, and PromQL `or` returns only the left-hand series when label sets match.
+  rule {
+    name      = "pve-disk-self-test-stale"
+    condition = "B"
+    for       = "1h"
+    # Alerting, not OK: no series means the exporter (or the host) stopped, and that must page —
+    # a missing disk-health signal is the failure this rule exists to make loud.
+    no_data_state  = "Alerting"
+    exec_err_state = "KeepLast"
+
+    data {
+      ref_id         = "A"
+      query_type     = "instant"
+      datasource_uid = data.grafana_data_source.prometheus.uid
+
+      relative_time_range {
+        from = 900
+        to   = 0
+      }
+
+      model = jsonencode({
+        refId         = "A"
+        datasource    = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
+        expr          = "max by (device) (pve_disk_self_test_age_hours{job=\"pve-host\"}) > 1080"
+        instant       = true
+        range         = false
+        intervalMs    = 1000
+        maxDataPoints = 43200
+      })
+    }
+
+    data {
+      ref_id         = "B"
+      datasource_uid = "__expr__"
+
+      relative_time_range {
+        from = 0
+        to   = 0
+      }
+
+      model = jsonencode({
+        refId      = "B"
+        type       = "threshold"
+        datasource = { type = "__expr__", uid = "__expr__" }
+        expression = "A"
+        conditions = [
+          {
+            evaluator = {
+              type   = "gt"
+              params = [0]
+            }
+          }
+        ]
+        intervalMs    = 1000
+        maxDataPoints = 43200
+      })
+    }
+
+    labels = {
+      product  = "platform"
+      env      = "production"
+      severity = "warning"
+    }
+
+    annotations = {
+      summary = "Disk {{ $labels.device }} on pve01 has not run a self-test in over 45 power-on days. Either smartd stopped (`systemctl status smartd`, `smartctl -l selftest /dev/{{ $labels.device }}`) or the schedule no longer matches — a test that never runs cannot fail."
+    }
+  }
+
   rule {
     name           = "pve-host-memory-low"
     condition      = "B"

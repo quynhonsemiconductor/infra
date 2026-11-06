@@ -51,6 +51,9 @@ pve_monitoring_node_exporter_address: "127.0.0.1:9100"
 # every ZFS pool and VM runs on. The backup HDD mirror is covered by zpool
 # health, and per-disk SMART on HDDs adds series nobody alerts on.
 pve_monitoring_nvme_glob: "/dev/nvme*n1"
+# Every disk smartctl can read, for the self-test result: the NVMe and the two HDDs. Devices that do
+# not answer SMART (a USB bridge) emit nothing, so the glob can stay wide.
+pve_monitoring_disk_glob: "/dev/nvme*n1 /dev/sd[a-z]"
 
 pve_monitoring_script: /usr/local/lib/qnsc/pve-metrics.sh
 pve_monitoring_service: pve-metrics.service
