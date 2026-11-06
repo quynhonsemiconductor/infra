@@ -1,0 +1,53 @@
+---
+# PBS accepts the CANONICAL proxmox_entra_admin_emails only. A legacy-only
+# list (empty OR non-empty) must fail the role; these assert the gate the
+# role's assert uses. (The role itself is not run here.)
+- name: PBS gate rejects a legacy-only empty list
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    pbs_entra_admin_emails: []
+  tasks:
+    - name: Load the PBS role defaults
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../roles/pbs/defaults/main.yml"
+    - name: Legacy empty is not a PBS administration list
+      ansible.builtin.assert:
+        that:
+          - not pbs_entra_manage_admins | bool
+        quiet: true
+
+- name: PBS gate rejects a legacy-only non-empty list
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    pbs_entra_admin_emails: ["legacy@example.com"]
+  tasks:
+    - name: Load the PBS role defaults
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../roles/pbs/defaults/main.yml"
+    - name: Legacy-only is still a failure (rename required)
+      ansible.builtin.assert:
+        that:
+          - not pbs_entra_manage_admins | bool
+        quiet: true
+
+- name: PBS gate accepts the canonical key, including an explicit empty list
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    proxmox_entra_admin_emails: []
+    pbs_entra_admin_emails: ["legacy@example.com"]
+  tasks:
+    - name: Load the PBS role defaults
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../roles/pbs/defaults/main.yml"
+    - name: Canonical empty manages (prunes); legacy is ignored
+      ansible.builtin.assert:
+        that:
+          - pbs_entra_manage_admins | bool
+          - pbs_entra_admin_emails_effective | length == 0
+        quiet: true

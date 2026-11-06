@@ -187,8 +187,8 @@
           - pve_base_entra_admin_emails | select('match', '^[^@\s]+@[^@\s]+$') | list | length == pve_base_entra_admin_emails | length
           - pve_base_entra_admin_emails | unique | length == pve_base_entra_admin_emails | length
         fail_msg: >-
-          proxmox_entra_admin_emails (or the legacy pbs_entra_admin_emails) must hold exact Entra email
-          strings with no duplicates. Leave it unset for a PVE-only inventory.
+          proxmox_entra_admin_emails (or the legacy pbs_entra_admin_emails) must hold exact
+          Entra email strings with no duplicates. Leave it unset for a PVE-only inventory.
         quiet: true
       when: pve_base_entra_manage_admins | bool
 
@@ -440,6 +440,10 @@
           changed_when: false
           check_mode: false
 
+        - name: The membership decisions (shared with the offline unit test)
+          ansible.builtin.include_vars:
+            file: "{{ role_path }}/vars/entra_membership.yml"
+
         # Base users are pre-created exactly like PBS's: with autocreate=0 an Entra user who is not on the
         # shared list cannot sign in even if Entra hands out a token.
         - name: Report the Entra user creation (check mode)
@@ -450,7 +454,7 @@
           when:
             - ansible_check_mode
             - (pve_base_entra_users.stdout | from_json
-               | selectattr('userid', 'equalto', item ~ '@' ~ pve_base_entra_realm) | list | length) == 0
+               | selectattr('userid', 'search', '(?i)^' ~ (item | regex_escape) ~ '@' ~ pve_base_entra_realm ~ '$') | list | length) == 0
 
         - name: Create the Entra admin users (OpenID only, no password)
           ansible.builtin.command:
@@ -466,7 +470,7 @@
           when:
             - not ansible_check_mode
             - (pve_base_entra_users.stdout | from_json
-               | selectattr('userid', 'equalto', item ~ '@' ~ pve_base_entra_realm) | list | length) == 0
+               | selectattr('userid', 'search', '(?i)^' ~ (item | regex_escape) ~ '@' ~ pve_base_entra_realm ~ '$') | list | length) == 0
 
         # The group claim is NOT used: Entra's userinfo response (PVE's claim source by default) has no
         # groups. Membership is role-managed; groups-overwrite=0 keeps a login from wiping it.
@@ -478,7 +482,7 @@
           when:
             - ansible_check_mode
             - pve_base_entra_group_id not in ((pve_base_entra_users.stdout | from_json
-                 | selectattr('userid', 'equalto', item ~ '@' ~ pve_base_entra_realm)
+                 | selectattr('userid', 'search', '(?i)^' ~ (item | regex_escape) ~ '@' ~ pve_base_entra_realm ~ '$')
                  | list | default([{}], true) | first).groups | default('')
                  | split(',') | map('trim') | list)
 
@@ -488,11 +492,13 @@
               - pveum
               - user
               - modify
-              - "{{ item }}@{{ pve_base_entra_realm }}"
+              - "{{ ((pve_base_entra_users.stdout | from_json
+                     | selectattr('userid', 'search', '(?i)^' ~ (item | regex_escape) ~ '@' ~ pve_base_entra_realm ~ '$')
+                     | list | default([{}], true) | first).userid | default(item ~ '@' ~ pve_base_entra_realm)) }}"
               - --groups
               - >-
                 {{ (((pve_base_entra_users.stdout | from_json
-                     | selectattr('userid', 'equalto', item ~ '@' ~ pve_base_entra_realm)
+                     | selectattr('userid', 'search', '(?i)^' ~ (item | regex_escape) ~ '@' ~ pve_base_entra_realm ~ '$')
                      | list | default([{}], true) | first).groups | default('')
                      | split(',') | map('trim') | reject('equalto', '') | list)
                     + [pve_base_entra_group_id]) | unique | join(',') }}
@@ -501,7 +507,7 @@
           when:
             - not ansible_check_mode
             - pve_base_entra_group_id not in ((pve_base_entra_users.stdout | from_json
-                 | selectattr('userid', 'equalto', item ~ '@' ~ pve_base_entra_realm)
+                 | selectattr('userid', 'search', '(?i)^' ~ (item | regex_escape) ~ '@' ~ pve_base_entra_realm ~ '$')
                  | list | default([{}], true) | first).groups | default('')
                  | split(',') | map('trim') | list)
 
@@ -511,13 +517,14 @@
           ansible.builtin.debug:
             msg: "would remove {{ item.userid }} from group {{ pve_base_entra_group_id }}"
           changed_when: true
-          loop: "{{ pve_base_entra_users.stdout | from_json
-                    | selectattr('userid', 'search', '@' ~ pve_base_entra_realm ~ '$') | list }}"
+          loop: "{{ pve_base_entra_removed_users }}"
           when:
             - ansible_check_mode
             - pve_base_entra_group_id in (item.groups | default('') | split(',') | map('trim') | list)
-            - (item.userid | regex_replace('@' ~ pve_base_entra_realm ~ '$', '')) not in pve_base_entra_admin_emails
 
+        # Removing the LAST group: PVE::API2::User's update path calls delete_user_group whenever
+        # `groups` is defined (an empty string counts), then split_list("") adds none. pveum user modify
+        # has no --delete option, so --groups "" is the clear.
         - name: Remove unlisted users from the Entra admins group
           ansible.builtin.command:
             argv:
@@ -529,12 +536,10 @@
               - "{{ item.groups | default('') | split(',') | map('trim')
                     | reject('equalto', '') | reject('equalto', pve_base_entra_group_id) | join(',') }}"
           changed_when: true
-          loop: "{{ pve_base_entra_users.stdout | from_json
-                    | selectattr('userid', 'search', '@' ~ pve_base_entra_realm ~ '$') | list }}"
+          loop: "{{ pve_base_entra_removed_users }}"
           when:
             - not ansible_check_mode
             - pve_base_entra_group_id in (item.groups | default('') | split(',') | map('trim') | list)
-            - (item.userid | regex_replace('@' ~ pve_base_entra_realm ~ '$', '')) not in pve_base_entra_admin_emails
 
     - name: Read the PVE ACLs
       ansible.builtin.command: pvesh get /access/acl --output-format json

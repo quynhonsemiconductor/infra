@@ -37,6 +37,10 @@ indent, one entry per line — keep the shape), asserts them against Entra, and 
 (`TF_VAR_mail_service_certificates`, `TF_VAR_mail_service_rotated_certificates`, keyed by the pinned keyIds). The
 one identifier it ever prints is the keyId of an unpinned live credential, so the owner can pin it.
 
+It also builds `TF_VAR_cf_access_object_ids` — the app, service-principal and AllPrincipals grant ids of
+"QNSC Cloudflare Access" — so `cf_access.tf` can import the IdP without any id in Git. The app's credential is
+never read: only ids and the grant's scope list (which must not be narrowed).
+
 The kit also builds the grant import maps `TF_VAR_mail_service_graph_grant_ids` and
 `TF_VAR_opshub_prod_service_graph_grant_ids` from each app's live `appRoleAssignments` on Microsoft Graph
 (`appRoleAssignedTo` is the other direction and would return nothing useful). The sign-in apps' tenant-wide

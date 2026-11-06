@@ -117,9 +117,17 @@ drift includes them. PBS already works this way: pre-created user + per-user ACL
 each pending create/addition/removal; a second run is `changed=0`.
 
 A **PVE-only** inventory may omit the shared list entirely: the realm, group and ACL are still managed,
-and only the user pre-creation/membership/offboarding tasks are skipped. When the list is present it must
-hold exact Entra email strings with no duplicates, and the same `proxmox_entra_admin_emails` (canonical)
-wins over the legacy `pbs_entra_admin_emails` in both roles.
+and only the user pre-creation/membership/offboarding tasks are skipped. An **explicitly empty
+`proxmox_entra_admin_emails`** is different: it runs those tasks and prunes every pre-created account from
+the admin group (that is how "remove all admins" is expressed). A leftover legacy
+`pbs_entra_admin_emails` is only a PVE fallback. The PBS role accepts the CANONICAL key only: a
+legacy-only list (empty or not) **fails** with a message to rename it. When the list is present it must
+hold the exact Entra email strings with no duplicates (casing preserved; comparisons are case-insensitive).
+
+**Offboarding, per system.** PVE removes the account from `<oid>-entra` (the PVE user object stays). PBS revokes its `Admin` ACL on `/`
+(`proxmox-backup-manager acl update / Admin --auth-id <id> --delete`); a `--check` run prints
+`would revoke Admin on / from <id>`, and `[]` (canonical key) revokes everyone. Neither system deletes
+the account here.
 
 The client secret comes from the environment of the run (Key Vault `kv-qnsc-admin`,
 `admin-proxmox-oidc-secret`, created in identity step 4 with `scripts/rotate-signin-secret.sh`):
