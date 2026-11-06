@@ -19,5 +19,13 @@
     ssh_infra_sshd_dropin: /tmp/qnsc-ssh-last/10-qnsc-test.conf
     ssh_infra_principals_dir: /tmp/qnsc-ssh-last/principals
     ssh_infra_sudoers_dir: /tmp/qnsc-ssh-last/sudoers
+  # pre_tasks, not tasks: this must refuse a real (non---check) run BEFORE the
+  # role starts, not after it has already locked an account.
+  pre_tasks:
+    - name: This fixture is a --check test only
+      ansible.builtin.assert:
+        that: ansible_check_mode
+        fail_msg: "run this playbook with --check; it must not lock a real account"
+        quiet: true
   roles:
     - role: ssh_infra

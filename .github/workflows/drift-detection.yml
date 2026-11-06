@@ -149,6 +149,18 @@ jobs:
           ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
           ARM_USE_OIDC:        'true'
 
+      # edge carries private SSH target values in state: the guard masks them and refuses an empty secret
+      # over a non-empty state. Same script as infra-plan.yml and infra-apply.yml.
+      - name: SSH targets guard (edge)
+        if: matrix.stack == 'edge'
+        working-directory: live/edge
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/ssh-targets-guard.sh"
+        env:
+          SSH_INFRA_TARGETS: ${{ secrets.SSH_INFRA_TARGETS }}
+          ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID_READ }}
+          ARM_TENANT_ID: ${{ vars.ENTRA_TENANT_ID }}
+          ARM_USE_OIDC: 'true'
+
       - name: Require the read-only Cloudflare token
         if: ${{ contains(fromJSON('["edge","storage-dev","storage-prod","onprem"]'), matrix.stack) }}
         env:
@@ -167,6 +179,7 @@ jobs:
         if: matrix.stack != 'identity'
         working-directory: live/${{ matrix.stack }}
         env:
+          STACK: ${{ matrix.stack }}
           TF_VAR_cloudflare_zone_id:    ${{ vars.CLOUDFLARE_ZONE_ID }}
           TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           # Read-only token, and only for the stacks that talk to Cloudflare. Empty elsewhere on purpose.
@@ -203,16 +216,27 @@ jobs:
           ARM_USE_OIDC:        'true'
           TF_VAR_admin_private_cidr: ${{ contains(fromJSON('["onprem","edge"]'), matrix.stack) && secrets.ADMIN_PRIVATE_CIDR || '' }}
           TF_VAR_warp_extra_excludes: ${{ matrix.stack == 'edge' && secrets.WARP_EXTRA_EXCLUDES || '[]' }}
+          TF_VAR_ssh_infra_targets:   ${{ matrix.stack == 'edge' && secrets.SSH_INFRA_TARGETS || '{}' }}
         run: |
+          # edge: never printed — its plan text carries the private SSH target map. File only; the
+          # summary below publishes counts, fingerprint and types. Other stacks keep the log stream.
           set +e
-          tofu plan -refresh-only -input=false -lock=false -no-color -detailed-exitcode -out=refresh.tfplan 2>&1 | tee refresh.txt
-          echo "exitcode=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+          if [ "$STACK" = "edge" ]; then
+            tofu plan -refresh-only -input=false -lock=false -no-color -detailed-exitcode -out=refresh.tfplan > refresh.txt 2>&1
+            ec=$?
+            if [ "$ec" = "1" ]; then sed -n '/^╷/,/^╵/p' refresh.txt >&2; fi
+          else
+            tofu plan -refresh-only -input=false -lock=false -no-color -detailed-exitcode -out=refresh.tfplan 2>&1 | tee refresh.txt
+            ec=${PIPESTATUS[0]}
+          fi
+          echo "exitcode=$ec" >> "$GITHUB_OUTPUT"
 
       - name: Detect unapplied config
         id: plan
         if: matrix.stack != 'identity'
         working-directory: live/${{ matrix.stack }}
         env:
+          STACK: ${{ matrix.stack }}
           TF_VAR_cloudflare_zone_id:    ${{ vars.CLOUDFLARE_ZONE_ID }}
           TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           # Read-only token, and only for the stacks that talk to Cloudflare. Empty elsewhere on purpose.
@@ -247,10 +271,36 @@ jobs:
           ARM_USE_OIDC:        'true'
           TF_VAR_admin_private_cidr: ${{ contains(fromJSON('["onprem","edge"]'), matrix.stack) && secrets.ADMIN_PRIVATE_CIDR || '' }}
           TF_VAR_warp_extra_excludes: ${{ matrix.stack == 'edge' && secrets.WARP_EXTRA_EXCLUDES || '[]' }}
+          TF_VAR_ssh_infra_targets:   ${{ matrix.stack == 'edge' && secrets.SSH_INFRA_TARGETS || '{}' }}
         run: |
+          # edge: never printed (private SSH target map). The saved plan is what the summary step below
+          # reads; every other stack keeps its log stream and no plan file.
           set +e
-          tofu plan -input=false -lock=false -no-color -detailed-exitcode 2>&1 | tee plan.txt
-          echo "exitcode=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+          if [ "$STACK" = "edge" ]; then
+            tofu plan -input=false -lock=false -no-color -detailed-exitcode -out=tfplan > plan.txt 2>&1
+            ec=$?
+            if [ "$ec" = "1" ]; then sed -n '/^╷/,/^╵/p' plan.txt >&2; fi
+          else
+            tofu plan -input=false -lock=false -no-color -detailed-exitcode 2>&1 | tee plan.txt
+            ec=${PIPESTATUS[0]}
+          fi
+          echo "exitcode=$ec" >> "$GITHUB_OUTPUT"
+
+      # edge publishes counts + fingerprint + changed TYPES and nothing else: its plan text carries the
+      # private SSH target map. Non-edge stacks show the tail of their plan in the Report step instead.
+      - name: Drift summary (edge)
+        if: matrix.stack == 'edge' && steps.plan.outputs.exitcode != '1'
+        working-directory: live/edge
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/plan-fingerprint.sh" plan edge "$EXIT_CODE"
+        env:
+          EXIT_CODE: ${{ steps.plan.outputs.exitcode }}
+          HIDE_ADDRESSES: 'true'
+          PLAN_TITLE: 'Unapplied config: live/edge — counts, fingerprint and changed resource types only (the plan carries private SSH targets)'
+          FP_HMAC_KEY: ${{ secrets.SSH_INFRA_TARGETS }}
+          FP_JSON: ${{ runner.temp }}/fp-edge.json
+          ARM_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID_READ }}
+          ARM_TENANT_ID:       ${{ vars.ENTRA_TENANT_ID }}
+          ARM_USE_OIDC:        'true'
 
       # ── identity: same two passes, through the owner kit, output FILE ONLY ──
       # The kit builds every required TF_VAR_* from read-only az lookups, then runs
@@ -362,14 +412,18 @@ jobs:
                 *) echo "- Unapplied config: :warning: plan errored (exit $plan)" ;;
               esac
               if [ "$refresh" = "2" ] || [ "$plan" = "2" ]; then
-                echo ""
-                echo "<details><summary>plan output</summary>"
-                echo ""
-                echo '```'
-                tail -c 8000 plan.txt 2>/dev/null || true
-                echo '```'
-                echo ""
-                echo "</details>"
+                # edge: NO plan text, ever. Its plan carries the private SSH target map; the
+                # summary step above already published counts, fingerprint and types.
+                if [ "$stack" != "edge" ]; then
+                  echo ""
+                  echo "<details><summary>plan output</summary>"
+                  echo ""
+                  echo '```'
+                  tail -c 8000 plan.txt 2>/dev/null || true
+                  echo '```'
+                  echo ""
+                  echo "</details>"
+                fi
               fi
             fi
           } >> "$GITHUB_STEP_SUMMARY"
