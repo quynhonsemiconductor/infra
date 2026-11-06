@@ -95,24 +95,25 @@ resource "cloudflare_zero_trust_access_ai_controls_mcp_portal" "qnsc" {
       server_id = s.id
       on_behalf = true
     }],
-    # opshub-dev and kb-dev (mcp_opshub_dev.tf, mcp_kb_dev.tf): DEV only, 2026-11-06.
-    [for s in cloudflare_zero_trust_access_ai_controls_mcp_server.opshub_dev : {
-      server_id = s.id
-      on_behalf = true
-    }],
-    [for s in cloudflare_zero_trust_access_ai_controls_mcp_server.kb_dev : {
-      server_id = s.id
-      on_behalf = true
-    }],
   )
 
-  # NO lifecycle { ignore_changes = [servers] } in THIS PR on purpose (removed
-  # 2026-11-06): the provider fills servers[].updated_tools after each sync and
-  # sends null on PUT, so any membership change is silently skipped while the
-  # line is present. Removing it is what lets opshub-dev and kb-dev join. The
-  # PUT with the full server list is exactly what this apply needs; restore the
-  # block in a follow-up once the membership is live and no server changes are
-  # pending (same workaround as rova_dev, mcp_portal.tf).
+  # PROVIDER BUG, still present in 5.28.1 (latest release, 2026-10-20; nothing in
+  # 5.29+ exists to fix it): Cloudflare fills servers[].updated_tools after each
+  # sync, the config never sets it, and the PUT sends `updated_tools: null`, which
+  # the API refuses (400 "Expected array, received null", infra-apply run
+  # 41639588672). Removing this line does NOT make a membership change apply: the
+  # next plan PUTs the FULL list and either 400s or re-plans every night.
+  #
+  # So Terraform owns the per-server Access apps and server REGISTRATIONS
+  # (mcp_opshub_dev.tf, mcp_kb_dev.tf), and PORTAL MEMBERSHIP is a documented
+  # one-time owner step in the dashboard — the same exception rova-dev and
+  # rova-prod live under. Add `opshub-dev` and `kb-dev` to portal `qnsc` there
+  # with "Require user auth" ON (on_behalf = true), and re-check on every provider
+  # upgrade. When a provider release fixes ModifyPlan for servers[], put the two
+  # entries in this list and delete this block in the same PR.
+  lifecycle {
+    ignore_changes = [servers]
+  }
 }
 
 # Portal login policy (owner decision 2026-10-24): company Entra identity,
