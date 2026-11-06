@@ -423,6 +423,9 @@ owner exports the live shape first and the plan is a hard go/no-go.
 
 4. After apply: record `signin_app_client_ids`; rotate/land client secrets
    with `scripts/rotate-signin-secret.sh` (≤ 6 months, into the vault).
+   KB Dev's cluster credential is split from the laptop one with
+   `docs/runbooks/kb-dev-signin-secret.md` (one app, two credentials, same
+   ESO key).
 
 ## Proxmox VE + PBS login (`proxmox.tf`): app "QNSC Proxmox", plan, secret
 
