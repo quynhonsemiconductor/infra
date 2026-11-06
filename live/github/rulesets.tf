@@ -404,57 +404,6 @@ locals {
       rules   = ["deletion", "update"]
     }
 
-    # ── mcp-tools ───────────────────────────────────────────────────
-    "mcp-tools/main-protection" = {
-      repo    = "mcp-tools"
-      id      = 22875978
-      name    = "main-protection"
-      target  = "branch"
-      include = ["~DEFAULT_BRANCH"]
-      bypass  = [{ id = local.team_merge_bypass, type = "Team", mode = "pull_request" }]
-      rules   = ["deletion", "non_fast_forward"]
-      pull_request = {
-        approvals          = 1
-        dismiss_stale      = true
-        code_owner_review  = true
-        last_push_approval = true
-        thread_resolution  = true
-        merge_methods      = ["squash"]
-      }
-      status_checks = {
-        strict                   = true
-        do_not_enforce_on_create = true
-        checks = [
-          { context = "typecheck" },
-          { context = "lint" },
-          { context = "PR title (conventional commits)" },
-          { context = "Analyze (javascript-typescript)" },
-          { context = "test" },
-          { context = "build" },
-          { context = "security / Security scans (Gitleaks, osv-scanner, Semgrep)", integration_id = local.app_github_actions_id },
-          { context = "actions-security / Workflow security (actionlint, zizmor)", integration_id = local.app_github_actions_id },
-        ]
-      }
-    }
-    "mcp-tools/tag-creation-release-only" = {
-      repo    = "mcp-tools"
-      id      = 22876000
-      name    = "tag-creation-release-only"
-      target  = "tag"
-      include = ["refs/tags/v*"]
-      bypass  = [{ id = local.app_qnsc_automation, type = "Integration", mode = "always" }, { id = local.team_merge_bypass, type = "Team", mode = "always" }]
-      rules   = ["creation"]
-    }
-    "mcp-tools/tag-protection" = {
-      repo    = "mcp-tools"
-      id      = 22875998
-      name    = "tag-protection"
-      target  = "tag"
-      include = ["~ALL"]
-      bypass  = [{ id = local.team_merge_bypass, type = "Team", mode = "always" }]
-      rules   = ["deletion", "update"]
-    }
-
     # ── opc ─────────────────────────────────────────────────────────
     # Created 2026-11-06 (no `id`): the repo had no ruleset and no branch
     # protection. NO required status checks yet: opc has no workflow files, and
@@ -930,9 +879,15 @@ resource "github_repository_ruleset" "this" {
 
   # A ruleset deleted by a typo in this file would drop branch protection on
   # a live repo. Removing one is a deliberate two-step: lift this, apply.
-  lifecycle {
-    prevent_destroy = true
-  }
+  #
+  # LIFTED 2026-11-06 for the mcp-tools retirement: the apply destroys the three
+  # mcp-tools rulesets while the repo is still writable (GitHub makes an archived
+  # repository read-only, so a later delete could never succeed). RESTORE THIS
+  # GUARD in a follow-up PR as soon as `apply-github` has run for this change;
+  # until then, a typo that removes a map entry would destroy that live ruleset.
+  # lifecycle {
+  #   prevent_destroy = true
+  # }
 }
 
 # Imports: the live rulesets are adopted, never recreated. `repository:id` is the
