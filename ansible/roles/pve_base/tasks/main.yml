@@ -184,11 +184,10 @@
     - name: The shared admin email list is usable
       ansible.builtin.assert:
         that:
-          - pve_base_entra_admin_emails | map('lower') | list == pve_base_entra_admin_emails
           - pve_base_entra_admin_emails | select('match', '^[^@\s]+@[^@\s]+$') | list | length == pve_base_entra_admin_emails | length
           - pve_base_entra_admin_emails | unique | length == pve_base_entra_admin_emails | length
         fail_msg: >-
-          proxmox_entra_admin_emails (or the legacy pbs_entra_admin_emails) must hold exact, LOWERCASE
+          proxmox_entra_admin_emails (or the legacy pbs_entra_admin_emails) must hold exact
           Entra email strings with no duplicates. Leave it unset for a PVE-only inventory.
         quiet: true
       when: pve_base_entra_manage_admins | bool
@@ -455,7 +454,7 @@
           when:
             - ansible_check_mode
             - (pve_base_entra_users.stdout | from_json
-               | selectattr('userid', 'equalto', item ~ '@' ~ pve_base_entra_realm) | list | length) == 0
+               | selectattr('userid', 'search', '(?i)^' ~ (item | regex_escape) ~ '@' ~ pve_base_entra_realm ~ '$') | list | length) == 0
 
         - name: Create the Entra admin users (OpenID only, no password)
           ansible.builtin.command:
@@ -471,7 +470,7 @@
           when:
             - not ansible_check_mode
             - (pve_base_entra_users.stdout | from_json
-               | selectattr('userid', 'equalto', item ~ '@' ~ pve_base_entra_realm) | list | length) == 0
+               | selectattr('userid', 'search', '(?i)^' ~ (item | regex_escape) ~ '@' ~ pve_base_entra_realm ~ '$') | list | length) == 0
 
         # The group claim is NOT used: Entra's userinfo response (PVE's claim source by default) has no
         # groups. Membership is role-managed; groups-overwrite=0 keeps a login from wiping it.
@@ -483,7 +482,7 @@
           when:
             - ansible_check_mode
             - pve_base_entra_group_id not in ((pve_base_entra_users.stdout | from_json
-                 | selectattr('userid', 'equalto', item ~ '@' ~ pve_base_entra_realm)
+                 | selectattr('userid', 'search', '(?i)^' ~ (item | regex_escape) ~ '@' ~ pve_base_entra_realm ~ '$')
                  | list | default([{}], true) | first).groups | default('')
                  | split(',') | map('trim') | list)
 
@@ -493,11 +492,13 @@
               - pveum
               - user
               - modify
-              - "{{ item }}@{{ pve_base_entra_realm }}"
+              - "{{ ((pve_base_entra_users.stdout | from_json
+                     | selectattr('userid', 'search', '(?i)^' ~ (item | regex_escape) ~ '@' ~ pve_base_entra_realm ~ '$')
+                     | list | default([{}], true) | first).userid | default(item ~ '@' ~ pve_base_entra_realm)) }}"
               - --groups
               - >-
                 {{ (((pve_base_entra_users.stdout | from_json
-                     | selectattr('userid', 'equalto', item ~ '@' ~ pve_base_entra_realm)
+                     | selectattr('userid', 'search', '(?i)^' ~ (item | regex_escape) ~ '@' ~ pve_base_entra_realm ~ '$')
                      | list | default([{}], true) | first).groups | default('')
                      | split(',') | map('trim') | reject('equalto', '') | list)
                     + [pve_base_entra_group_id]) | unique | join(',') }}
@@ -506,7 +507,7 @@
           when:
             - not ansible_check_mode
             - pve_base_entra_group_id not in ((pve_base_entra_users.stdout | from_json
-                 | selectattr('userid', 'equalto', item ~ '@' ~ pve_base_entra_realm)
+                 | selectattr('userid', 'search', '(?i)^' ~ (item | regex_escape) ~ '@' ~ pve_base_entra_realm ~ '$')
                  | list | default([{}], true) | first).groups | default('')
                  | split(',') | map('trim') | list)
 

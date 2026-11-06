@@ -122,7 +122,7 @@ and only the user pre-creation/membership/offboarding tasks are skipped. An **ex
 the admin group (that is how "remove all admins" is expressed). A leftover legacy
 `pbs_entra_admin_emails` is only a PVE fallback. The PBS role accepts the CANONICAL key only: a
 legacy-only list (empty or not) **fails** with a message to rename it. When the list is present it must
-hold exact, lowercase Entra email strings with no duplicates.
+hold the exact Entra email strings with no duplicates (casing preserved; comparisons are case-insensitive).
 
 **Offboarding, per system.** PVE removes the account from `<oid>-entra` (the PVE user object stays). PBS revokes its `Admin` ACL on `/`
 (`proxmox-backup-manager acl update / Admin --auth-id <id> --delete`); a `--check` run prints

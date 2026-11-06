@@ -113,13 +113,12 @@
           - pbs_entra_client_id is match('^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
           - pbs_entra_realm is match('^[a-z][a-z0-9]*$')
           - pbs_entra_manage_admins | bool
-          - pbs_entra_admin_emails_effective | map('lower') | list == pbs_entra_admin_emails_effective
           - pbs_entra_admin_emails_effective | select('match', '^[^@\s]+@[^@\s]+$') | list | length == pbs_entra_admin_emails_effective | length
         fail_msg: >-
           Set proxmox_oidc_issuer_url and proxmox_oidc_client_id plus proxmox_entra_admin_emails in the
           LOCAL inventory (ansible/README.md, "Entra OpenID login"), or set pbs_entra_enabled=false.
-          The canonical list is REQUIRED and lowercase; an explicit [] is allowed. A legacy-only
-          pbs_entra_admin_emails (including []) is NOT accepted — rename it to proxmox_entra_admin_emails.
+          The canonical list is REQUIRED (exact Entra casing); an explicit [] is allowed. A legacy-only
+          pbs_entra_admin_emails (empty or not) is NOT accepted — rename it to proxmox_entra_admin_emails.
         quiet: true
 
     # Every realm carries its client key in this output: hide it.
@@ -282,7 +281,7 @@
       when:
         - ansible_check_mode
         - (pbs_entra_users.stdout | from_json
-           | selectattr('userid', 'equalto', item ~ '@' ~ pbs_entra_realm) | list | length) == 0
+           | selectattr('userid', 'search', '(?i)^' ~ (item | regex_escape) ~ '@' ~ pbs_entra_realm ~ '$') | list | length) == 0
 
     - name: Create the Entra admin users (no password, OpenID only)
       ansible.builtin.command:
@@ -296,7 +295,7 @@
       when:
         - not ansible_check_mode
         - (pbs_entra_users.stdout | from_json
-           | selectattr('userid', 'equalto', item ~ '@' ~ pbs_entra_realm) | list | length) == 0
+           | selectattr('userid', 'search', '(?i)^' ~ (item | regex_escape) ~ '@' ~ pbs_entra_realm ~ '$') | list | length) == 0
 
     - name: Read the PBS ACLs
       ansible.builtin.command: proxmox-backup-manager acl list --output-format json
@@ -313,7 +312,7 @@
         - ansible_check_mode
         - (pbs_entra_acls.stdout | from_json
            | selectattr('path', 'equalto', '/')
-           | selectattr('ugid', 'equalto', item ~ '@' ~ pbs_entra_realm)
+           | selectattr('ugid', 'search', '(?i)^' ~ (item | regex_escape) ~ '@' ~ pbs_entra_realm ~ '$')
            | selectattr('roleid', 'equalto', 'Admin') | list | length) == 0
 
     - name: Grant Admin on / to each Entra admin
@@ -325,14 +324,16 @@
           - /
           - Admin
           - --auth-id
-          - "{{ item }}@{{ pbs_entra_realm }}"
+          - "{{ ((pbs_entra_users.stdout | from_json
+                 | selectattr('userid', 'search', '(?i)^' ~ (item | regex_escape) ~ '@' ~ pbs_entra_realm ~ '$')
+                 | list | default([{}], true) | first).userid | default(item ~ '@' ~ pbs_entra_realm)) }}"
       changed_when: true
       loop: "{{ pbs_entra_admin_emails_effective }}"
       when:
         - not ansible_check_mode
         - (pbs_entra_acls.stdout | from_json
            | selectattr('path', 'equalto', '/')
-           | selectattr('ugid', 'equalto', item ~ '@' ~ pbs_entra_realm)
+           | selectattr('ugid', 'search', '(?i)^' ~ (item | regex_escape) ~ '@' ~ pbs_entra_realm ~ '$')
            | selectattr('roleid', 'equalto', 'Admin') | list | length) == 0
 
     # Prune: a realm user who is no longer in the effective list loses the
