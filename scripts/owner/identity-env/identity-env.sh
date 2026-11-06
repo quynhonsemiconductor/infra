@@ -22,6 +22,10 @@
 #   IDENTITY_DEV_APP_EXTRA_OWNERS  extra OWNERS for DEV sign-in apps only, as comma-separated
 #                                  app=upn pairs (e.g. opshub_dev=dev@example.com). Each UPN must be
 #                                  a Member user. Unset = no extras (empty map, today's behaviour).
+#   IDENTITY_DEV_APP_EXTRA_ADMINS  extra holders of the OpsHub Dev `admin` APP ROLE, as
+#                                  opshub_dev=upn[,opshub_dev=upn] (the walkthrough testers). Member users
+#                                  only; their LIVE assignments are read so the grants are imported, not
+#                                  re-created. Unset = no extras (empty map).
 #   IDENTITY_STACK_DIR (live/identity, relative to the repo root)
 set -euo pipefail
 
@@ -76,7 +80,8 @@ put TF_VAR_break_glass_upn_domain "$(jq -r '[.value[0].verifiedDomains[]|select(
 
 grp_id() { local id; id=$(az_json "group $1" ad group show --group "$1" | jq -r '.id // empty'); need_guid "group $1" "$id"; printf '%s' "$id"; }
 ADMINS_GROUP=$(grp_id grp-qnsc-platform-admins)
-put TF_VAR_platform_admins_object_id "$ADMINS_GROUP"
+put TF_VAR_grp_platform_admins_object_id "$ADMINS_GROUP"
+put TF_VAR_grp_developers_object_id "$(grp_id grp-qnsc-developers)"
 put TF_VAR_grp_dev_users_object_id "$(grp_id grp-qnsc-dev-users)"
 
 # --- people --------------------------------------------------------------------------------------
@@ -400,6 +405,54 @@ put TF_VAR_cf_access_object_ids "$(jq -nc \
   --arg s "$(<"$APPS_DIR/cfaccess-cf_access.sp")" \
   --arg g "$(jq -r '.id // empty' <<<"$CF_GRANT")" \
   '{application:$a, service_principal:$s, grant:$g}')"
+# --- extra OpsHub Dev admin holders (dev_extra_admins.tf) --------------------------------------
+# Hand-assigned testers hold the OpsHub Dev `admin` app role without being platform admins. The
+# stack adopts those assignments; the owner lists the people as app=upn, the kit resolves them to
+# Member object ids and reads the LIVE appRoleAssignedTo assignments so the existing grants are
+# IMPORTED instead of re-created (a duplicate create is a 409 at apply). Unset = no extras.
+unset TF_VAR_dev_app_extra_admin_object_ids TF_VAR_dev_app_extra_admin_assignment_ids
+EXTRA_ADMINS='{}'; EXTRA_ADMIN_ASSIGN='{}'
+if [[ -n "${IDENTITY_DEV_APP_EXTRA_ADMINS:-}" ]]; then
+  ADMIN_ROLE=$(jq -r '.admin // empty' <<<"$ROLES")
+  need_guid "OpsHub Dev admin role id" "$ADMIN_ROLE"
+  while IFS= read -r pair; do
+    pair="${pair//[[:space:]]/}"
+    [[ -n "$pair" ]] || continue
+    [[ "$pair" == *=* ]] || die "IDENTITY_DEV_APP_EXTRA_ADMINS: expected app=upn"
+    key="${pair%%=*}"; upn="${pair#*=}"
+    [[ "$key" == "opshub_dev" ]] || die "IDENTITY_DEV_APP_EXTRA_ADMINS: $key is not a dev app with admin extras"
+    [[ -n "$upn" ]] || die "IDENTITY_DEV_APP_EXTRA_ADMINS: $key has an empty UPN"
+    enc=$(jq -rn --arg v "$upn" '$v|@uri')
+    extra=$(az_json "dev-extra-admin" rest --method get \
+      --url "https://graph.microsoft.com/v1.0/users/$enc?\$select=id,userType")
+    [[ "$(jq -r '.userType // empty' <<<"$extra")" == "Member" ]] \
+      || die "IDENTITY_DEV_APP_EXTRA_ADMINS: $key has a guest or non-Member user"
+    uid=$(jq -r '.id // empty' <<<"$extra"); need_guid "dev extra admin $key" "$uid"
+    EXTRA_ADMINS=$(jq -c --arg k "$key" --arg v "$uid" '.[$k] = ((.[$k] // []) + [$v] | unique)' <<<"$EXTRA_ADMINS")
+  done < <(tr ',' '\n' <<<"$IDENTITY_DEV_APP_EXTRA_ADMINS")
+  # appRoleAssignedTo = who holds a role ON this SP (the opposite direction of appRoleAssignments).
+  # Page through @odata.nextLink: a tenant with many assignments returns a partial first page, and
+  # a missed assignment would plan a duplicate create (409). Same loop as members_json above.
+  ADMIN_SP=$(<"$APPS_DIR/signin-opshub_dev.sp")
+  admin_assignments() {
+    local url="https://graph.microsoft.com/v1.0/servicePrincipals/$ADMIN_SP/appRoleAssignedTo"
+    local out='[]' page
+    while [[ -n "$url" ]]; do
+      page=$(az_json "OpsHub Dev admin assignments" rest --method get --url "$url")
+      out=$(jq -c --argjson p "$page" '. + ($p.value // [])' <<<"$out")
+      url=$(jq -r '.["@odata.nextLink"] // empty' <<<"$page")
+    done
+    printf '%s' "$out"
+  }
+  ASSIGNED=$(admin_assignments)
+  while IFS=$'\t' read -r principal aid; do
+    [[ -n "$principal" ]] || continue
+    jq -e --arg v "$principal" '.["opshub_dev"] // [] | index($v)' <<<"$EXTRA_ADMINS" >/dev/null 2>&1 || continue
+    EXTRA_ADMIN_ASSIGN=$(jq -c --arg k "opshub_dev/$principal" --arg v "$aid" '.[$k]=$v' <<<"$EXTRA_ADMIN_ASSIGN")
+  done < <(jq -r --arg r "$ADMIN_ROLE" '.[] | select(.appRoleId == $r) | [.principalId, .id] | @tsv' <<<"$ASSIGNED")
+  put TF_VAR_dev_app_extra_admin_object_ids "$EXTRA_ADMINS"
+  [[ "$EXTRA_ADMIN_ASSIGN" == "{}" ]] || put TF_VAR_dev_app_extra_admin_assignment_ids "$EXTRA_ADMIN_ASSIGN"
+fi
 
 # --- ESO certificates: only while the stack still declares the variable (removed by the #254 PR) -------------
 # The PUBLIC certificate live on each ESO app, from Graph like the mail certs: a file on disk can be stale (rotation)
