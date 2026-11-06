@@ -62,21 +62,29 @@ scripts/owner/backfill-kv-expiry.sh --expires 2027-06-30 --apply      # write
 
 ## Pruning the unreferenced secrets (2026-11-06 audit)
 
-Three secrets had no consumer left:
+TWO secrets had no consumer left:
 
 | Vault | Secret | Why it is safe |
 |---|---|---|
 | `kv-qnsc-dev` | `kb-dev-app` | legacy JSON bundle; the chart dropped `secrets.bundle` when kb moved to per-value env |
 | `kv-qnsc-prod` | `rova-prod-app` | same legacy bundle shape |
-| `kv-qnsc-admin` | `platform-cnpg-ca-dev` | the dev CNPG CA is hand-applied into `data-dev`; no deployment reads the vault copy |
 
-`scripts/owner/prune-kv-secrets.sh` is the owner's tool. It greps BOTH trees (this repo and the
-gitops checkout) for each name and classifies every hit: a code/config reference BLOCKS all
-deletion; a documentation, test-fixture or comment mention does not. Dry run by default:
+**`kv-qnsc-admin/platform-cnpg-ca-dev` is NOT a candidate.** Its name is CONSTRUCTED in gitops
+(`platform/bootstrap/cluster.sh`: `platform-cnpg-ca-$ENV`) and `platform/bootstrap/secrets.sh`
+mints a NEW CA whenever the secret is absent — deleting it would silently replace the dev CA and
+break every existing dev CNPG cluster's trust chain. The kill switch mutates; keep the secret.
+
+`scripts/owner/prune-kv-secrets.sh` is the owner's tool. It greps the COMMITTED `origin/main`
+tree of this repo and of gitops (git fetch + git archive, never the working checkout) and, with
+`--with-products` or `--apply`, fresh shallow clones of rova, opshub, qnsc-kb-backend and
+qnsc-kb-frontend. Every hit is classified: a code/config reference BLOCKS all deletion; a
+documentation, test-fixture or comment mention does not. ANY reference stops the run with nothing
+deleted — including when every candidate is referenced. Dry run by default:
 
 ```sh
-scripts/owner/prune-kv-secrets.sh --gitops ../gitops          # proof + print the delete commands
-scripts/owner/prune-kv-secrets.sh --gitops ../gitops --apply  # soft-delete the proven ones
+scripts/owner/prune-kv-secrets.sh --gitops ../gitops                      # proof (infra + gitops)
+scripts/owner/prune-kv-secrets.sh --gitops ../gitops --with-products      # + the four product repos
+scripts/owner/prune-kv-secrets.sh --gitops ../gitops --apply              # soft-delete the proven ones
 ```
 
 The delete is a SOFT delete — Key Vault keeps the secret for 90 days and it can be recovered
