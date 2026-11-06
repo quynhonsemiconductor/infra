@@ -1,0 +1,18 @@
+---
+# The one expression that turns `proxmox-backup-manager versions --output-format json` into a version,
+# shared by the role and the offline test (tests/pbs_version.yml), so the test cannot drift from the
+# role.
+#
+# Shape on the PVE host (PBS 4.2.9-1, running 4.2.8): the entry is keyed `Package`, not `name`, and the
+# running version is only in ExtraInfo:
+#   {"Package":"proxmox-backup-server","ExtraInfo":"running version: 4.2.8","Version":"4.2.9-1"}
+#
+# `regex_findall(...) | first | default('0', true)`: the capture list is empty when the text does not
+# match, and `first | default` turns that into '0'. `regex_search(..., '\1')` returns the RAW INPUT when a
+# pattern does not fully match (SA-tested: "running version 4.2.8", no colon, came back unchanged) — the
+# assert would then compare garbage and the failure message would show it as a "version".
+pbs_version_parsed: >-
+  {{ (pbs_versions_raw.stdout | from_json
+      | selectattr('Package', 'equalto', 'proxmox-backup-server')
+      | map(attribute='ExtraInfo') | list | first | default('', true))
+     | regex_findall('running version:\s*([0-9.]+)') | first | default('0', true) }}

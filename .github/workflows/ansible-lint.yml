@@ -57,6 +57,12 @@ jobs:
         run: >-
           ansible-playbook -i localhost, -c local
           tests/pve_base_entra_membership.yml tests/pve_base_entra_gate.yml tests/pbs_entra_gate.yml
+      # The PBS version read, against the EXACT `versions --output-format json` the PVE host returned: the entry
+      # is keyed `Package` and the running version lives in ExtraInfo. The role and this test include the
+      # same vars/version.yml.
+      - name: PBS version expression (offline test)
+        run: ansible-playbook -i localhost, -c local tests/pbs_version.yml
+
       # A tag must run on its own. `--tags pbs_offsite` died on "pbs_cli is undefined" because the
       # stat task registering it was tagged [pbs_install] only (owner run 2026-11-06). The role is
       # included normally here; the tag filter is on the command line, exactly as the owner runs it.
