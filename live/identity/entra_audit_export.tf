@@ -34,8 +34,8 @@ locals {
 }
 
 # The container the export workflow writes into. Private; no SAS is issued.
-# checkov:skip=CKV2_AZURE_21:the account's own diagnostic destination is Azure Monitor; blob read logging into the same account would loop
 resource "azurerm_storage_container" "entra_audit" {
+  # checkov:skip=CKV2_AZURE_21:the account's own diagnostic destination is Azure Monitor; blob read logging into the same account would loop
   name                  = local.entra_audit_container
   storage_account_id    = azurerm_storage_account.kv_audit.id
   container_access_type = "private"
@@ -81,8 +81,8 @@ resource "azuread_service_principal" "entra_audit_export" {
 
 # Same immutable subject form as the CI identities (ci_identities.tf): schedule
 # and dispatch runs on main only. A PR never gets this token.
-# checkov:skip=CKV_AZURE_249:the subject is the immutable numeric form (repo:quynhonsemiconductor@297362956/infra@1282170347) pinned to ref:refs/heads/main through local.infra_subject_base; the check cannot resolve that interpolation, and a literal here would drift from the two CI identities.
 resource "azuread_application_federated_identity_credential" "entra_audit_export_main" {
+  # checkov:skip=CKV_AZURE_249:the subject is the immutable numeric form (repo:quynhonsemiconductor@297362956/infra@1282170347) pinned to ref:refs/heads/main through local.infra_subject_base; a literal here would drift from the two CI identities.
   application_id = azuread_application.entra_audit_export.id
   display_name   = "infra-entra-audit-export-main"
   description    = "nightly Entra audit export, schedules and manual dispatch on main"
