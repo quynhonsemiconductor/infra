@@ -1,0 +1,17 @@
+# Renders roles/k3s_server/templates/config.yaml.j2 with the Entra block on and asserts every
+# kube-apiserver-arg is a STRING. Regression for the 2026-11-07 outage: `oidc-username-prefix=oidc:`
+# rendered unquoted became a YAML mapping and k3s refused to start (`unknown flag: --[{...`).
+- hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../roles/k3s_server/defaults/main.yml
+    - fixtures/k3s_server_entra_on.yml   # after the defaults: later vars_files win
+  tasks:
+    - name: Render and parse
+      ansible.builtin.set_fact:
+        rendered: "{{ lookup('ansible.builtin.template', '../roles/k3s_server/templates/config.yaml.j2') | from_yaml }}"
+    - name: Every apiserver arg is a string and the prefix survives intact
+      ansible.builtin.assert:
+        that:
+          - rendered['kube-apiserver-arg'] | reject('string') | list | length == 0
+          - "'oidc-username-prefix=oidc:' in rendered['kube-apiserver-arg']"
