@@ -789,6 +789,7 @@
         proxmox-backup-manager sync-job create {{ pbs_offsite_sync_job_id }}
         --store {{ pbs_offsite_store_name }} --remote-store {{ pbs_datastore_name }}
         --schedule '{{ pbs_offsite_sync_schedule }}' --encrypted-only true
+        --resync-corrupt {{ pbs_offsite_sync_resync_corrupt }}
       when: (pbs_sync_jobs.stdout | from_json | selectattr('id', 'equalto', pbs_offsite_sync_job_id) | list | length) == 0
       changed_when: true
 
@@ -797,12 +798,14 @@
         proxmox-backup-manager sync-job update {{ pbs_offsite_sync_job_id }}
         --store {{ pbs_offsite_store_name }} --remote-store {{ pbs_datastore_name }}
         --schedule '{{ pbs_offsite_sync_schedule }}' --encrypted-only true
+        --resync-corrupt {{ pbs_offsite_sync_resync_corrupt }}
       vars:
         pbs_sync_current: "{{ pbs_sync_jobs.stdout | from_json | selectattr('id', 'equalto', pbs_offsite_sync_job_id) | list | first | default({}) }}"
       when:
         - pbs_sync_current | length > 0
         - pbs_sync_current['schedule'] | default('') != pbs_offsite_sync_schedule or
-          not (pbs_sync_current['encrypted-only'] | default(false) | bool)
+          not (pbs_sync_current['encrypted-only'] | default(false) | bool) or
+          (pbs_sync_current['resync-corrupt'] | default(false) | bool) != (pbs_offsite_sync_resync_corrupt | bool)
       changed_when: true
 
     # A weekly verify of the OFF-SITE store: the chunks come back over the WAN through the cache, which is the
