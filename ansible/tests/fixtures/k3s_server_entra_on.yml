@@ -1,0 +1,10 @@
+---
+# Entra + ESO issuer ON, test values (no site data). Loaded after the role defaults.
+k3s_server_oidc_issuer_enabled: true
+k3s_server_oidc_issuer: "https://issuer.example/k3s"
+k3s_server_oidc_issuer_old: "https://kubernetes.default.svc.cluster.local"
+k3s_server_entra_auth_enabled: true
+k3s_server_entra_tenant_id: "00000000-0000-0000-0000-000000000000"
+k3s_server_entra_client_id: "11111111-1111-1111-1111-111111111111"
+k3s_server_entra_username_claim: oid
+k3s_server_entra_username_prefix: "oidc:"
