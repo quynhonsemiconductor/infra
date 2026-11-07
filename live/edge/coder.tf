@@ -105,13 +105,25 @@ locals {
 # The id format is `<account_id>/<hostname_route_id>` — the provider's ImportState parses exactly two
 # path segments (internal/importpath.ParseImportID with "<account_id>/<hostname_route_id>"); a bare
 # route id is rejected.
+#
+# The resource address is `...hostname_route.coder_route` rather than `.coder` for this reason only;
+# the key stays `coder.qnsc.vn` so the import lands on the instance the old object used.
+# The stale object sits at the OLD address (`...hostname_route.coder`) and still names the deleted route.
+# An import block cannot rescue it: OpenTofu decides against the pre-refresh state, sees the address
+# occupied, skips the import, and the refresh then drops the dead object — the plan comes out as a
+# plain create (which the API rejects with 409). So the empty address is retired with `removed` (drop
+# from state, never destroy — the object is already gone) and the live route is adopted at a NEW address.
+removed {
+  from = cloudflare_zero_trust_network_hostname_route.coder
+}
+
 import {
   for_each = var.coder_hostname_route_id == "" ? toset([]) : local.coder_private_hostnames
-  to       = cloudflare_zero_trust_network_hostname_route.coder[each.key]
+  to       = cloudflare_zero_trust_network_hostname_route.coder_route[each.key]
   id       = "${var.cloudflare_account_id}/${var.coder_hostname_route_id}"
 }
 
-resource "cloudflare_zero_trust_network_hostname_route" "coder" {
+resource "cloudflare_zero_trust_network_hostname_route" "coder_route" {
   for_each = local.coder_private_hostnames
 
   account_id = var.cloudflare_account_id
