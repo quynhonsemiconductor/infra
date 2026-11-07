@@ -54,8 +54,20 @@ locals {
   ])
 
   # Domains the owner approved, independent of the catalogue. Cloudflare matches a DNS domain
-  # selector on the domain and its subdomains.
-  approved_app_domains = ["claude.ai", "chatgpt.com", "copilot.microsoft.com", "onedrive.com", "onedrive.live.com", "sharepoint.com"]
+  # selector on the domain and its subdomains. One line per approved app, signed supporting
+  # domains included (login/CDN/redirect hosts belong to the same service or the flow breaks).
+  approved_app_domains = [
+    # Claude (Anthropic): claude.ai + its sign-in, marketing and API hosts.
+    "claude.ai", "claude.com", "anthropic.com",
+    # ChatGPT (OpenAI): chat, auth and the static/user-content CDNs.
+    "chatgpt.com", "openai.com", "oaistatic.com", "oaiusercontent.com",
+    # Microsoft Copilot: the assistant and the M365 cloud redirect hosts.
+    "copilot.microsoft.com", "copilot.cloud.microsoft", "m365.cloud.microsoft",
+    # OneDrive: web, personal share links (1drv.ms).
+    "onedrive.com", "onedrive.live.com", "1drv.ms",
+    # SharePoint: tenant hosts and the online office surface.
+    "sharepoint.com", "sharepointonline.com",
+  ]
 
   security_dns_traffic = "any(dns.security_category[*] in {80 83 117 131 153 176}) or any(dns.content_category[*] in {169 177})"
   content_dns_traffic  = "any(dns.content_category[*] in {2 8 17})"
