@@ -62,6 +62,8 @@ jobs:
       # same vars/version.yml.
       - name: PBS version expression (offline test)
         run: ansible-playbook -i localhost, -c local tests/pbs_version.yml
+      - name: k3s server config renders every apiserver arg as a string
+        run: ansible-playbook -i localhost, -c local tests/k3s_server_config_yaml.yml
 
       # A tag must run on its own. `--tags pbs_offsite` died on "pbs_cli is undefined" because the
       # stat task registering it was tagged [pbs_install] only (owner run 2026-11-06). The role is

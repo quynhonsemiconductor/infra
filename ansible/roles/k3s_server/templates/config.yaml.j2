@@ -14,10 +14,13 @@ kube-apiserver-arg:
   # kubectl through Entra (role defaults explain why this is NOT the block above): the API server
   # verifies the ID token kubelogin obtained; the groups claim carries Entra group object ids, which
   # the RBAC bindings below map to cluster roles.
-  - oidc-issuer-url=https://login.microsoftonline.com/{{ k3s_server_entra_tenant_id }}/v2.0
-  - oidc-client-id={{ k3s_server_entra_client_id }}
-  - oidc-username-claim={{ k3s_server_entra_username_claim }}
-  - oidc-username-prefix={{ k3s_server_entra_username_prefix }}
+  - {{ ('oidc-issuer-url=https://login.microsoftonline.com/' ~ k3s_server_entra_tenant_id ~ '/v2.0') | to_json }}
+  - {{ ('oidc-client-id=' ~ k3s_server_entra_client_id) | to_json }}
+  - {{ ('oidc-username-claim=' ~ k3s_server_entra_username_claim) | to_json }}
+  # QUOTED (2026-11-07 outage): `oidc-username-prefix=oidc:` ends in `: `-less colon at end of line, which
+  # YAML reads as a MAPPING key, so k3s got `--[{oidc-username-prefix=oidc: null}]` and refused to start.
+  # Every user-supplied value is rendered as a JSON string so no value can change the YAML shape.
+  - {{ ('oidc-username-prefix=' ~ k3s_server_entra_username_prefix) | to_json }}
   - oidc-groups-claim=groups
   - oidc-signing-algs=RS256
 {% endif %}

@@ -58,6 +58,21 @@ resource "grafana_dashboard" "products_red" {
       ]
     }
 
+    # Product switcher (dashboards-gaps item 4, owner 2026-11-07): one click
+    # per product, keeping the time range. The variable here is multi+All, so
+    # the link narrows the view to that one product; the same trio sits on
+    # Product overview, MCP and Databases.
+    links = [
+      for p in ["rova", "opshub", "kb"] : {
+        title       = p
+        type        = "link"
+        icon        = "bolt"
+        targetBlank = false
+        keepTime    = true
+        url         = "/d/products-red?orgId=1&var-product=${p}"
+      }
+    ]
+
     panels = [
       {
         id          = 1
