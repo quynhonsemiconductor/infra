@@ -32,6 +32,19 @@
 # so the variables are static and the dashboard always renders; a "RED series
 # present" panel states whether the data is there.
 #
+# ── FAMILIES VERIFIED TO EXIST (round 2, at least one product) ─────────────
+#   job_runs_total{job_name=...}      rova + opshub workers (SA, 2026-11-07)
+#   queue_processed_total             rova/opshub AbstractOutboxRelay
+#                                     (`QueueMetrics.recordProcessed`)
+#   db_pool_in_use / db_pool_waiting  rova/opshub DrizzleProvider (DbPoolMetrics)
+#   v8js_memory_heap_* / nodejs_eventloop_utilization
+#                                     @opentelemetry/instrumentation-runtime-node
+#                                     is in both products' lockfiles
+#   celery_task_*                     kb ONLY, and kb has no Celery beat yet
+#                                     (kb team note, audit §3a) — the panels say
+#                                     so in their noValue text rather than
+#                                     looking broken
+#
 # ── TRACE SEARCH ───────────────────────────────────────────────────────────
 # The dashboard link opens Explore on the Tempo data source with a TraceQL
 # query for `service.name =~ "<product>.*"`. The data source uid is looked up
@@ -87,7 +100,12 @@ resource "grafana_dashboard" "product_overview" {
         type        = "link"
         icon        = "compass"
         targetBlank = true
-        url = "/explore?orgId=1&left=${urlencode(jsonencode({
+        # `urlencode()` encodes the `$` of `$product` as `%24`, and Grafana
+        # interpolates dashboard variables on the RAW link string — `%24product`
+        # is not a variable, so the link searched for a literal "$product".
+        # Encode the JSON, then put `$` back. No `${...}` appears inside the
+        # JSON, so `%7B`/`%7D` never need the same treatment here.
+        url = "/explore?orgId=1&left=${replace(urlencode(jsonencode({
           datasource = { type = "tempo", uid = data.grafana_data_source.traces.uid }
           queries = [{
             refId     = "A"
@@ -95,7 +113,7 @@ resource "grafana_dashboard" "product_overview" {
             query     = "{ resource.service.name =~ \"$product.*\" }"
           }]
           range = { from = "now-1h", to = "now" }
-        }))}"
+        })), "%24", "$")}"
       },
     ]
 
@@ -164,14 +182,14 @@ resource "grafana_dashboard" "product_overview" {
         type        = "timeseries"
         gridPos     = { h = 7, w = 8, x = 0, y = 9 }
         datasource  = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
-        fieldConfig = { defaults = { noValue = "no job series (kb: beat must run for task metrics)" } }
+        fieldConfig = { defaults = { noValue = "no job series — kb has none until Celery beat runs (kb team note)" } }
         targets = [{
           expr = join("", [
             "sum by (job, job_name) (rate(job_runs_total{job=~\"$product/.+\", deployment_environment_name=\"$env\"}[5m])) * 60",
             " or ",
             "sum by (job) (rate(celery_task_runs_total{job=~\"$product/.+\", deployment_environment_name=\"$env\"}[5m])) * 60",
           ])
-          legendFormat = "{{job_name}}"
+          legendFormat = "{{job_name}} ({{job}})"
           refId        = "A"
         }]
       },
@@ -181,14 +199,14 @@ resource "grafana_dashboard" "product_overview" {
         type        = "timeseries"
         gridPos     = { h = 7, w = 8, x = 8, y = 9 }
         datasource  = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
-        fieldConfig = { defaults = { min = 0, noValue = "none (or no job series)" } }
+        fieldConfig = { defaults = { min = 0, noValue = "none (or no job series — kb: until Celery beat runs)" } }
         targets = [{
           expr = join("", [
             "sum by (job, job_name) (rate(job_failures_total{job=~\"$product/.+\", deployment_environment_name=\"$env\"}[5m])) * 60",
             " or ",
             "sum by (job) (rate(celery_task_failures_total{job=~\"$product/.+\", deployment_environment_name=\"$env\"}[5m])) * 60",
           ])
-          legendFormat = "{{job_name}}"
+          legendFormat = "{{job_name}} ({{job}})"
           refId        = "A"
         }]
       },
@@ -198,7 +216,7 @@ resource "grafana_dashboard" "product_overview" {
         type        = "timeseries"
         gridPos     = { h = 7, w = 8, x = 16, y = 9 }
         datasource  = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
-        fieldConfig = { defaults = { noValue = "no queue series" } }
+        fieldConfig = { defaults = { noValue = "no queue series — kb: until Celery beat runs" } }
         targets = [{
           expr = join("", [
             "sum by (job, queue) (rate(queue_processed_total{job=~\"$product/.+\", deployment_environment_name=\"$env\"}[5m])) * 60",
