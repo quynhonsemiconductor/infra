@@ -137,8 +137,28 @@ moved {
 # created up front like rova's, but nothing ever populated it — opshub has no
 # dashboards of its own here. Product RED is covered by the shared
 # "Products (RED)" dashboard in dashboards.tf, so an empty per-product folder
-# is dead structure. If opshub later ships its own detailed dashboard, create
-# the folder in the same PR that fills it.
+# is dead structure.
+#
+# RE-CREATED 2026-11-07, with kb's, by the dashboards-gaps pass (item 4,
+# owner): the model is now "ONE shared templated dashboard per question in
+# QNSC/Dashboards, plus ONE folder per product for each team's own business
+# dashboards later". Shared surfaces answer the common questions; the product
+# folders are the fixed home a team's own detailed dashboards land in, so they
+# exist in IaC BEFORE the first such dashboard ships (that was the 2026-11-06
+# mistake — the folder gets created in the same PR that fills it, which means
+# the first dashboard PR carries unrelated folder churn). rova is above;
+# opshub and kb are here. A folder holding nothing is fine — it is the
+# navigation answer to "does rova only have an MCP dashboard?", not dead
+# structure this time.
+resource "grafana_folder" "opshub_dashboards" {
+  parent_folder_uid = grafana_folder.dashboards.uid
+  title             = "opshub"
+}
+
+resource "grafana_folder" "kb_dashboards" {
+  parent_folder_uid = grafana_folder.dashboards.uid
+  title             = "kb"
+}
 
 # Resolved directly, not via a dashboard template variable: a Grafana
 # dashboard template var of type "datasource" needs a populated `current`

@@ -18,12 +18,16 @@
 #        ONE probe: a single blip is 1/12 of an hour (8.3%), which would trip
 #        a fast-burn critical on one dropped request. Warning is the honest
 #        severity for that granularity.
-# kb     NO SLO YET. It has ~1 day of prod data (7d baseline 99.24%, below the
-#        99.5% objective), so an SLO now would be an SLO already breached and
-#        the burn maths would be dominated by launch noise. Add it after 30
-#        days of prod history, using the same shape as opshub.
+# kb     SAME SHAPE AS OPSHUB, added 2026-11-07 (owner go, dashboards-gaps).
+#        This replaces the earlier "wait 30 days of prod history" note: the
+#        owner explicitly asked for the kb SLO in the same pass. Like opshub,
+#        the check runs every 5 min from ONE probe, so only the slow burn
+#        (email warning) is armed — a single blip is 8.3% of the hour and
+#        would trip a fast-burn critical on one dropped request. Expect the
+#        30-day objective to read red until kb's launch-window errors age out
+#        of the window; the burn alerts still route like the others.
 #
-# COST: ~15 recording series per SLO; two SLOs, ~30 series.
+# COST: ~15 recording series per SLO; three SLOs, ~45 series.
 # =============================================================================
 
 locals {
@@ -37,6 +41,12 @@ locals {
     opshub = {
       name        = "opshub prod availability"
       job         = "opshub-prod-readyz"
+      fast_burn   = false
+      why_no_fast = "5-minute single-probe check: one blip is 8.3% of the hour, so only the slow burn (email) is armed."
+    }
+    kb = {
+      name        = "kb prod availability"
+      job         = "kb-prod-readyz"
       fast_burn   = false
       why_no_fast = "5-minute single-probe check: one blip is 8.3% of the hour, so only the slow burn (email) is armed."
     }
