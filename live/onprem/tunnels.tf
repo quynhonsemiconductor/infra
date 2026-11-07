@@ -51,6 +51,9 @@ locals {
     # follow-up, once its Access app exists (the data lookup needs it).
     { hostname = "kb.qnsc.vn", path = "^/api/", service = "http://api.kb-prod.svc:8000" },
     { hostname = "kb.qnsc.vn", path = "^/readyz$", service = "http://api.kb-prod.svc:8000", bypass = true },
+    # /mcp: the kb-prod MCP Access app (live/edge mcp_kb_prod.tf, Managed OAuth) is in front;
+    # cloudflared checks ITS JWT (access_app overrides the host web app's AUD). BEFORE the catch-all.
+    { hostname = "kb.qnsc.vn", path = "^/mcp(/|$)", service = "http://api.kb-prod.svc:8000", access_app = "kb-prod MCP server" },
     { hostname = "kb.qnsc.vn", path = null, service = "http://web.kb-prod.svc:8080" },
 
     # rova dev — one Access app on the host (live/edge); the webhook bypass
