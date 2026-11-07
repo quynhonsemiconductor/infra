@@ -13,8 +13,18 @@
 # SERIES: every panel reads a family that already reaches Mimir, no new scrape
 # and no new series —
 #   job="coder"         coderd scrape in gitops platform/alloy (allowlist:
-#                       coderd_agents_up, coderd_agent_aggregator_workspace_count_total,
-#                       coderd_provisionerd_jobs_current, coderd_license_user_count, up)
+#                       coderd_agents_up, coderd_provisionerd_jobs_current,
+#                       coderd_license_active_users, coderd_license_limit_users,
+#                       coderd_license_warnings, coderd_license_errors, up)
+#
+# FIXED IN ROUND 2 (SA, 2026-11-07): `job="coder"` carried ONLY `up` and
+# `scrape_samples_scraped`, so every Coder panel was blank. Three faults, all
+# fixed in gitops PR "fix(coder): actually export coderd metrics": the exporter
+# was never enabled (no default for --prometheus-enable in 2.38.1), the coder
+# ingress NetworkPolicy admitted nothing from Alloy on 2112, and two names in
+# the allowlist do not exist (`coderd_agent_aggregator_workspace_count_total`,
+# `coderd_license_user_count`). Workspaces are counted from `coderd_agents_up`;
+# licence seat use is `coderd_license_active_users`.
 #   kube_resourcequota  KSM allowlist (gitops platform/alloy)
 #   job="node"          node-exporter, instance=<node name> (the chart's
 #                       relabel maps __meta_kubernetes_pod_node_name to instance)
@@ -71,7 +81,7 @@ resource "grafana_dashboard" "vlsi_coder" {
         gridPos     = { h = 4, w = 6, x = 12, y = 1 }
         datasource  = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
         fieldConfig = { defaults = { unit = "none", noValue = "none" } }
-        targets     = [{ expr = "sum(coderd_agent_aggregator_workspace_count_total)", refId = "A" }]
+        targets     = [{ expr = "count(count by (workspace_name) (coderd_agents_up))", refId = "A" }]
       },
       {
         id          = 5
@@ -84,12 +94,15 @@ resource "grafana_dashboard" "vlsi_coder" {
       },
       {
         id          = 6
-        title       = "Licence seats in use"
+        title       = "Licence seats — active / limit"
         type        = "stat"
         gridPos     = { h = 4, w = 6, x = 0, y = 5 }
         datasource  = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
         fieldConfig = { defaults = { unit = "none", noValue = "none" } }
-        targets     = [{ expr = "max(coderd_license_user_count)", refId = "A" }]
+        targets = [
+          { expr = "max(coderd_license_active_users)", legendFormat = "active", refId = "A" },
+          { expr = "max(coderd_license_limit_users)", legendFormat = "limit", refId = "B" },
+        ]
       },
       {
         id      = 7
