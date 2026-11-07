@@ -73,12 +73,13 @@
 # apex and a workspace app named `code--<ws>--<user>` now resolve over WARP, to different synthetic
 # addresses (in-cluster CoreDNS wildcard: gitops#409).
 #
-# So the route is created with the wildcard spelling — and the provider READS IT BACK as the wildcard
-# spelling too (proved by the import plan: `hostname = "*.coder.qnsc.vn"` on the imported object, and a
-# `~ hostname` line would otherwise appear), so the config and the state agree and a post-apply plan is
-# empty. This stack ADOPTS the owner's object instead of re-creating it: its id changed when it was
-# re-created, so a plain plan would try to create and hit 409. The import block below finds the live
-# route through the single-route data source and binds it to the SAME address the state already uses.
+# So the route STORES the wildcard behaviour while READING BACK the parent spelling: the import plan
+# shows `hostname = "coder.qnsc.vn"` for the owner's `*.`-created object. The config therefore uses the
+# parent spelling (hostname is ForceNew, so a wildcard value would plan a replace that prevent_destroy
+# blocks forever), and the wildcard behaviour lives in the object. This stack ADOPTS the owner's object
+# instead of re-creating it — its id changed when it was re-created, so a plain plan would try to create
+# and hit 409. The import block below binds the live id to a new resource address; the dead address it
+# replaces is retired with `removed`.
 #
 # Route records are additive and idempotent; prevent_destroy so a bad plan can
 # never silently drop the only door to the platform.
