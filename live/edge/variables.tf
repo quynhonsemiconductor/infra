@@ -76,3 +76,18 @@ variable "warp_extra_excludes" {
     error_message = "Each warp_extra_excludes entry needs a CIDR address (use /32 for one host) and a description."
   }
 }
+
+# The live id of the Coder private hostname route, adopted by the import block in coder.tf. An identifier,
+# not a secret (repo variable CODER_HOSTNAME_ROUTE_ID, like the Entra group ids). Empty = no import; the
+# route is then created by the plan, which the API rejects with 409 when it already exists — so set it
+# before the first edge plan that includes coder.tf.
+variable "coder_hostname_route_id" {
+  type        = string
+  default     = ""
+  description = "Hostname-route UUID of the live coder.qnsc.vn route (adopted, not created). TF_VAR_coder_hostname_route_id (repo variable CODER_HOSTNAME_ROUTE_ID)."
+
+  validation {
+    condition     = var.coder_hostname_route_id == "" || can(regex("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", var.coder_hostname_route_id))
+    error_message = "coder_hostname_route_id must be empty or a UUID (the route id, without the account prefix)."
+  }
+}

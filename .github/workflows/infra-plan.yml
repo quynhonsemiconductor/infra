@@ -490,6 +490,8 @@ jobs:
           # VLSI group (live/identity coder.tf output): empty until the owner sets the repo
           # variable, and empty means no WARP enrollment and no gateway policy (coder.tf).
           TF_VAR_grp_vlsi_id:           ${{ vars.ENTRA_GRP_VLSI_ID }}
+          # The adopted Coder hostname route (an identifier, not a secret; empty = nothing to adopt).
+          TF_VAR_coder_hostname_route_id: ${{ vars.CODER_HOSTNAME_ROUTE_ID }}
           TF_VAR_entra_tenant_id:       ${{ vars.ENTRA_TENANT_ID }}
           TF_VAR_entra_idp_client_id:   ${{ vars.ENTRA_IDP_CLIENT_ID }}
           TF_VAR_entra_idp_client_secret: ${{ secrets.ENTRA_IDP_CLIENT_SECRET }}
@@ -512,6 +514,20 @@ jobs:
           # step above (rulesets, repository settings and environments, no write). The
           # write app exists for the apply job only, behind the `production` reviewer.
           TF_VAR_github_token:           ${{ steps.gh-read.outputs.token }}
+
+      # Evidence for the Coder route adoption: the imported object's hostname line only (a public value,
+      # present in this repo). Nothing else from the plan is printed.
+      - name: Imported Coder route (edge, hostname only)
+        if: matrix.stack == 'edge' && steps.plan.outputs.exitcode == '2'
+        working-directory: live/edge
+        run: |
+          # The adoption block only, and only its non-private attributes: whether it is imported, the
+          # hostname, the comment, and the provider-computed echoed fields. tunnel_id and account_id are
+          # NOT printed, and nothing else in this plan is.
+          awk '/^[[:space:]]*# cloudflare_zero_trust_network_hostname_route\.coder_route\[/{p=1}
+               p && /^[[:space:]]*}[[:space:]]*$/{exit}
+               p {print}' plan.txt \
+            | grep -vE 'tunnel_id|account_id' || true
 
       # The check block in coder.tf fires inside the plan text, which edge never prints. Surface the ONE
       # line it matters for as an annotation: it is our own message, contains no private value.

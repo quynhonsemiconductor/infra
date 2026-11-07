@@ -284,6 +284,7 @@ jobs:
           TF_VAR_grp_dev_users_id:    ${{ vars.ENTRA_GRP_DEV_USERS_ID }}
           TF_VAR_grp_staff_id: ${{ vars.ENTRA_GRP_STAFF_ID }}
           TF_VAR_grp_vlsi_id:           ${{ vars.ENTRA_GRP_VLSI_ID }}
+          TF_VAR_coder_hostname_route_id: ${{ vars.CODER_HOSTNAME_ROUTE_ID }}
           TF_VAR_entra_tenant_id:       ${{ vars.ENTRA_TENANT_ID }}
           TF_VAR_entra_idp_client_id:   ${{ vars.ENTRA_IDP_CLIENT_ID }}
           TF_VAR_entra_idp_client_secret: ${{ secrets.ENTRA_IDP_CLIENT_SECRET }}
@@ -558,6 +559,7 @@ jobs:
           TF_VAR_grp_dev_users_id: ${{ vars.ENTRA_GRP_DEV_USERS_ID }}
           TF_VAR_grp_staff_id: ${{ vars.ENTRA_GRP_STAFF_ID }}
           TF_VAR_grp_vlsi_id: ${{ vars.ENTRA_GRP_VLSI_ID }}
+          TF_VAR_coder_hostname_route_id: ${{ vars.CODER_HOSTNAME_ROUTE_ID }}
           TF_VAR_entra_tenant_id: ${{ vars.ENTRA_TENANT_ID }}
           TF_VAR_entra_idp_client_id: ${{ vars.ENTRA_IDP_CLIENT_ID }}
           TF_VAR_entra_idp_client_secret: ${{ secrets.ENTRA_IDP_CLIENT_SECRET }}
