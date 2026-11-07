@@ -2,7 +2,7 @@
 # Renders roles/k3s_server/templates/config.yaml.j2 with the Entra block on and asserts every
 # kube-apiserver-arg is a STRING. Regression for the 2026-11-07 outage: `oidc-username-prefix=oidc:`
 # rendered unquoted became a YAML mapping and k3s refused to start (`unknown flag: --[{...`).
-- name: k3s server config renders every apiserver arg as a string
+- name: K3s server config renders every apiserver arg as a string
   hosts: localhost
   gather_facts: false
   vars_files:
