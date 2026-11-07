@@ -30,39 +30,28 @@
 # deployment_environment_name) — the same shape the dashboards and the 5xx
 # rules use.
 #
-# ── SCOPE: ARMED ONLY WHERE TRAFFIC IS CONTINUOUS (round 2) ─────────────────
+# ── SCOPE: ARMED ONLY WHERE TRAFFIC IS CONTINUOUS (round 3) ─────────────────
 # `absent_over_time` fires on a product that has never served, so this map is an
-# ALLOWLIST, not "every product". Measured traffic (SA, 2026-11-07, 24 h):
+# ALLOWLIST, not "every product". Measured live by the SA on 2026-11-07:
 #
-#   kb-api  dev  ~26,000 requests   ~18/min   armed, warning
-#   kb-api  prod ~26,000 requests   ~18/min   armed, critical
-#   rova-api prod ~2,500 requests   ~1.7/min  armed, WARNING + 60m window
-#   rova-api dev  ~0
-#   opshub-api dev ~0
-#   opshub-api prod 0 since its 2026-11-05 boot (no access-log line yet)
+#   kb-api  dev   ~26,000 requests / 24 h, ~18/min, never a zero hour in 2 d
+#   kb-api  prod  ~26,000 requests / 24 h, ~18/min, never a zero hour in 2 d
+#   rova-api prod ~2,500 requests / 24 h, but ~112 of the last 168 HOURS had
+#                 zero requests in the preceding 60 min (nights and weekends)
 #
-# rova prod is webhook-driven (GitHub events), not user-session traffic: 2,500
-# a day can arrive in bursts and leave overnight gaps. The longest zero-request
-# gap over the last 7 days could NOT be measured from the SA workstation (no
-# Grafana token there); so it is armed as a WARNING (email, no Teams page) with
-# a 60-minute window instead of the 30-minute one the kb rules use. Tune it from
-# the first query below once the real daytime pattern is known:
-#
-#   max_over_time(
-#     (sum(rate(http_server_duration_milliseconds_count{job="rova/rova-api",
-#          deployment_environment_name="prod"}[5m])) == bool 0)[7d:5m]
-#   )
-#
-# (Returns the longest run of consecutive zero samples; multiply by 5 by hand —
-# PromQL has no "longest gap" primitive, this is a subquery of the zero mask.)
-# If that says rova prod is silent for > 60 minutes most nights, either raise
-# the window to that value plus a margin or leave it at warning, which is what
-# the 11-07 round asked for until real daytime traffic is known.
+# rova prod is therefore NOT armed: an absent-rule above ~an hour fires through
+# most nights and weekends, which is noise, not a signal. Its coverage stays
+# where it belongs — the prod readyz probe (uptime-dev.tf / prod synthetics)
+# and the Grafana SLO; a silent rova API is a user-visible outage those catch.
+# rova dev, opshub dev and opshub prod are also excluded (zero traffic; opshub
+# prod has had no request since its 2026-11-05 boot). Arm an environment in the
+# change that first routes continuous traffic to it — the readiness probe is an
+# ignored path and never creates this series.
 #
 # ── SEVERITY ───────────────────────────────────────────────────────────────
-# kb prod is critical (Teams + devops@); rova prod and kb dev are warning
-# (email only). The notification policy routes on `env`, so the label must be
-# the "prod"/"dev" spelling the policy matches (tests/static.sh enforces it).
+# kb prod is critical (Teams + devops@); kb dev is warning (email only). The
+# notification policy routes on `env`, so the label must be the "prod"/"dev"
+# spelling the policy matches (tests/static.sh enforces it).
 # =============================================================================
 
 locals {
@@ -72,14 +61,6 @@ locals {
   # hold     — the rule's `for`
   # severity — critical pages; warning emails
   red_liveness = {
-    rova_prod = {
-      job      = "rova/rova-api"
-      env      = "prod"
-      product  = "rova"
-      severity = "warning"
-      window   = "60m"
-      hold     = "15m"
-    }
     kb_dev = {
       job      = "kb/kb-api"
       env      = "dev"
@@ -96,11 +77,10 @@ locals {
       window   = "30m"
       hold     = "5m"
     }
-    # rova dev, opshub dev and opshub prod: EXCLUDED. Their measured traffic in
-    # the 24 h before 2026-11-07 was zero (or, for opshub prod, zero since the
-    # pod's 2026-11-05 boot), and absent_over_time would fire forever. Arm an
-    # environment in the change that first routes real traffic to it; the
-    # readiness probe is an ignored path and never creates this series.
+    # rova prod, rova dev, opshub dev, opshub prod: EXCLUDED — see the scope
+    # block at the top. rova prod has ~112 zero-hours in 7 d (an hour-long
+    # absent rule would fire most nights); it is covered by the readyz probe
+    # and the SLO instead.
   }
 }
 
