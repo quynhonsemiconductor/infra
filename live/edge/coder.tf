@@ -212,8 +212,15 @@ locals {
     "platform-admins-allow-l4",
     "vlsi-allow-coder",
     "vlsi-block-other-private",
+    # endpoint.tf (laptop phase 0a): staff L4 guard + DNS policies. The security rule exists even
+    # when grp_staff_id is empty, so its name and precedence are reserved here too.
+    "staff-block-other-private",
+    "security-block-dns",
+    "staff-content-block-dns",
+    "staff-allow-approved-apps-dns",
+    "staff-block-ai-filesharing-dns",
   ]
-  gateway_precedences = [900, 910, 920]
+  gateway_precedences = [900, 910, 920, 930, 940, 950, 960, 970]
 
   # The private destinations the tunnels can expose, as a TRAFFIC expression. RFC 1918 + CGNAT; the
   # synthetic IP a private hostname resolves to (172.64.128.0/20) is outside every one of them, which is
@@ -261,7 +268,7 @@ resource "cloudflare_zero_trust_gateway_policy" "admin_allow_private" {
           !contains(local.gateway_precedences, tonumber(tostring(p.precedence)))
         )
       ])
-      error_message = "A Gateway L4 policy already uses precedence 900, 910 or 920 (or one of this file's names is taken). Renumber this file's policies and re-plan; do not let two rules share a number."
+      error_message = "A Gateway policy already uses one of precedences 900-970 (or one of this stack's names is taken). Renumber this stack's policies and re-plan; do not let two rules share a number."
     }
 
   }

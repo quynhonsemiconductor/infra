@@ -52,4 +52,51 @@ bad=$(grep -rnE 'identity\.groups\.id(\[\*\])?[[:space:]]*(==|!=)' --include='*.
 [ -z "$bad" ] || fail "identity.groups.id compared with ==/!= — it is an Array(Bytes); use any(...[*] in {...}):
 $bad"
 
+# 4. Laptop phase 0a: the staff WARP profile must be LOCKED (endpoint.tf). A profile that can be
+#    switched off is not an enforcement point; the three fields are the whole "cannot turn it off".
+for field in 'switch_locked[[:space:]]*=[[:space:]]*true' \
+             'allowed_to_leave[[:space:]]*=[[:space:]]*false' \
+             'allow_mode_switch[[:space:]]*=[[:space:]]*false'; do
+	grep -qE "^[[:space:]]*$field\$" endpoint.tf ||
+		fail "the staff device profile must set $field (live/edge/endpoint.tf)"
+done
+
+# 5. Every Gateway policy precedence in this stack is unique. Cloudflare requires it, and a
+#    duplicate makes one rule silently shadow the other. Comments are ignored (the line starts
+#    with the attribute).
+precs=$(awk '
+	/^resource "cloudflare_zero_trust_gateway_policy"/ { inb = 1; next }
+	inb && /^}/ { inb = 0 }
+	inb && match($0, /precedence[[:space:]]*=[[:space:]]*[0-9]+/) {
+		line = substr($0, RSTART, RLENGTH); sub(/.*=[[:space:]]*/, "", line); print line
+	}
+' ./*.tf | sort -n)
+dupes=$(printf '%s\n' "$precs" | uniq -d)
+[ -z "$dupes" ] || fail "two Gateway policies share a precedence: $dupes"
+[ -n "$precs" ] || fail "no Gateway policy precedence found — the parser in static.sh is stale"
+
+# 6. Every DNS policy carries an identity expression, EXCEPT the all-identities security block.
+#    A staff/content/app rule without `identity` would silently apply to the whole company.
+noident=$(awk '
+	/^resource "cloudflare_zero_trust_gateway_policy"/ { inb = 1; name = ""; dns = 0; ident = 0; next }
+	inb && /^}/ {
+		if (dns && !ident && name != "security-block-dns") print name
+		inb = 0
+	}
+	inb && /^  name[[:space:]]*=/ { n = $0; sub(/.*=[[:space:]]*"/, "", n); sub(/".*/, "", n); name = n }
+	inb && /^  filters[[:space:]]*=/ && /"dns"/ { dns = 1 }
+	inb && /^  identity[[:space:]]*=/ { ident = 1 }
+' endpoint.tf)
+[ -z "$noident" ] || fail "DNS policy without an identity expression (only security-block-dns may omit it): $noident"
+
+# 7. Phase 0a adds NO HTTP filtering and NO TLS inspection: this stack must not declare an http
+#    filter, and must not touch the account's root-CA installation (a phase 0c decision). Every
+#    root_certificate_installation_enabled line must be the pinned read from the account.
+httpf=$(grep -rnE 'filters[[:space:]]*=.*"http"' --include='*.tf' . || true)
+[ -z "$httpf" ] || fail "phase 0a allows no HTTP/TLS inspection — found an http filter:
+$httpf"
+rootca=$(grep -rn 'root_certificate_installation_enabled' --include='*.tf' . | grep -v '= data\.cloudflare_zero_trust_device_settings\.current\.root_certificate_installation_enabled' || true)
+[ -z "$rootca" ] || fail "root_certificate_installation_enabled must only be pinned from the data source in warp.tf:
+$rootca"
+
 echo "PASS: static guard (live/edge wirefilter identity selectors)"
