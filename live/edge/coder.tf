@@ -127,11 +127,13 @@ resource "cloudflare_zero_trust_network_hostname_route" "coder_route" {
   for_each = local.coder_private_hostnames
 
   account_id = var.cloudflare_account_id
-  # The WILDCARD spelling, which is what makes workspace apps resolve (see the header). The API stores
-  # it under `coder.qnsc.vn`; if the provider reads that parent spelling back, the plan shows a diff on
-  # this attribute and the value here becomes the read-back one — the wildcard behaviour lives in the
-  # stored object either way, which is why the owner's re-created route keeps working.
-  hostname = "*.${each.value}"
+  # The PARENT spelling: it is what the API reads back for a route created with `*.` (the import plan
+  # showed `~ hostname = "coder.qnsc.vn" -> "*.coder.qnsc.vn"` when the wildcard was written here), and
+  # the attribute is ForceNew — a diff would mean a replace, which `prevent_destroy` blocks forever.
+  # The wildcard BEHAVIOUR is stored in the object, not derived from this string: the owner created the
+  # route with the `*.` spelling and workspace apps resolve. Anything that ever re-creates this route
+  # must use the wildcard spelling (dashboard or API), or subdomains stop resolving.
+  hostname = each.value
   # The in-cluster tunnel: Coder is a Kubernetes Service, and only the in-cluster
   # cloudflared can reach it (the qnsc-admin tunnel runs on pve01, outside k3s).
   tunnel_id = data.cloudflare_zero_trust_tunnel_cloudflared.qnsc_apps[0].id
