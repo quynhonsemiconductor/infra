@@ -527,8 +527,7 @@ jobs:
           awk '/^[[:space:]]*# cloudflare_zero_trust_network_hostname_route\.coder_route\[/{p=1}
                p && /^[[:space:]]*}[[:space:]]*$/{exit}
                p {print}' plan.txt \
-            | grep -E '(imported from|will be (created|updated|imported))|^[[:space:]]*[~+ ]?[[:space:]]*(hostname|comment|tun_type|tunnel_name)[[:space:]]*=' \
-            || true
+            | grep -vE 'tunnel_id|account_id' || true
 
       # The check block in coder.tf fires inside the plan text, which edge never prints. Surface the ONE
       # line it matters for as an annotation: it is our own message, contains no private value.
