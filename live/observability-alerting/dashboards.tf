@@ -60,11 +60,12 @@ resource "grafana_dashboard" "products_red" {
 
     panels = [
       {
-        id         = 1
-        title      = "Request rate (req/s)"
-        type       = "timeseries"
-        gridPos    = { h = 8, w = 12, x = 0, y = 0 }
-        datasource = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
+        id          = 1
+        title       = "Request rate (req/s)"
+        type        = "timeseries"
+        gridPos     = { h = 8, w = 12, x = 0, y = 0 }
+        datasource  = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
+        fieldConfig = { defaults = { noValue = "no series" } }
         targets = [{
           expr         = "sum by (job, deployment_environment_name) (rate(http_server_duration_milliseconds_count{job=~\"$product\", deployment_environment_name=~\"$env\"}[5m]))"
           legendFormat = "{{job}} ({{deployment_environment_name}})"
@@ -77,7 +78,7 @@ resource "grafana_dashboard" "products_red" {
         type        = "timeseries"
         gridPos     = { h = 8, w = 12, x = 12, y = 0 }
         datasource  = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
-        fieldConfig = { defaults = { unit = "percentunit", min = 0 } }
+        fieldConfig = { defaults = { unit = "percentunit", min = 0, noValue = "no series" } }
         # Same shape as the 5xx rules: a grouped numerator that vanishes when a
         # product has zero errors is re-seeded from the all-status series so the
         # line reads 0 instead of disappearing.
@@ -100,7 +101,7 @@ resource "grafana_dashboard" "products_red" {
         type        = "timeseries"
         gridPos     = { h = 8, w = 12, x = 0, y = 8 }
         datasource  = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
-        fieldConfig = { defaults = { unit = "ms" } }
+        fieldConfig = { defaults = { unit = "ms", noValue = "no series" } }
         targets = [{
           expr         = "histogram_quantile(0.95, sum by (le, job, deployment_environment_name) (rate(http_server_duration_milliseconds_bucket{job=~\"$product\", deployment_environment_name=~\"$env\"}[5m])))"
           legendFormat = "{{job}} ({{deployment_environment_name}})"
@@ -108,14 +109,42 @@ resource "grafana_dashboard" "products_red" {
         }]
       },
       {
-        id         = 4
-        title      = "Responses by status class"
-        type       = "timeseries"
-        gridPos    = { h = 8, w = 12, x = 12, y = 8 }
-        datasource = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
+        id          = 4
+        title       = "Responses by status class"
+        type        = "timeseries"
+        gridPos     = { h = 8, w = 12, x = 12, y = 8 }
+        datasource  = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
+        fieldConfig = { defaults = { noValue = "no series" } }
         targets = [{
           expr         = "sum by (job, deployment_environment_name, status_class) (rate(http_server_duration_milliseconds_count{job=~\"$product\", deployment_environment_name=~\"$env\"}[5m]))"
           legendFormat = "{{job}} ({{deployment_environment_name}}) {{status_class}}"
+          refId        = "A"
+        }]
+      },
+      # The panels above can be blank for three very different reasons: no
+      # traffic, the family is not arriving (the 2026-11-07 audit's finding), or
+      # the dashboard's own variables are empty. This panel answers the third
+      # and makes the second visible without a Mimir query: one row per job+env
+      # that HAS the request counter in the last hour. `last_over_time` over the
+      # metric NAME (never a `{__name__=~...}` glob — Adaptive Metrics makes that
+      # a documented false negative) is the same liveness probe the alert
+      # `k3s-<product>-<env>-red-missing` uses.
+      {
+        id          = 5
+        title       = "RED series present in the last hour (rows = job + env)"
+        type        = "stat"
+        gridPos     = { h = 4, w = 24, x = 0, y = 16 }
+        datasource  = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
+        fieldConfig = { defaults = { unit = "none", noValue = "none — the request counter is not arriving" } }
+        options = {
+          reduceOptions = { calcs = ["lastNotNull"], fields = "" }
+          orientation   = "horizontal"
+          textMode      = "value_and_name"
+          colorMode     = "background"
+        }
+        targets = [{
+          expr         = "count by (job, deployment_environment_name) (last_over_time(http_server_duration_milliseconds_count{job=~\"$product\", deployment_environment_name=~\"$env\"}[1h]))"
+          legendFormat = "{{job}} ({{deployment_environment_name}})"
           refId        = "A"
         }]
       },
@@ -311,7 +340,7 @@ resource "grafana_dashboard" "platform_health" {
         gridPos     = { h = 4, w = 6, x = 6, y = 26 }
         datasource  = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
         fieldConfig = { defaults = { unit = "none" } }
-        targets     = [{ expr = "sum(coderd_agent_aggregator_workspace_count_total)", refId = "A" }]
+        targets     = [{ expr = "count(count by (workspace_name) (coderd_agents_up))", refId = "A" }]
       },
       {
         id          = 21
