@@ -1,14 +1,35 @@
 # =============================================================================
-# rova MCP — dashboard + write-spike alert.
+# MCP — ONE templated dashboard + rova's write-spike alert.
 #
+# ── DASHBOARD (dashboards-gaps item 2, owner 2026-11-07) ───────────────────
+# Was "rova MCP", a per-product copy. Now ONE dashboard templated by
+# `var product` (rova|opshub|kb) over the same mcp_* metrics, living in
+# QNSC/Dashboards (item 4) next to the other shared surfaces.
+#
+#   WHICH PRODUCTS EMIT TODAY: rova only (verified live 2026-11-04, see the
+#   metric-names block below). opshub shares the platform lib but does not
+#   serve /mcp yet; kb has none. Every panel says so, so an empty panel reads
+#   as "expected until <product> serves /mcp", not as a broken query.
+#
+#   UID: kept as `rova-mcp` on purpose. Grafana has no dashboard redirect, and
+#   the uid is what bookmarks and chat links carry — same uid on the new
+#   templated dashboard keeps every existing link working while the title and
+#   location change. (The resource name stays `grafana_dashboard.rova_mcp`
+#   for the same reason: renaming it would delete + recreate in state for no
+#   benefit.)
+#
+# ── rova MCP v2 writes ─────────────────────────────────────────────────────
 # rova MCP v2 adds write tools behind the MCP_WRITES_ENABLED kill switch (dev
 # first). By design there is NO separate MCP write rate limit — the per-person
-# 60 MCP POSTs/min and the REST 100/min still apply — and this alert is the
-# complementary control, because a runaway model retry loop is the failure mode
-# those limits alone would let run until the cap.
+# 60 MCP POSTs/min and the REST 100/min still apply — and the write-spike alert
+# below is the complementary control, because a runaway model retry loop is the
+# failure mode those limits alone would let run until the cap. The alert stays
+# rova-scoped (it filters the rova write catalogue and routes by env), unlike
+# the dashboard, which is templated.
 #
 # ── METRIC NAMES (verified against the LIVE series in Grafana Cloud, dev,
-#    2026-11-04 — not from memory or the PR description) ──────────────────
+#    2026-11-04 — not from memory or the PR description; re-checked in source
+#    2026-11-07, apps/api/src/mcp/audit.ts) ─────────────────────────────────
 # rova#878 created these OTel instruments (`apps/api/src/mcp/audit.ts`) and
 # the Prometheus exporter renames them as follows:
 #   mcp.tool.calls          -> mcp_tool_calls_total{tool, outcome}
@@ -40,7 +61,8 @@
 # The regexp below is the v2.0 write catalogue's 14 tool names, by prefix; no
 # read tool (current or planned) matches it. Keep it in step with the
 # catalogue: a write tool renamed outside these prefixes stops counting as a
-# write here.
+# write here. It is a rova catalogue; the templated dashboard keeps the
+# writes-vs-reads panel for rova only in its description text.
 #
 # ── NOT GATED ──────────────────────────────────────────────────────────────
 # No flag: the dashboard is inert until MCP data exists, and the rule cannot
@@ -51,31 +73,76 @@
 
 locals {
   mcp_write_tools = "rova_(create|update|add|plan|link|label|log|save|record|mark|delete).*"
+
+  # One sentence, reused on every panel: says who emits today so an empty
+  # panel reads as expected, not broken (dashboards-gaps item 2).
+  mcp_emitters = "rova emits these series today (verified 2026-11-04). opshub shares the platform lib but does not serve /mcp yet, and kb has none — no data until that product serves /mcp."
 }
 
 resource "grafana_dashboard" "rova_mcp" {
-  folder    = grafana_folder.rova_dashboards.uid
+  # Kept in QNSC/Dashboards (item 4: shared, templated — not a rova-folder
+  # copy), with the `rova-mcp` uid so existing bookmarks keep working.
+  folder    = grafana_folder.dashboards.uid
   overwrite = true
 
   config_json = jsonencode({
-    title         = "rova MCP"
+    title         = "MCP"
     uid           = "rova-mcp"
     timezone      = "browser"
     editable      = false
     schemaVersion = 39
     time          = { from = "now-24h", to = "now" }
     refresh       = "1m"
-    tags          = ["rova", "mcp", "provisioned"]
+    tags          = ["mcp", "products", "provisioned"]
+
+    templating = {
+      list = [
+        {
+          name       = "product"
+          type       = "custom"
+          label      = "product"
+          query      = "rova,opshub,kb"
+          includeAll = false
+          multi      = false
+          current    = { selected = true, text = "rova", value = "rova" }
+        },
+        {
+          name       = "env"
+          type       = "custom"
+          label      = "environment"
+          query      = "dev,prod"
+          includeAll = false
+          multi      = false
+          current    = { selected = true, text = "prod", value = "prod" }
+        },
+      ]
+    }
+
+    # Product switcher (item 4): one click moves the WHOLE dashboard to that
+    # product's view, keeping the time range. `keepTime` carries from/to;
+    # `var-product` sets the template variable.
+    links = [
+      for p in ["rova", "opshub", "kb"] : {
+        title       = p
+        type        = "link"
+        icon        = "bolt"
+        targetBlank = false
+        keepTime    = true
+        url         = "/d/rova-mcp?orgId=1&var-product=${p}"
+      }
+    ]
 
     panels = [
       {
-        id         = 1
-        title      = "MCP calls by tool"
-        type       = "timeseries"
-        gridPos    = { h = 8, w = 12, x = 0, y = 0 }
-        datasource = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
+        id          = 1
+        title       = "MCP calls by tool"
+        description = local.mcp_emitters
+        type        = "timeseries"
+        gridPos     = { h = 8, w = 12, x = 0, y = 0 }
+        datasource  = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
+        fieldConfig = { defaults = { noValue = "no series — $product does not serve /mcp yet (rova only today)" } }
         targets = [{
-          expr         = "sum by (tool) (rate(mcp_tool_calls_total[5m]))"
+          expr         = "sum by (tool) (rate(mcp_tool_calls_total{job=~\"$product/.+\", env=\"$env\"}[5m]))"
           legendFormat = "{{tool}}"
           refId        = "A"
         }]
@@ -83,22 +150,23 @@ resource "grafana_dashboard" "rova_mcp" {
       {
         id          = 2
         title       = "MCP error rate, by env"
+        description = local.mcp_emitters
         type        = "timeseries"
         gridPos     = { h = 8, w = 12, x = 12, y = 0 }
         datasource  = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
-        fieldConfig = { defaults = { unit = "percentunit" } }
+        fieldConfig = { defaults = { unit = "percentunit", noValue = "no series — $product does not serve /mcp yet (rova only today)" } }
         # Same zero-fill shape as System Overview's error-rate panel: an
         # `or vector(0)` does not fill a MISSING group, so the error series is
         # re-derived zeroed from the (always present) request series per env.
         targets = [{
           expr = join("", [
             "(",
-            "sum by (env) (rate(mcp_tool_calls_total{outcome=\"error\"}[5m]))",
+            "sum by (env) (rate(mcp_tool_calls_total{outcome=\"error\", job=~\"$product/.+\", env=\"$env\"}[5m]))",
             " or ",
-            "sum by (env) (rate(mcp_tool_calls_total[5m])) * 0",
+            "sum by (env) (rate(mcp_tool_calls_total{job=~\"$product/.+\", env=\"$env\"}[5m])) * 0",
             ")",
             " / ",
-            "sum by (env) (rate(mcp_tool_calls_total[5m]))",
+            "sum by (env) (rate(mcp_tool_calls_total{job=~\"$product/.+\", env=\"$env\"}[5m]))",
           ])
           legendFormat = "{{env}}"
           refId        = "A"
@@ -107,41 +175,44 @@ resource "grafana_dashboard" "rova_mcp" {
       {
         id          = 3
         title       = "MCP p95 duration, by env"
+        description = local.mcp_emitters
         type        = "timeseries"
         gridPos     = { h = 8, w = 12, x = 0, y = 8 }
         datasource  = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
-        fieldConfig = { defaults = { unit = "ms" } }
+        fieldConfig = { defaults = { unit = "ms", noValue = "no series — $product does not serve /mcp yet (rova only today)" } }
         targets = [{
-          expr         = "histogram_quantile(0.95, sum by (le, env) (rate(mcp_tool_duration_milliseconds_bucket[5m])))"
+          expr         = "histogram_quantile(0.95, sum by (le, env) (rate(mcp_tool_duration_milliseconds_bucket{job=~\"$product/.+\", env=\"$env\"}[5m])))"
           legendFormat = "{{env}}"
           refId        = "A"
         }]
       },
       {
-        id         = 4
-        title      = "MCP rate-limit refusals"
-        type       = "stat"
-        gridPos    = { h = 8, w = 6, x = 12, y = 8 }
-        datasource = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
+        id          = 4
+        title       = "MCP rate-limit refusals"
+        description = local.mcp_emitters
+        type        = "stat"
+        gridPos     = { h = 8, w = 6, x = 12, y = 8 }
+        datasource  = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
         targets = [{
-          expr  = "sum(increase(mcp_rate_limited_total[$__range]))"
+          expr  = "sum(increase(mcp_rate_limited_total{job=~\"$product/.+\", env=\"$env\"}[$__range]))"
           refId = "A"
         }]
       },
       {
-        id         = 5
-        title      = "MCP writes vs reads, by env"
-        type       = "timeseries"
-        gridPos    = { h = 8, w = 6, x = 18, y = 8 }
-        datasource = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
+        id          = 5
+        title       = "MCP writes vs reads, by env"
+        description = "${local.mcp_emitters} The write/read split is the rova v2 write catalogue — a rova-specific tool-name prefix list; for other products every call reads as a read."
+        type        = "timeseries"
+        gridPos     = { h = 8, w = 6, x = 18, y = 8 }
+        datasource  = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
         targets = [
           {
-            expr         = "sum by (env) (rate(mcp_tool_calls_total{tool=~\"${local.mcp_write_tools}\"}[5m]))"
+            expr         = "sum by (env) (rate(mcp_tool_calls_total{job=~\"$product/.+\", env=\"$env\", tool=~\"${local.mcp_write_tools}\"}[5m]))"
             legendFormat = "writes {{env}}"
             refId        = "A"
           },
           {
-            expr         = "sum by (env) (rate(mcp_tool_calls_total{tool!~\"${local.mcp_write_tools}\"}[5m]))"
+            expr         = "sum by (env) (rate(mcp_tool_calls_total{job=~\"$product/.+\", env=\"$env\", tool!~\"${local.mcp_write_tools}\"}[5m]))"
             legendFormat = "reads {{env}}"
             refId        = "B"
           },
