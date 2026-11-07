@@ -340,7 +340,7 @@ resource "grafana_dashboard" "platform_health" {
         gridPos     = { h = 4, w = 6, x = 6, y = 26 }
         datasource  = { type = "prometheus", uid = data.grafana_data_source.prometheus.uid }
         fieldConfig = { defaults = { unit = "none" } }
-        targets     = [{ expr = "sum(coderd_agent_aggregator_workspace_count_total)", refId = "A" }]
+        targets     = [{ expr = "count(count by (workspace_name) (coderd_agents_up))", refId = "A" }]
       },
       {
         id          = 21
