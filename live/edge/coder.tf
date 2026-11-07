@@ -69,17 +69,17 @@
 # stores a route under its parent name, so the pair is one object). The pilot then showed what the docs
 # do not say clearly: the plain entry matched ONLY the apex — `code--<ws>--<user>.coder.qnsc.vn` did
 # not resolve over WARP. The owner deleted it and re-created it from the dashboard with the `*.` spelling
-# on the same tunnel (same description); the dashboard still lists it as `coder.qnsc.vn`, and now
-#   dig coder.qnsc.vn                        -> 172.64.138.235
-#   dig code--test-nghia2--nghiavt.coder...  -> 172.64.138.236
-# both over WARP (in-cluster CoreDNS wildcard: gitops#409).
+# on the same tunnel (same description); the dashboard still lists it as `coder.qnsc.vn`, and both the
+# apex and a workspace app named `code--<ws>--<user>` now resolve over WARP, to different synthetic
+# addresses (in-cluster CoreDNS wildcard: gitops#409).
 #
-# So the route is created with the wildcard spelling, the API round-trips it under the parent name, and
-# this stack ADOPTS the owner's object instead of re-creating it (its id changed when it was re-created,
-# so a plain plan would try to create and hit 409). The import block below finds the live route with the
-# list API and binds it to the SAME address the state already uses.
+# So the route is created with the wildcard spelling — and the provider READS IT BACK as the wildcard
+# spelling too (proved by the import plan: `hostname = "*.coder.qnsc.vn"` on the imported object, and a
+# `~ hostname` line would otherwise appear), so the config and the state agree and a post-apply plan is
+# empty. This stack ADOPTS the owner's object instead of re-creating it: its id changed when it was
+# re-created, so a plain plan would try to create and hit 409. The import block below finds the live
+# route through the single-route data source and binds it to the SAME address the state already uses.
 #
-# Route records are additive and idempotent; prevent_destroy so a bad plan can
 # Route records are additive and idempotent; prevent_destroy so a bad plan can
 # never silently drop the only door to the platform.
 
@@ -88,36 +88,35 @@ locals {
   # tunnel id, and live/onprem creates the tunnels.
   coder_private_hostnames = var.tunnels_exist ? toset(["coder.qnsc.vn"]) : toset([])
 
-  # The live route, found by hostname (substring match) scoped to the qnsc-apps tunnel. The API reports
-  # the stored name, which is the parent spelling whichever way it was created, so the comparison strips
-  # a leading `*.` from both sides.
-  coder_routes_live = try([
-    for r in data.cloudflare_zero_trust_network_hostname_routes.coder[0].result :
-    r if replace(r.hostname, "*.", "") == "coder.qnsc.vn"
-  ], [])
-  coder_route = try(one(local.coder_routes_live), null)
 }
 
-# Read-only discovery for the import below. Scoped by tunnel and by `is_deleted = false`, so a deleted
-# route from an earlier re-create cannot be adopted by mistake.
-data "cloudflare_zero_trust_network_hostname_routes" "coder" {
+# The live route, found by the SINGLE data source with a filter: it lists, requires exactly one match
+# and fails with "N found" otherwise — the count check the list data source cannot give (its `result`
+# is padded to `max_items`, so a `one()` over it is meaningless).
+data "cloudflare_zero_trust_network_hostname_route" "coder" {
   count      = var.tunnels_exist ? 1 : 0
   account_id = var.cloudflare_account_id
-  max_items  = 100
-  # Flat arguments on the LIST data source (the single one takes a `filter` block): substring hostname,
-  # the tunnel, and no deleted rows.
-  hostname   = "coder.qnsc.vn"
-  tunnel_id  = data.cloudflare_zero_trust_tunnel_cloudflared.qnsc_apps[0].id
-  is_deleted = false
+
+  filter = {
+    hostname   = "coder.qnsc.vn"
+    tunnel_id  = data.cloudflare_zero_trust_tunnel_cloudflared.qnsc_apps[0].id
+    is_deleted = false
+  }
 }
 
-# ADOPTION (2026-11-07): the address below already existed in state pointing at the route the owner
-# deleted; the id therefore changed and this block re-binds the live object to the same address. After
-# the first apply it is a no-op (same address, same id). If the route is ever missing, the plan fails
-# here with a null id rather than creating a duplicate (which the API would reject 409 anyway).
+# ADOPTION (2026-11-07). The address existed in state pointing at the route the owner deleted; the
+# refresh drops that object (the route is gone), and this block binds the NEW id to the same address in
+# the same plan. `for_each` because the whole feature is gated on the tunnels: with `tunnels_exist =
+# false` no import instance exists, so the null id is never evaluated (a plain `id =` expression is, and
+# every gated-off plan errored on it).
+#
+# The id format is `<account_id>/<hostname_route_id>` — the provider's ImportState parses exactly two
+# path segments (internal/importpath.ParseImportID with "<account_id>/<hostname_route_id>"); a bare
+# route id is rejected.
 import {
-  to = cloudflare_zero_trust_network_hostname_route.coder["coder.qnsc.vn"]
-  id = local.coder_route.id
+  for_each = var.tunnels_exist ? local.coder_private_hostnames : toset([])
+  to       = cloudflare_zero_trust_network_hostname_route.coder[each.key]
+  id       = "${var.cloudflare_account_id}/${data.cloudflare_zero_trust_network_hostname_route.coder[0].hostname_route_id}"
 }
 
 resource "cloudflare_zero_trust_network_hostname_route" "coder" {

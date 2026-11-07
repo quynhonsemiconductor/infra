@@ -513,6 +513,15 @@ jobs:
           # write app exists for the apply job only, behind the `production` reviewer.
           TF_VAR_github_token:           ${{ steps.gh-read.outputs.token }}
 
+      # Evidence for the Coder route adoption: the imported object's hostname line only (a public value,
+      # present in this repo). Nothing else from the plan is printed.
+      - name: Imported Coder route (edge, hostname only)
+        if: matrix.stack == 'edge' && steps.plan.outputs.exitcode == '2'
+        working-directory: live/edge
+        run: |
+          awk '/cloudflare_zero_trust_network_hostname_route\.coder\[/{p=1; print; next}
+               p && /^[[:space:]]*hostname[[:space:]]*=/{print; exit}' plan.txt || true
+
       # The check block in coder.tf fires inside the plan text, which edge never prints. Surface the ONE
       # line it matters for as an annotation: it is our own message, contains no private value.
       - name: Stale Gateway policy notice (edge)
