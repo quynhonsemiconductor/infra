@@ -90,33 +90,25 @@ locals {
 
 }
 
-# The live route, found by the SINGLE data source with a filter: it lists, requires exactly one match
-# and fails with "N found" otherwise — the count check the list data source cannot give (its `result`
-# is padded to `max_items`, so a `one()` over it is meaningless).
-data "cloudflare_zero_trust_network_hostname_route" "coder" {
-  count      = var.tunnels_exist ? 1 : 0
-  account_id = var.cloudflare_account_id
-
-  filter = {
-    hostname   = "coder.qnsc.vn"
-    tunnel_id  = data.cloudflare_zero_trust_tunnel_cloudflared.qnsc_apps[0].id
-    is_deleted = false
-  }
-}
-
 # ADOPTION (2026-11-07). The address existed in state pointing at the route the owner deleted; the
 # refresh drops that object (the route is gone), and this block binds the NEW id to the same address in
-# the same plan. `for_each` because the whole feature is gated on the tunnels: with `tunnels_exist =
-# false` no import instance exists, so the null id is never evaluated (a plain `id =` expression is, and
-# every gated-off plan errored on it).
+# the same plan.
+#
+# The id is a VARIABLE, not discovered from the API: an import block whose id comes from a data source
+# is deferred to apply (the plan then shows a plain create, which is exactly what we must not review
+# blind), and the list data source pads `result` to `max_items`, so `one()` over it is meaningless.
+# `CODER_HOSTNAME_ROUTE_ID` is a repo variable like the Entra group ids: an identifier, not a secret.
+#
+# `for_each`: with the tunnels gated off (or the variable unset) no import instance exists, so the id is
+# never evaluated — a plain `id =` expression is, and every gated-off plan errored on it.
 #
 # The id format is `<account_id>/<hostname_route_id>` — the provider's ImportState parses exactly two
 # path segments (internal/importpath.ParseImportID with "<account_id>/<hostname_route_id>"); a bare
 # route id is rejected.
 import {
-  for_each = var.tunnels_exist ? local.coder_private_hostnames : toset([])
+  for_each = var.coder_hostname_route_id == "" ? toset([]) : local.coder_private_hostnames
   to       = cloudflare_zero_trust_network_hostname_route.coder[each.key]
-  id       = "${var.cloudflare_account_id}/${data.cloudflare_zero_trust_network_hostname_route.coder[0].hostname_route_id}"
+  id       = "${var.cloudflare_account_id}/${var.coder_hostname_route_id}"
 }
 
 resource "cloudflare_zero_trust_network_hostname_route" "coder" {
