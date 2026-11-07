@@ -257,6 +257,13 @@ jobs:
       - name: prune-dead-alerts (offline test)
         run: python3 -m unittest scripts/test_prune_dead_rova_alerts.py
 
+      # mcp-portal-members.sh (live/edge, terraform_data): a local HTTP server stands in for the
+      # Cloudflare API on the real portal path. Proves the updated_tools round-trip (the reason the
+      # provider cannot own servers[]), the no-op apply, and that a PUT the API did not apply fails
+      # the run instead of passing silently.
+      - name: mcp-portal-members (offline test)
+        run: python3 -m unittest scripts/test_mcp_portal_members.py
+
       # The owner apply kit builds live/identity's TF_VAR_* from read-only az/op lookups. This runs it against
       # stub az/op and captured-shape fixtures: no credential, no live call; every broken input must stop it.
       - name: identity apply kit (offline test)
@@ -283,7 +290,7 @@ jobs:
         run: bash scripts/owner/test_cf_tokens_audit.sh
 
       - name: shellcheck the Cloudflare token scripts
-        run: shellcheck scripts/owner/cf-tokens-audit.sh scripts/owner/set-cf-token-expiry-tags.sh scripts/owner/test_cf_tokens_audit.sh
+        run: shellcheck scripts/owner/cf-tokens-audit.sh scripts/owner/set-cf-token-expiry-tags.sh scripts/owner/test_cf_tokens_audit.sh scripts/edge/mcp-portal-members.sh
 
   # ───────────────────────────────────────────────────────────────────────
   # tflint — NOT a required check yet, deliberately.

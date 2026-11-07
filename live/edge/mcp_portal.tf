@@ -66,6 +66,25 @@ resource "cloudflare_zero_trust_access_application" "rova_dev_mcp_via_portal" {
   }]
 }
 
+# ONE source for portal membership. Every MCP server resource in this stack is gated by its
+# own live flag, so a product/env joins the portal by adding its server resource plus one line
+# here — nothing else. on_behalf = true is "Require user auth" ON, never false (MCP-PLAN §5).
+locals {
+  mcp_portal_servers = concat(
+    [for s in cloudflare_zero_trust_access_ai_controls_mcp_server.rova_dev : { server_id = s.id, on_behalf = true }],
+    [for k in sort(keys(cloudflare_zero_trust_access_ai_controls_mcp_server.github)) : { server_id = cloudflare_zero_trust_access_ai_controls_mcp_server.github[k].id, on_behalf = true }],
+    [for s in cloudflare_zero_trust_access_ai_controls_mcp_server.grafana : { server_id = s.id, on_behalf = true }],
+    [for s in cloudflare_zero_trust_access_ai_controls_mcp_server.rova_prod : { server_id = s.id, on_behalf = true }],
+    [for s in cloudflare_zero_trust_access_ai_controls_mcp_server.opshub_dev : { server_id = s.id, on_behalf = true }],
+    [for s in cloudflare_zero_trust_access_ai_controls_mcp_server.kb_dev : { server_id = s.id, on_behalf = true }],
+    [for s in cloudflare_zero_trust_access_ai_controls_mcp_server.kb_prod : { server_id = s.id, on_behalf = true }],
+  )
+
+  # sort() takes strings, so sort the ids and map back: a stable triggers_replace value.
+  mcp_portal_server_ids = sort([for s in local.mcp_portal_servers : s.server_id])
+  mcp_portal_members    = [for id in local.mcp_portal_server_ids : { server_id = id, on_behalf = true }]
+}
+
 resource "cloudflare_zero_trust_access_ai_controls_mcp_portal" "qnsc" {
   count = local.mcp_portal_live ? 1 : 0
 
@@ -75,44 +94,51 @@ resource "cloudflare_zero_trust_access_ai_controls_mcp_portal" "qnsc" {
   hostname    = local.mcp_portal_host
   description = "QNSC MCP server portal"
 
-  # on_behalf = true is "Require user auth" ON — never false (MCP-PLAN §5).
-  # The hub servers (mcp_hub.tf) join only when var.mcp_hub_enabled.
-  servers = concat(
-    [{
-      server_id = cloudflare_zero_trust_access_ai_controls_mcp_server.rova_dev[0].id
-      on_behalf = true
-    }],
-    [for k in sort(keys(cloudflare_zero_trust_access_ai_controls_mcp_server.github)) : {
-      server_id = cloudflare_zero_trust_access_ai_controls_mcp_server.github[k].id
-      on_behalf = true
-    }],
-    [for s in cloudflare_zero_trust_access_ai_controls_mcp_server.grafana : {
-      server_id = s.id
-      on_behalf = true
-    }],
-    # rova-prod (mcp_rova_prod.tf): joins when rova.qnsc.vn is live. Same "Require user auth" ON.
-    [for s in cloudflare_zero_trust_access_ai_controls_mcp_server.rova_prod : {
-      server_id = s.id
-      on_behalf = true
-    }],
-  )
+  # When the provider fixes servers[] planning (see the lifecycle block below), this becomes
+  # the real membership and the terraform_data below is deleted in the same PR.
+  servers = local.mcp_portal_servers
 
-  # PROVIDER BUG, still present in 5.28.1 (latest release, 2026-10-20; nothing in
-  # 5.29+ exists to fix it): Cloudflare fills servers[].updated_tools after each
-  # sync, the config never sets it, and the PUT sends `updated_tools: null`, which
-  # the API refuses (400 "Expected array, received null", infra-apply run
-  # 41639588672). Removing this line does NOT make a membership change apply: the
-  # next plan PUTs the FULL list and either 400s or re-plans every night.
+  # PROVIDER BUG, still present in 5.28.1 (registry checked 2026-11-07; no 5.29): Cloudflare fills
+  # servers[].updated_tools after each sync, the config never sets it, and the PUT sends
+  # `updated_tools: null`, which the API refuses (400 "Expected array, received null", infra-apply run
+  # 41639588672). Removing this line does NOT make a membership change apply: the next plan PUTs the
+  # FULL list and either 400s or re-plans every night.
   #
-  # So Terraform owns the per-server Access apps and server REGISTRATIONS
-  # (mcp_opshub_dev.tf, mcp_kb_dev.tf), and PORTAL MEMBERSHIP is a documented
-  # one-time owner step in the dashboard — the same exception rova-dev and
-  # rova-prod live under. Add `opshub-dev` and `kb-dev` to portal `qnsc` there
-  # with "Require user auth" ON (on_behalf = true), and re-check on every provider
-  # upgrade. When a provider release fixes ModifyPlan for servers[], put the two
-  # entries in this list and delete this block in the same PR.
+  # So Terraform owns the per-server Access apps and server REGISTRATIONS, and MEMBERSHIP is set by
+  # terraform_data "mcp_portal_members" below through the API (scripts/edge/mcp-portal-members.sh).
+  # The script reads the portal, puts every Cloudflare-filled field (updated_tools included) back
+  # unchanged, sets exactly local.mcp_portal_servers, and verifies the result. It is idempotent: an
+  # apply where membership already matches sends no PUT.
+  #
+  # When a provider release fixes ModifyPlan for servers[], delete `servers = local.mcp_portal_servers`'s
+  # guard, the terraform_data and this block in the same PR; the local is already the one source.
   lifecycle {
     ignore_changes = [servers]
+  }
+}
+
+# Membership as code, around the provider bug above. triggers_replace carries the portal id and the
+# sorted desired list, so the script runs when the portal is recreated or the membership changes.
+# The token goes in through the environment (the apply identity's CLOUDFLARE_API_TOKEN), never argv;
+# it is not stored in state. The script REFUSES a removal unless MCP_PORTAL_ALLOW_REMOVE=1: a server
+# losing its live flag (count 0) or changing id must not be kicked out silently.
+resource "terraform_data" "mcp_portal_members" {
+  count = local.mcp_portal_live ? 1 : 0
+
+  triggers_replace = {
+    portal_id = cloudflare_zero_trust_access_ai_controls_mcp_portal.qnsc[0].id
+    servers   = local.mcp_portal_members
+  }
+
+  provisioner "local-exec" {
+    command = "${path.module}/../../scripts/edge/mcp-portal-members.sh"
+
+    environment = {
+      CLOUDFLARE_API_TOKEN  = var.cloudflare_api_token
+      CLOUDFLARE_ACCOUNT_ID = var.cloudflare_account_id
+      MCP_PORTAL_ID         = cloudflare_zero_trust_access_ai_controls_mcp_portal.qnsc[0].id
+      MCP_PORTAL_SERVERS    = jsonencode(local.mcp_portal_members)
+    }
   }
 }
 
