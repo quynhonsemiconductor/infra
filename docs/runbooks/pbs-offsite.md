@@ -184,6 +184,22 @@ The endpoint's credentials live in PBS's own config. The role compares a hash of
 3. run a sync by hand (`proxmox-backup-manager sync-job run qnsc-offsite-weekly`) to prove the new token;
 4. revoke the old token in the dashboard.
 
+### 2.2 After a failed off-site verify
+
+A verify of `qnsc-offsite` that ends in "chunks could not be verified" (some N chunk errors on named
+snapshots) means the R2 copy of those chunks is bad. The sync job runs with **`resync-corrupt true`**
+(set by the role), so the next sync RE-PULLS those snapshots from the local datastore instead of
+skipping them as already present — the repair is one manual sync, not a rebuild:
+
+```sh
+proxmox-backup-manager sync-job run qnsc-offsite-weekly   # re-pulls the failed snapshots
+proxmox-backup-manager verify qnsc-offsite --ignore-verified false   # forced verify must be clean
+```
+
+Only when the forced verify comes back clean is the off-site copy trustworthy again — run the restore
+drill (`pbs-restore-drill.zsh apply`, §3) after that, never before: a drill against a corrupt copy
+proves nothing.
+
 ## 3. The restore drill (run once a quarter, 30-45 minutes)
 
 **From the OFF-SITE datastore, on the same PBS** (the S3 cache serves the chunks; this drills the R2 copy
