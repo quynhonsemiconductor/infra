@@ -3,9 +3,9 @@
 # were imported on 2026-11-02; the 12 product and lane repos below were imported
 # on 2026-11-06 from the IaC drift audit (sa-notes/reviews/iac-drift-audit-2026-11-06.md
 # §GitHub). The values are the LIVE values at import: adding a repo here changes
-# no setting. Where they differ from the target ("squash only, delete the branch
-# on merge, auto-merge off except gitops") the line says so, and the fix is one
-# value in this map, reviewed like any other change. The rulesets force `squash`
+# no setting. On 2026-11-08 every remaining "target" comment was applied: the
+# map now IS the target ("squash only, delete the branch on merge, auto-merge
+# off except gitops"). The rulesets force `squash`
 # as the only PR merge method on the default branch, so `allow_merge_commit` /
 # `allow_rebase_merge` cannot be used for a PR into main today; they only matter
 # for repos where a ruleset is later removed.
@@ -20,7 +20,7 @@
 locals {
   repos = {
     ".github" = {
-      auto_merge = false, merge_commit = true, rebase_merge = true, delete_branch = false # delete_branch: target true
+      auto_merge = false, merge_commit = true, rebase_merge = true, delete_branch = true
     }
     "app-platform" = {
       auto_merge  = false, merge_commit = false, rebase_merge = true, delete_branch = true
@@ -40,19 +40,19 @@ locals {
       auto_merge = false, merge_commit = true, rebase_merge = true, delete_branch = true
     }
     "code-review" = {
-      auto_merge  = false, merge_commit = true, rebase_merge = true, delete_branch = false # merge_commit/rebase_merge/delete_branch: target false/false/true
+      auto_merge  = false, merge_commit = false, rebase_merge = false, delete_branch = true
       has_issues  = false, has_wiki = false
       homepage    = "https://open-codereview.ai"
       description = "Secure, fast, efficient, battle-tested at Alibaba's scale. Hybrid architecture code review tool: deterministic pipelines + LLM Agent, precise line-level comments, built-in multi-language ruleset (NPE, thread-safety, XSS, SQL injection), OpenAI & Anthropic compatible."
     }
     "gitops" = {
-      auto_merge = true, merge_commit = true, rebase_merge = true, delete_branch = false # delete_branch: target true
+      auto_merge = true, merge_commit = true, rebase_merge = true, delete_branch = true
     }
     "infra" = {
       auto_merge = false, merge_commit = true, rebase_merge = true, delete_branch = true
     }
     "opc" = {
-      auto_merge = false, merge_commit = true, rebase_merge = true, delete_branch = false # merge_commit/rebase_merge/delete_branch: target false/false/true
+      auto_merge = false, merge_commit = false, rebase_merge = false, delete_branch = true
       has_wiki   = false
     }
     "opshub" = {
@@ -65,7 +65,7 @@ locals {
       description = "PIDC (Pisico Data Center) marketing site — Astro, EN/VI, Cloudflare Pages"
     }
     "product-docs" = {
-      auto_merge = false, merge_commit = true, rebase_merge = true, delete_branch = false # merge_commit/rebase_merge/delete_branch: target false/false/true
+      auto_merge = false, merge_commit = false, rebase_merge = false, delete_branch = true
       has_wiki   = false, visibility = "private"
       # description deliberately omitted: this repo is public, and the private
       # repo's description must not be copied into it. `ignore_changes =
