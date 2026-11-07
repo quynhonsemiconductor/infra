@@ -52,6 +52,7 @@ class Stub(BaseHTTPRequestHandler):
     calls: list[tuple[str, str]] = []
     portal: dict = {}
     apply_put = True
+    rejected: list[tuple[str, str]] = []
     # Set to a float when the GET should fail with 500.
     fail_get = False
 
@@ -79,6 +80,17 @@ class Stub(BaseHTTPRequestHandler):
         type(self).calls.append(("PUT", self.path))
         assert self.path == "/client/v4/accounts/acct-1/access/ai-controls/mcp/portals/qnsc", self.path
         assert self.headers.get("Authorization") == "Bearer test-token"
+        # The real API rejects a missing/null updated_tools:
+        #   400 "Expected array, received null" (infra-apply run 41639588672).
+        # Every entry must carry both override lists as arrays.
+        for entry in body.get("servers", []):
+            for field in ("updated_tools", "updated_prompts"):
+                if not isinstance(entry.get(field), list):
+                    type(self).rejected.append((entry.get("server_id"), field))
+                    return self._send(
+                        400,
+                        {"success": False, "errors": [{"code": 1001, "message": "Expected array, received null"}]},
+                    )
         if type(self).apply_put:
             type(self).portal = {**type(self).portal, **body}
         return self._send(200, {"success": True, "result": type(self).portal})
@@ -101,9 +113,12 @@ class PortalMembersTest(unittest.TestCase):
         Stub.calls = []
         Stub.portal = json.loads(json.dumps(PORTAL))
         Stub.apply_put = True
+        Stub.rejected = []
         Stub.fail_get = False
 
-    def run_script(self, servers: list[dict]) -> subprocess.CompletedProcess:
+    def run_script(
+        self, servers: list[dict], *, allow_remove: bool = False
+    ) -> subprocess.CompletedProcess:
         env = {
             **os.environ,
             "CLOUDFLARE_API_TOKEN": "test-token",
@@ -112,6 +127,9 @@ class PortalMembersTest(unittest.TestCase):
             "MCP_PORTAL_SERVERS": json.dumps(servers),
             "CLOUDFLARE_API_BASE": self.base,
         }
+        env.pop("MCP_PORTAL_ALLOW_REMOVE", None)
+        if allow_remove:
+            env["MCP_PORTAL_ALLOW_REMOVE"] = "1"
         return subprocess.run(
             ["bash", str(SCRIPT)],
             env=env,
@@ -135,6 +153,11 @@ class PortalMembersTest(unittest.TestCase):
         self.assertEqual(by_id["rova-dev"]["updated_prompts"], ROVA_DEV["updated_prompts"])
         self.assertFalse(by_id["rova-dev"]["default_disabled"])
         self.assertTrue(by_id["kb-prod"]["on_behalf"])
+        # A NEW member carries both override lists as arrays, never absent/null (the API's
+        # "Expected array, received null").
+        self.assertEqual(by_id["kb-prod"]["updated_tools"], [])
+        self.assertEqual(by_id["kb-prod"]["updated_prompts"], [])
+        self.assertEqual(Stub.rejected, [])
         # Every non-servers field of the portal body came from the GET unchanged.
         for key in ("id", "name", "hostname", "description", "created_at", "updated_at"):
             self.assertEqual(Stub.portal[key], PORTAL[key], key)
@@ -151,10 +174,41 @@ class PortalMembersTest(unittest.TestCase):
         # its Cloudflare-filled updated_tools exactly as the GET returned them.
         Stub.portal["servers"] = [dict(ROVA_DEV), {"server_id": "old-server", "on_behalf": True}]
         want = [{"server_id": "rova-dev", "on_behalf": True}]
-        result = self.run_script(want)
+        result = self.run_script(want, allow_remove=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual([s["server_id"] for s in Stub.portal["servers"]], ["rova-dev"])
         self.assertEqual(Stub.portal["servers"][0]["updated_tools"], ROVA_DEV["updated_tools"])
+
+    def test_removal_refused_by_default(self) -> None:
+        Stub.portal["servers"] = [dict(ROVA_DEV), {"server_id": "old-server", "on_behalf": True}]
+        result = self.run_script([{"server_id": "rova-dev", "on_behalf": True}])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("remove [old-server]", result.stdout)
+        self.assertIn("never silent", result.stderr)
+        self.assertEqual([m for m, _ in Stub.calls], ["GET"], "no PUT for a refused removal")
+        self.assertEqual(
+            sorted(s["server_id"] for s in Stub.portal["servers"]),
+            ["old-server", "rova-dev"],
+        )
+
+    def test_removal_allowed_with_flag(self) -> None:
+        Stub.portal["servers"] = [dict(ROVA_DEV), {"server_id": "old-server", "on_behalf": True}]
+        result = self.run_script([{"server_id": "rova-dev", "on_behalf": True}], allow_remove=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([s["server_id"] for s in Stub.portal["servers"]], ["rova-dev"])
+
+    def test_token_never_in_curl_argv(self) -> None:
+        # The token must travel on stdin via `-K -`, never as a -H/--header argv element
+        # (visible in `ps`). Every Authorization line must be the curl_auth printf config.
+        text = SCRIPT.read_text()
+        bearer = [line.strip() for line in text.splitlines() if "Bearer" in line]
+        self.assertEqual(len(bearer), 1, f"one Bearer line expected, got {bearer}")
+        self.assertIn("printf", bearer[0], "the token may only appear in the curl -K - config")
+        self.assertIn("curl_auth()", bearer[0])
+        self.assertNotRegex(text, r"(-H|--header)\s+[\"']?Authorization")
+        # Both request functions read the config from stdin (`-K -`) and pass the URL last.
+        self.assertEqual(text.count("curl_auth | curl"), 2, "GET and PUT go through curl_auth")
+        self.assertEqual(text.count('-K - "$URL"'), 2)
 
     def test_fails_when_api_does_not_apply(self) -> None:
         Stub.apply_put = False

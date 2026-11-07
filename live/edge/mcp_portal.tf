@@ -117,13 +117,18 @@ resource "cloudflare_zero_trust_access_ai_controls_mcp_portal" "qnsc" {
   }
 }
 
-# Membership as code, around the provider bug above. triggers_replace carries the sorted desired
-# list, so the script runs only when the membership changes. The token goes in through the
-# environment (the apply identity's CLOUDFLARE_API_TOKEN), never argv; it is not stored in state.
+# Membership as code, around the provider bug above. triggers_replace carries the portal id and the
+# sorted desired list, so the script runs when the portal is recreated or the membership changes.
+# The token goes in through the environment (the apply identity's CLOUDFLARE_API_TOKEN), never argv;
+# it is not stored in state. The script REFUSES a removal unless MCP_PORTAL_ALLOW_REMOVE=1: a server
+# losing its live flag (count 0) or changing id must not be kicked out silently.
 resource "terraform_data" "mcp_portal_members" {
   count = local.mcp_portal_live ? 1 : 0
 
-  triggers_replace = local.mcp_portal_members
+  triggers_replace = {
+    portal_id = cloudflare_zero_trust_access_ai_controls_mcp_portal.qnsc[0].id
+    servers   = local.mcp_portal_members
+  }
 
   provisioner "local-exec" {
     command = "${path.module}/../../scripts/edge/mcp-portal-members.sh"
